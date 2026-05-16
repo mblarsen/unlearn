@@ -25,7 +25,18 @@ func TestModelTogglesViewDensityAndKeys(t *testing.T) {
 		t.Fatalf("density=%v", m.Density)
 	}
 	view := m.View()
-	if strings.Contains(view, "s skill inventory") || !strings.Contains(view, "f findings") {
+	if strings.Contains(view, "s skill inventory") || !strings.Contains(view, "f findings") || !strings.Contains(view, "K keep") {
 		t.Fatalf("dynamic key bar wrong: %s", view)
+	}
+	if strings.Contains(view, "actions:") {
+		t.Fatalf("actions duplicated outside dynamic key bar: %s", view)
+	}
+}
+
+func TestFindingViewKeyBarIncludesIgnoreFinding(t *testing.T) {
+	m := New([]inventory.Skill{{Name: "alpha", Kind: inventory.KindDirectory}}, []analysis.Finding{{Title: "Duplicate alpha", Type: analysis.FindingDuplicate, Skills: []inventory.Skill{{Name: "alpha"}}}})
+	view := m.View()
+	if !strings.Contains(view, "I ignore finding") || !strings.Contains(view, "s skill inventory") {
+		t.Fatalf("finding key bar missing actions: %s", view)
 	}
 }

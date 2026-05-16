@@ -150,19 +150,30 @@ func (m Model) detailView() string {
 		"activation risk: "+skill.ActivationRisk,
 		"provenance: "+skill.Provenance,
 		"usage evidence: not scanned",
-		"actions: inspect · keep · ignore finding · quarantine · delete · rename",
 	)
 	return strings.Join(lines, "\n")
 }
 
 func (m Model) keyBar() string {
-	keys := "j/k/↑/↓ move · r density · q quit"
+	keys := []string{"j/k/↑/↓ move", "r density"}
 	if m.Mode == ViewFindings {
-		keys = "j/k/↑/↓ move · s skill inventory · r density · q quit"
+		keys = append(keys, "s skill inventory")
 	} else {
-		keys = "j/k/↑/↓ move · f findings · r density · q quit"
+		keys = append(keys, "f findings")
 	}
-	return lipgloss.NewStyle().Reverse(true).Render(keys)
+	keys = append(keys, m.availableActionKeys()...)
+	keys = append(keys, "q quit")
+	return lipgloss.NewStyle().Reverse(true).Render(strings.Join(keys, " · "))
+}
+
+func (m Model) availableActionKeys() []string {
+	if m.itemCount() == 0 {
+		return nil
+	}
+	if m.Mode == ViewFindings {
+		return []string{"enter inspect", "I ignore finding", "K keep", "Q quarantine", "D delete", "N rename"}
+	}
+	return []string{"enter inspect", "K keep", "Q quarantine", "D delete", "N rename"}
 }
 
 func (m Model) itemCount() int {
