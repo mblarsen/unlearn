@@ -1,0 +1,276 @@
+package unlearn
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"sort"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mblarsen/unlearn/internal/actions"
+	"github.com/mblarsen/unlearn/internal/analysis"
+	"github.com/mblarsen/unlearn/internal/config"
+	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/state"
+	"github.com/mblarsen/unlearn/internal/tui"
+	"github.com/spf13/cobra"
+)
+
+type cliOptions struct {
+	roots       []string
+	trustRoots  []string
+	writeRoots  []string
+	configPath  string
+	stateDir    string
+	indexPath   string
+	fix         bool
+	yes         bool
+	restoreRoot string
+}
+
+func Execute() error {
+	return newRootCmd(os.Stdout).Execute()
+}
+
+func newRootCmd(out io.Writer) *cobra.Command {
+	opts := &cliOptions{}
+	root := &cobra.Command{
+		Use:   "unlearn",
+		Short: "Audit and clean up global AI-agent skills",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			skills, findings, _, err := loadInventory(opts)
+			if err != nil {
+				return err
+			}
+			program := tea.NewProgram(tui.New(skills, findings), tea.WithOutput(out), tea.WithAltScreen())
+			_, err = program.Run()
+			return err
+		},
+	}
+	addSharedFlags(root, opts)
+
+	audit := &cobra.Command{
+		Use:   "audit",
+		Short: "Print a concise read-only skill cleanup overview",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			skills, findings, skipped, err := loadInventory(opts)
+			if err != nil {
+				return err
+			}
+			if opts.fix {
+				return runFix(out, opts, skills, findings)
+			}
+			printAudit(out, skills, findings, skipped)
+			return nil
+		},
+	}
+	addSharedFlags(audit, opts)
+	audit.Flags().BoolVar(&opts.fix, "fix", false, "preview safe quick fixes and apply only after confirmation")
+	audit.Flags().BoolVarP(&opts.yes, "yes", "y", false, "confirm safe quick fixes for automation")
+	root.AddCommand(audit)
+
+	scan := &cobra.Command{
+		Use:   "scan",
+		Short: "Refresh the local inventory index",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			skills, findings, skipped, err := loadInventory(opts)
+			if err != nil {
+				return err
+			}
+			paths, err := pathsFromOptions(opts)
+			if err != nil {
+				return err
+			}
+			if err := paths.Ensure(); err != nil {
+				return err
+			}
+			db, err := state.OpenIndex(paths.IndexPath)
+			if err != nil {
+				return err
+			}
+			defer db.Close()
+			if err := state.ReplaceIndex(db, skills, findings); err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "Indexed %d skills and %d findings.\n", len(skills), len(findings))
+			if len(skipped) > 0 {
+				fmt.Fprintf(out, "Skipped untrusted roots: %s\n", strings.Join(skipped, ", "))
+			}
+			return nil
+		},
+	}
+	addSharedFlags(scan, opts)
+	root.AddCommand(scan)
+
+	restore := &cobra.Command{
+		Use:   "restore <skill>",
+		Short: "Restore a quarantined skill",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			paths, err := pathsFromOptions(opts)
+			if err != nil {
+				return err
+			}
+			destRoot := opts.restoreRoot
+			if destRoot == "" {
+				return fmt.Errorf("--to-root is required for restore in this safety-first build")
+			}
+			cfg, err := loadConfig(opts, paths)
+			if err != nil {
+				return err
+			}
+			if !cfg.CanWrite(destRoot) {
+				return fmt.Errorf("write permission required for restore root %s; pass --write-root %s", destRoot, destRoot)
+			}
+			mgr := actions.Manager{Config: cfg, QuarantineDir: paths.QuarantineDir}
+			dest, err := mgr.Restore(args[0], destRoot)
+			if err != nil {
+				return err
+			}
+			fmt.Fprintf(out, "Restored %s to %s\n", args[0], dest)
+			return nil
+		},
+	}
+	addSharedFlags(restore, opts)
+	restore.Flags().StringVar(&opts.restoreRoot, "to-root", "", "trusted/write-enabled root to restore into")
+	root.AddCommand(restore)
+
+	return root
+}
+
+func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
+	cmd.Flags().StringSliceVar(&opts.roots, "root", nil, "skill root to scan; may be repeated")
+	cmd.Flags().StringSliceVar(&opts.trustRoots, "trust-root", nil, "trust a skill root for this run and persist the decision")
+	cmd.Flags().StringSliceVar(&opts.writeRoots, "write-root", nil, "allow modifications in this trusted root and persist the decision")
+	cmd.Flags().StringVar(&opts.configPath, "config", "", "config TOML path")
+	cmd.Flags().StringVar(&opts.stateDir, "state-dir", "", "state directory for index, quarantine, and caches")
+	cmd.Flags().StringVar(&opts.indexPath, "index", "", "SQLite index path")
+}
+
+func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := paths.Ensure(); err != nil {
+		return nil, nil, nil, err
+	}
+	cfg, err := loadConfig(opts, paths)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	roots := opts.roots
+	if len(roots) == 0 {
+		roots = inventory.KnownGlobalRoots()
+	}
+	var scanRoots []string
+	var skipped []string
+	for _, root := range roots {
+		if cfg.IsTrusted(root) {
+			scanRoots = append(scanRoots, root)
+		} else {
+			skipped = append(skipped, root)
+		}
+	}
+	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots})
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	findings := analysis.Analyze(report.Skills, analysis.Options{})
+	return report.Skills, findings, skipped, nil
+}
+
+func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
+	cfg, err := config.Load(paths.ConfigPath)
+	if err != nil {
+		return cfg, err
+	}
+	changed := false
+	for _, root := range opts.trustRoots {
+		cfg.TrustRoot(root)
+		changed = true
+	}
+	for _, root := range opts.writeRoots {
+		cfg.TrustRoot(root)
+		cfg.AllowWrite(root)
+		changed = true
+	}
+	if changed {
+		if err := cfg.Save(paths.ConfigPath); err != nil {
+			return cfg, err
+		}
+	}
+	return cfg, nil
+}
+
+func pathsFromOptions(opts *cliOptions) (state.Paths, error) {
+	paths, err := state.DefaultPaths()
+	if err != nil {
+		return paths, err
+	}
+	if opts.stateDir != "" {
+		paths.BaseDir = opts.stateDir
+		paths.IndexPath = opts.stateDir + string(os.PathSeparator) + "index.db"
+		paths.QuarantineDir = opts.stateDir + string(os.PathSeparator) + "quarantine"
+		paths.LLMCacheDir = opts.stateDir + string(os.PathSeparator) + "llm-cache"
+	}
+	if opts.configPath != "" {
+		paths.ConfigPath = opts.configPath
+	}
+	if opts.indexPath != "" {
+		paths.IndexPath = opts.indexPath
+	}
+	return paths, nil
+}
+
+func printAudit(out io.Writer, skills []inventory.Skill, findings []analysis.Finding, skipped []string) {
+	fmt.Fprintln(out, "unlearn audit")
+	fmt.Fprintf(out, "Skills scanned: %d\n", len(skills))
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		fmt.Fprintf(out, "Skipped untrusted roots: %s\n", strings.Join(skipped, ", "))
+	}
+	counts := analysis.FindingCounts(findings)
+	fmt.Fprintln(out, "Findings:")
+	for _, typ := range []analysis.FindingType{analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap, analysis.FindingBroken, analysis.FindingHighTokenCost, analysis.FindingBroadActivation, analysis.FindingUnseen} {
+		fmt.Fprintf(out, "  %s: %d\n", typ, counts[typ])
+	}
+	fmt.Fprintln(out, "Top cleanup candidates:")
+	limit := 5
+	if len(findings) < limit {
+		limit = len(findings)
+	}
+	if limit == 0 {
+		fmt.Fprintln(out, "  none")
+	} else {
+		for i := 0; i < limit; i++ {
+			fmt.Fprintf(out, "  - %s: %s\n", findings[i].Type, findings[i].Title)
+		}
+	}
+	fmt.Fprintln(out, "Open `unlearn` for the dashboard-first cleanup workbench.")
+}
+
+func runFix(out io.Writer, opts *cliOptions, skills []inventory.Skill, findings []analysis.Finding) error {
+	fmt.Fprintln(out, "unlearn audit --fix dry run")
+	fixable := 0
+	for _, finding := range findings {
+		if finding.Type == analysis.FindingDuplicate {
+			fixable++
+			fmt.Fprintf(out, "  exact duplicate candidate: %s (%d instances)\n", finding.Title, len(finding.Skills))
+		}
+		if finding.Type == analysis.FindingBroken {
+			fixable++
+			fmt.Fprintf(out, "  broken item needs manual review: %s\n", finding.Title)
+		}
+	}
+	if fixable == 0 {
+		fmt.Fprintln(out, "No safe quick fixes available.")
+		return nil
+	}
+	if !opts.yes {
+		fmt.Fprintln(out, "No changes made. Re-run with --yes after reviewing the dry run.")
+		return nil
+	}
+	return fmt.Errorf("automatic duplicate quarantine is not enabled until mutation milestone is complete; no changes made")
+}
