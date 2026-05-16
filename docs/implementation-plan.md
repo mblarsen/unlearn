@@ -120,4 +120,4 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
-M1 and M2 backend/action primitives implemented; current focus is M3 dashboard UX wiring and optional intelligence polish.
+Initial v1 implementation is complete enough for fixture/temp-root validation. Remaining limitations to track after this pass: dashboard action keys show available actions but do not yet execute the full interactive mutation flows, LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, and first-launch setup is represented by explicit `--trust-root`, `--history-jsonl`, and `--with-llm` flags rather than a dedicated setup screen.
