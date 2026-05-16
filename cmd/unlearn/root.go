@@ -13,6 +13,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	setupflow "github.com/mblarsen/unlearn/internal/setup"
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
 	"github.com/spf13/cobra"
@@ -42,11 +43,23 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		Use:   "unlearn",
 		Short: "Audit and clean up global AI-agent skills",
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := runFirstLaunchSetup(out, opts); err != nil {
+				return err
+			}
 			skills, findings, _, err := loadInventory(opts)
 			if err != nil {
 				return err
 			}
-			program := tea.NewProgram(tui.New(skills, findings), tea.WithOutput(out), tea.WithAltScreen())
+			paths, err := pathsFromOptions(opts)
+			if err != nil {
+				return err
+			}
+			cfg, err := loadConfig(opts, paths)
+			if err != nil {
+				return err
+			}
+			service := &tui.ConfigActionService{ConfigPath: paths.ConfigPath, Config: cfg, QuarantineDir: paths.QuarantineDir}
+			program := tea.NewProgram(tui.NewWithActions(skills, findings, service), tea.WithOutput(out), tea.WithAltScreen())
 			_, err = program.Run()
 			return err
 		},
@@ -139,7 +152,85 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	restore.Flags().StringVar(&opts.restoreRoot, "to-root", "", "trusted/write-enabled root to restore into")
 	root.AddCommand(restore)
 
+	setupCmd := &cobra.Command{
+		Use:   "setup",
+		Short: "Run the first-launch setup screen again",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runSetupScreen(out, opts, true)
+		},
+	}
+	addSharedFlags(setupCmd, opts)
+	root.AddCommand(setupCmd)
+
 	return root
+}
+
+func runFirstLaunchSetup(out io.Writer, opts *cliOptions) error {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	cfg, err := loadConfig(opts, paths)
+	if err != nil {
+		return err
+	}
+	if cfg.SetupComplete {
+		return nil
+	}
+	return runSetupScreen(out, opts, false)
+}
+
+func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	if err := paths.Ensure(); err != nil {
+		return err
+	}
+	cfg, err := loadConfig(opts, paths)
+	if err != nil {
+		return err
+	}
+	if cfg.SetupComplete && !force {
+		return nil
+	}
+	roots := opts.roots
+	if len(roots) == 0 {
+		roots = inventory.KnownGlobalRoots()
+	}
+	choices := make([]setupflow.RootChoice, 0, len(roots))
+	for _, root := range roots {
+		_, err := os.Stat(root)
+		choices = append(choices, setupflow.RootChoice{Path: root, Exists: err == nil})
+	}
+	historyPaths, err := discoverPiHistoryJSONL()
+	if err != nil {
+		return err
+	}
+	model := setupflow.New(choices, historyPaths, cfg)
+	program := tea.NewProgram(model, tea.WithOutput(out), tea.WithAltScreen())
+	finalModel, err := program.Run()
+	if err != nil {
+		return err
+	}
+	finalSetup, ok := finalModel.(setupflow.Model)
+	if !ok {
+		return fmt.Errorf("setup returned unexpected model %T", finalModel)
+	}
+	if finalSetup.Cancelled {
+		return fmt.Errorf("setup cancelled")
+	}
+	updated := finalSetup.ApplyTo(cfg)
+	return updated.Save(paths.ConfigPath)
+}
+
+func discoverPiHistoryJSONL() ([]string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	return history.DiscoverPiJSONL(home, history.DefaultDiscoveryLimit)
 }
 
 func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
@@ -182,7 +273,7 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	usage, err := loadUsageEvidence(opts, report.Skills)
+	usage, err := loadUsageEvidence(opts, cfg, report.Skills)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -190,8 +281,12 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 	return report.Skills, findings, skipped, nil
 }
 
-func loadUsageEvidence(opts *cliOptions, skills []inventory.Skill) (analysis.UsageEvidence, error) {
-	if len(opts.historyJSONL) == 0 {
+func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill) (analysis.UsageEvidence, error) {
+	historyPaths := opts.historyJSONL
+	if len(historyPaths) == 0 && cfg.HistoryScan {
+		historyPaths = cfg.HistoryJSONL
+	}
+	if len(historyPaths) == 0 {
 		return nil, nil
 	}
 	names := make([]string, 0, len(skills))
@@ -200,7 +295,7 @@ func loadUsageEvidence(opts *cliOptions, skills []inventory.Skill) (analysis.Usa
 	}
 	usage := analysis.UsageEvidence{}
 	adapter := history.JSONLAdapter{}
-	for _, path := range opts.historyJSONL {
+	for _, path := range historyPaths {
 		evidence, err := adapter.Scan(path, names)
 		if err != nil {
 			return nil, err

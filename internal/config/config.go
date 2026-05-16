@@ -10,8 +10,10 @@ import (
 )
 
 type Config struct {
-	LLMAssisted bool `toml:"llm_assisted"`
-	HistoryScan bool `toml:"history_scan"`
+	SetupComplete bool     `toml:"setup_complete"`
+	LLMAssisted   bool     `toml:"llm_assisted"`
+	HistoryScan   bool     `toml:"history_scan"`
+	HistoryJSONL  []string `toml:"history_jsonl"`
 
 	Roots          map[string]RootTrust `toml:"roots"`
 	WriteRoots     map[string]bool      `toml:"write_roots"`

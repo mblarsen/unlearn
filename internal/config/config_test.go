@@ -25,6 +25,9 @@ func TestConfigDecisionHelpers(t *testing.T) {
 func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := Default()
+	cfg.SetupComplete = true
+	cfg.HistoryScan = true
+	cfg.HistoryJSONL = []string{"/tmp/session.jsonl"}
 	cfg.TrustRoot("/tmp/skills")
 	cfg.AllowWrite("/tmp/skills")
 	cfg.Keep.Skills = []string{"keep-me"}
@@ -35,6 +38,9 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	loaded, err := Load(path)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !loaded.SetupComplete || !loaded.HistoryScan || len(loaded.HistoryJSONL) != 1 {
+		t.Fatalf("setup/history did not round-trip: %#v", loaded)
 	}
 	if !loaded.IsTrusted("/tmp/skills") || !loaded.CanWrite("/tmp/skills") {
 		t.Fatalf("trust/write did not round-trip: %#v", loaded)

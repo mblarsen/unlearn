@@ -87,6 +87,8 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - [x] Integration tests: trust/write gates.
 - [x] Integration tests: audit output.
 - [x] TUI model tests: view/density toggles, key handling, dynamic key bar/action availability.
+- [x] Setup model tests: trust toggles, LLM/history opt-ins, TOML persistence shape, bounded Pi JSONL discovery.
+- [x] TUI action tests: keep, ignore finding, quarantine, delete, rename, restore, write gates, confirmations, and warning states through injected action service.
 
 ## Milestones
 
@@ -120,4 +122,4 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
-Initial v1 implementation is complete enough for fixture/temp-root validation. Remaining limitations to track after this pass: dashboard action keys show available actions but do not yet execute the full interactive mutation flows, LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, and first-launch setup is represented by explicit `--trust-root`, `--history-jsonl`, and `--with-llm` flags rather than a dedicated setup screen.
+Initial v1 implementation is complete enough for fixture/temp-root validation. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, and dashboard actions execute against the current selected skill/finding rather than providing full multi-select batch workflows.
