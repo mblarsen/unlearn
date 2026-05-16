@@ -1,0 +1,31 @@
+# Build artifacts
+/unlearn
+/bin/
+/dist/
+/build/
+
+# Go
+*.test
+*.out
+coverage.out
+
+# Local worktrees
+.worktrees/
+
+# Local brainstorming/mockup artifacts
+.superpowers/
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# unlearn local state, if pointed at repo during development
+.unlearn/

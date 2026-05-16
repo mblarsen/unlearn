@@ -1,0 +1,18 @@
+[tools]
+go = "1.26.3"
+pre-commit = "latest"
+"go:golang.org/x/tools/cmd/goimports" = "latest"
+"aqua:trufflesecurity/trufflehog" = "3.88.29"
+"pipx:commitizen" = "4.16.2"
+
+[tasks.setup]
+description = "Install project tooling and git hooks"
+run = "mise install && pre-commit install --install-hooks --hook-type pre-commit --hook-type commit-msg"
+
+[tasks.check]
+description = "Run all pre-commit checks"
+run = "pre-commit run --all-files"
+
+[tasks.fmt]
+description = "Format Go files"
+run = "goimports -w ."
