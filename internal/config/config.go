@@ -95,6 +95,30 @@ func (c *Config) AllowWrite(root string) {
 	c.WriteRoots[filepath.Clean(root)] = true
 }
 
+func (c *Config) KeepSkill(name string) {
+	c.Keep.Skills = appendUnique(c.Keep.Skills, name)
+}
+
+func (c *Config) MarkDropCandidate(name string) {
+	c.DropCandidates.Skills = appendUnique(c.DropCandidates.Skills, name)
+}
+
+func (c *Config) IgnoreFinding(id, reason string) {
+	if c.IgnoreFindings == nil {
+		c.IgnoreFindings = map[string]string{}
+	}
+	c.IgnoreFindings[id] = reason
+}
+
+func appendUnique(items []string, item string) []string {
+	for _, existing := range items {
+		if existing == item {
+			return items
+		}
+	}
+	return append(items, item)
+}
+
 func (c Config) TrustedRoots(roots []string) []string {
 	trusted := make([]string, 0, len(roots))
 	for _, root := range roots {

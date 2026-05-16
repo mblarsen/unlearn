@@ -28,6 +28,54 @@ func TestAuditOutputWithFixtureRoot(t *testing.T) {
 	}
 }
 
+func TestAuditFixQuarantinesWritableExactDuplicate(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "demo", "same")
+	writeSkill(t, filepath.Join(root, "b"), "demo", "same")
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"audit", "--fix", "--yes", "--root", root, "--write-root", root, "--state-dir", stateDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "quarantine exact duplicate") || !strings.Contains(got, "quarantined demo") {
+		t.Fatalf("unexpected output:\n%s", got)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("root entries=%d", len(entries))
+	}
+	matches, err := filepath.Glob(filepath.Join(stateDir, "quarantine", "*", "demo"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("quarantine matches=%v", matches)
+	}
+}
+
+func TestAuditFixWithoutWriteRootIsDryRunOnly(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "demo", "same")
+	writeSkill(t, filepath.Join(root, "b"), "demo", "same")
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"audit", "--fix", "--yes", "--root", root, "--trust-root", root, "--state-dir", t.TempDir(), "--config", filepath.Join(t.TempDir(), "config.toml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "requires --write-root") || strings.Contains(got, "quarantined demo") {
+		t.Fatalf("unexpected output:\n%s", got)
+	}
+}
+
 func TestAuditSkipsUntrustedRoot(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "a"), "demo", "same")

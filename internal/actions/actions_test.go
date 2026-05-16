@@ -55,6 +55,39 @@ func TestRenamePreviewWarnsForSymlink(t *testing.T) {
 	}
 }
 
+func TestDeleteActiveRequiresTypedName(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "demo")
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	err := DeleteActive(inventory.Skill{Name: "demo", Root: root, EncounteredPath: skillDir}, cfg, "wrong")
+	if err == nil {
+		t.Fatal("expected typed-name error")
+	}
+	if err := DeleteActive(inventory.Skill{Name: "demo", Root: root, EncounteredPath: skillDir}, cfg, "demo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("skill dir still exists, err=%v", err)
+	}
+}
+
+func TestDeleteQuarantinedRequiresConfirmation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "demo")
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(DeleteQuarantined(path, false), ErrConfirmationRequired) {
+		t.Fatal("expected confirmation error")
+	}
+	if err := DeleteQuarantined(path, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRenameUpdatesDirectoryAndFrontmatter(t *testing.T) {
 	root := t.TempDir()
 	skillDir := filepath.Join(root, "old")

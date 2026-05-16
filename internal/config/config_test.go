@@ -5,6 +5,23 @@ import (
 	"testing"
 )
 
+func TestConfigDecisionHelpers(t *testing.T) {
+	cfg := Default()
+	cfg.KeepSkill("alpha")
+	cfg.KeepSkill("alpha")
+	cfg.MarkDropCandidate("beta")
+	cfg.IgnoreFinding("overlap:a:b", "known overlap")
+	if len(cfg.Keep.Skills) != 1 || cfg.Keep.Skills[0] != "alpha" {
+		t.Fatalf("keep=%v", cfg.Keep.Skills)
+	}
+	if len(cfg.DropCandidates.Skills) != 1 || cfg.DropCandidates.Skills[0] != "beta" {
+		t.Fatalf("drop=%v", cfg.DropCandidates.Skills)
+	}
+	if cfg.IgnoreFindings["overlap:a:b"] != "known overlap" {
+		t.Fatalf("ignore=%v", cfg.IgnoreFindings)
+	}
+}
+
 func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
 	cfg := Default()

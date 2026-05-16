@@ -44,14 +44,14 @@ This checklist maps implementation work to the product design in `docs/superpowe
 ## 5. Actions and safety
 
 - [x] Implement inspect data path.
-- [ ] Implement keep and ignore-finding decisions.
+- [x] Implement keep and ignore-finding decisions.
 - [x] Implement quarantine with confirmation and write-permission gate.
 - [x] Implement restore from quarantine.
-- [ ] Implement direct delete gates, including typed skill name for active skills.
+- [x] Implement direct delete gates, including typed skill name for active skills.
 - [x] Implement rename dry-run and execution for directory + `SKILL.md` frontmatter.
 - [x] Warn/suggest quarantine for symlinked or package-managed rename targets.
-- [ ] Implement batch dry-run summaries.
-- [ ] Implement `audit --fix` safe fixes only.
+- [x] Implement batch dry-run summaries.
+- [x] Implement `audit --fix` safe fixes only.
 
 ## 6. TUI dashboard
 
@@ -120,4 +120,4 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
-M1 implemented; current focus is hardening M2 safety-gated mutations and improving dashboard UX.
+M1 and M2 backend/action primitives implemented; current focus is M3 dashboard UX wiring and optional intelligence polish.

@@ -252,25 +252,89 @@ func printAudit(out io.Writer, skills []inventory.Skill, findings []analysis.Fin
 }
 
 func runFix(out io.Writer, opts *cliOptions, skills []inventory.Skill, findings []analysis.Finding) error {
-	fmt.Fprintln(out, "unlearn audit --fix dry run")
-	fixable := 0
-	for _, finding := range findings {
-		if finding.Type == analysis.FindingDuplicate {
-			fixable++
-			fmt.Fprintf(out, "  exact duplicate candidate: %s (%d instances)\n", finding.Title, len(finding.Skills))
-		}
-		if finding.Type == analysis.FindingBroken {
-			fixable++
-			fmt.Fprintf(out, "  broken item needs manual review: %s\n", finding.Title)
-		}
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return err
 	}
-	if fixable == 0 {
+	cfg, err := loadConfig(opts, paths)
+	if err != nil {
+		return err
+	}
+	plan := buildSafeFixPlan(cfg, findings)
+	fmt.Fprintln(out, "unlearn audit --fix dry run")
+	if len(plan.Operations) == 0 && len(plan.Skipped) == 0 {
 		fmt.Fprintln(out, "No safe quick fixes available.")
+		return nil
+	}
+	for _, op := range plan.Operations {
+		fmt.Fprintf(out, "  will %s: %s (%s)\n", op.Action, op.Skill.Name, op.Reason)
+	}
+	for _, skipped := range plan.Skipped {
+		fmt.Fprintf(out, "  skipped: %s\n", skipped)
+	}
+	if len(plan.Operations) == 0 {
+		fmt.Fprintln(out, "No changes made.")
 		return nil
 	}
 	if !opts.yes {
 		fmt.Fprintln(out, "No changes made. Re-run with --yes after reviewing the dry run.")
 		return nil
 	}
-	return fmt.Errorf("automatic duplicate quarantine is not enabled until mutation milestone is complete; no changes made")
+	mgr := actions.Manager{Config: cfg, QuarantineDir: paths.QuarantineDir}
+	for _, op := range plan.Operations {
+		dest, err := mgr.Quarantine(op.Skill, true)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(out, "  quarantined %s -> %s\n", op.Skill.Name, dest)
+	}
+	_ = skills
+	return nil
+}
+
+type safeFixPlan struct {
+	Operations []safeFixOperation
+	Skipped    []string
+}
+
+type safeFixOperation struct {
+	Action string
+	Skill  inventory.Skill
+	Reason string
+}
+
+func buildSafeFixPlan(cfg config.Config, findings []analysis.Finding) safeFixPlan {
+	plan := safeFixPlan{}
+	for _, finding := range findings {
+		switch finding.Type {
+		case analysis.FindingDuplicate:
+			for i, skill := range finding.Skills {
+				if i == 0 {
+					continue
+				}
+				if skill.IsSymlink || skill.ReadOnly || skill.Broken {
+					plan.Skipped = append(plan.Skipped, fmt.Sprintf("%s is symlinked, read-only, or broken; dashboard review required", skill.Name))
+					continue
+				}
+				if !cfg.CanWrite(skill.Root) {
+					plan.Skipped = append(plan.Skipped, fmt.Sprintf("%s requires --write-root %s", skill.Name, skill.Root))
+					continue
+				}
+				plan.Operations = append(plan.Operations, safeFixOperation{Action: "quarantine exact duplicate", Skill: skill, Reason: "same name and identical effective content; first instance kept"})
+			}
+		case analysis.FindingBroken:
+			for _, skill := range finding.Skills {
+				if !skill.Broken {
+					plan.Skipped = append(plan.Skipped, fmt.Sprintf("%s has broken references; edit manually from dashboard", skill.Name))
+					continue
+				}
+				if !cfg.CanWrite(skill.Root) {
+					plan.Skipped = append(plan.Skipped, fmt.Sprintf("broken symlink %s requires --write-root %s", skill.Name, skill.Root))
+					continue
+				}
+				plan.Operations = append(plan.Operations, safeFixOperation{Action: "quarantine broken symlink", Skill: skill, Reason: "encountered path cannot be resolved"})
+			}
+		}
+	}
+	return plan
 }

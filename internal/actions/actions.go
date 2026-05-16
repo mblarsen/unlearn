@@ -13,6 +13,7 @@ import (
 )
 
 var ErrWritePermissionRequired = errors.New("write permission required for skill root")
+var ErrConfirmationRequired = errors.New("confirmation required")
 
 type Manager struct {
 	Config        config.Config
@@ -24,7 +25,7 @@ func (m Manager) Quarantine(skill inventory.Skill, confirm bool) (string, error)
 		return "", ErrWritePermissionRequired
 	}
 	if !confirm {
-		return "", errors.New("confirmation required")
+		return "", ErrConfirmationRequired
 	}
 	timestamp := time.Now().UTC().Format("20060102T150405Z")
 	dest := filepath.Join(m.QuarantineDir, timestamp, safeName(skill.Name))
@@ -85,7 +86,7 @@ func Rename(skill inventory.Skill, newName string, cfg config.Config, confirm bo
 		return preview, ErrWritePermissionRequired
 	}
 	if !confirm {
-		return preview, errors.New("confirmation required")
+		return preview, ErrConfirmationRequired
 	}
 	if preview.Warn != "" {
 		return preview, errors.New(preview.Warn)
@@ -109,6 +110,34 @@ func Rename(skill inventory.Skill, newName string, cfg config.Config, confirm bo
 		return preview, err
 	}
 	return preview, nil
+}
+
+func DeleteActive(skill inventory.Skill, cfg config.Config, typedName string) error {
+	if !cfg.CanWrite(skill.Root) {
+		return ErrWritePermissionRequired
+	}
+	if typedName != skill.Name {
+		return fmt.Errorf("active skill deletion requires typing %q", skill.Name)
+	}
+	return removeSkillPath(skill.EncounteredPath)
+}
+
+func DeleteQuarantined(path string, confirm bool) error {
+	if !confirm {
+		return ErrConfirmationRequired
+	}
+	return removeSkillPath(path)
+}
+
+func removeSkillPath(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
+		return os.RemoveAll(path)
+	}
+	return os.Remove(path)
 }
 
 func safeName(name string) string {
