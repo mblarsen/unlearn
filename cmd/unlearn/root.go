@@ -11,6 +11,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/config"
+	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
@@ -18,15 +19,17 @@ import (
 )
 
 type cliOptions struct {
-	roots       []string
-	trustRoots  []string
-	writeRoots  []string
-	configPath  string
-	stateDir    string
-	indexPath   string
-	fix         bool
-	yes         bool
-	restoreRoot string
+	roots        []string
+	trustRoots   []string
+	writeRoots   []string
+	configPath   string
+	stateDir     string
+	indexPath    string
+	fix          bool
+	yes          bool
+	restoreRoot  string
+	historyJSONL []string
+	withLLM      bool
 }
 
 func Execute() error {
@@ -146,6 +149,8 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringVar(&opts.configPath, "config", "", "config TOML path")
 	cmd.Flags().StringVar(&opts.stateDir, "state-dir", "", "state directory for index, quarantine, and caches")
 	cmd.Flags().StringVar(&opts.indexPath, "index", "", "SQLite index path")
+	cmd.Flags().StringSliceVar(&opts.historyJSONL, "history-jsonl", nil, "opt-in JSONL history file to scan for derived invocation evidence; may be repeated")
+	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to LLM-assisted analysis plumbing; current build uses deterministic analysis plus a disabled analyzer stub")
 }
 
 func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
@@ -177,8 +182,50 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	findings := analysis.Analyze(report.Skills, analysis.Options{})
+	usage, err := loadUsageEvidence(opts, report.Skills)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	findings := analysis.Analyze(report.Skills, analysis.Options{UsageEvidence: usage})
 	return report.Skills, findings, skipped, nil
+}
+
+func loadUsageEvidence(opts *cliOptions, skills []inventory.Skill) (analysis.UsageEvidence, error) {
+	if len(opts.historyJSONL) == 0 {
+		return nil, nil
+	}
+	names := make([]string, 0, len(skills))
+	for _, skill := range skills {
+		names = append(names, skill.Name)
+	}
+	usage := analysis.UsageEvidence{}
+	adapter := history.JSONLAdapter{}
+	for _, path := range opts.historyJSONL {
+		evidence, err := adapter.Scan(path, names)
+		if err != nil {
+			return nil, err
+		}
+		for _, item := range evidence {
+			current := usage[item.SkillName]
+			if current == "" || evidenceRank(item.Grade) < evidenceRank(history.EvidenceGrade(current)) {
+				usage[item.SkillName] = string(item.Grade)
+			}
+		}
+	}
+	return usage, nil
+}
+
+func evidenceRank(grade history.EvidenceGrade) int {
+	switch grade {
+	case history.EvidenceStrong:
+		return 1
+	case history.EvidenceMedium:
+		return 2
+	case history.EvidenceWeak:
+		return 3
+	default:
+		return 99
+	}
 }
 
 func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
@@ -194,6 +241,14 @@ func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
 	for _, root := range opts.writeRoots {
 		cfg.TrustRoot(root)
 		cfg.AllowWrite(root)
+		changed = true
+	}
+	if opts.withLLM && !cfg.LLMAssisted {
+		cfg.LLMAssisted = true
+		changed = true
+	}
+	if len(opts.historyJSONL) > 0 && !cfg.HistoryScan {
+		cfg.HistoryScan = true
 		changed = true
 	}
 	if changed {

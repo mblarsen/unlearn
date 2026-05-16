@@ -76,6 +76,52 @@ func TestAuditFixWithoutWriteRootIsDryRunOnly(t *testing.T) {
 	}
 }
 
+func TestAuditHistoryJSONLAddsUnseenFindings(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+	writeSkill(t, filepath.Join(root, "b"), "beta", "same")
+	historyPath := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(historyPath, []byte(`{"message":"read skills/alpha/SKILL.md"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"audit", "--root", root, "--trust-root", root, "--history-jsonl", historyPath, "--state-dir", t.TempDir(), "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "unseen: 1") {
+		t.Fatalf("unexpected output:\n%s", got)
+	}
+	cfg, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), "history_scan = true") {
+		t.Fatalf("history opt-in not persisted:\n%s", cfg)
+	}
+}
+
+func TestAuditWithLLMPersistsOptIn(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cmd := newRootCmd(&bytes.Buffer{})
+	cmd.SetArgs([]string{"audit", "--root", root, "--trust-root", root, "--with-llm", "--state-dir", t.TempDir(), "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(cfg), "llm_assisted = true") {
+		t.Fatalf("LLM opt-in not persisted:\n%s", cfg)
+	}
+}
+
 func TestAuditSkipsUntrustedRoot(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "a"), "demo", "same")
