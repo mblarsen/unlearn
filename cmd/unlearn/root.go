@@ -62,7 +62,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 				return err
 			}
 			if opts.fix {
-				return runFix(out, opts, skills, findings)
+				return runFix(out, opts, findings)
 			}
 			printAudit(out, skills, findings, skipped)
 			return nil
@@ -306,7 +306,7 @@ func printAudit(out io.Writer, skills []inventory.Skill, findings []analysis.Fin
 	fmt.Fprintln(out, "Open `unlearn` for the dashboard-first cleanup workbench.")
 }
 
-func runFix(out io.Writer, opts *cliOptions, skills []inventory.Skill, findings []analysis.Finding) error {
+func runFix(out io.Writer, opts *cliOptions, findings []analysis.Finding) error {
 	paths, err := pathsFromOptions(opts)
 	if err != nil {
 		return err
@@ -343,7 +343,6 @@ func runFix(out io.Writer, opts *cliOptions, skills []inventory.Skill, findings 
 		}
 		fmt.Fprintf(out, "  quarantined %s -> %s\n", op.Skill.Name, dest)
 	}
-	_ = skills
 	return nil
 }
 
