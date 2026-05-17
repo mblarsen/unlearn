@@ -123,19 +123,15 @@ func TestDashboardRequiresInstallChoiceForDuplicateFindingActions(t *testing.T) 
 	}
 }
 
-func TestDashboardDeleteRequiresTypedName(t *testing.T) {
+func TestDashboardDeleteUsesModalConfirmation(t *testing.T) {
 	service := &fakeActionService{writeRoots: map[string]bool{"/root": true}}
 	m := testModel(service)
 	updated, _ := m.Update(key("D"))
 	m = updated.(Model)
-	if m.State != StateInputDelete || !strings.Contains(m.View(), "enter submit") {
-		t.Fatalf("expected delete input, state=%v view=%s", m.State, m.View())
+	if m.State != StateConfirmDelete || !strings.Contains(m.View(), "y confirm") || strings.Contains(m.View(), "type") {
+		t.Fatalf("expected delete confirmation modal, state=%v view=%s", m.State, m.View())
 	}
-	for _, r := range "alpha" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(Model)
-	}
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, _ = m.Update(key("y"))
 	m = updated.(Model)
 	if service.deleteTypedName != "alpha" || len(service.deleted) != 1 {
 		t.Fatalf("typed=%q deleted=%v", service.deleteTypedName, service.deleted)

@@ -33,7 +33,7 @@ const (
 	StateNormal InteractionState = iota
 	StateWriteGate
 	StateConfirmQuarantine
-	StateInputDelete
+	StateConfirmDelete
 	StateInputRename
 	StatePreviewRename
 	StateInputRestore
@@ -145,7 +145,9 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateWriteGate(msg)
 	case StateConfirmQuarantine:
 		return m.updateQuarantineConfirm(msg)
-	case StateInputDelete, StateInputRename, StateInputRestore:
+	case StateConfirmDelete:
+		return m.updateDeleteConfirm(msg)
+	case StateInputRename, StateInputRestore:
 		return m.updateInput(msg)
 	case StatePreviewRename:
 		return m.updateRenamePreview(msg)
@@ -178,10 +180,28 @@ func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if err != nil {
 			m.fail(err)
 		} else {
-			m.complete(fmt.Sprintf("quarantined %s -> %s", m.PendingSkill.Name, dest))
+			removed := m.PendingSkill
+			m.removeSkillFromModel(removed)
+			m.complete(fmt.Sprintf("quarantined %s -> %s", removed.Name, dest))
 		}
 	case "n", "N", "esc":
 		m.cancel("quarantine cancelled")
+	}
+	return m, nil
+}
+
+func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "y", "Y":
+		if err := m.Actions.Delete(m.PendingSkill, m.PendingSkill.Name); err != nil {
+			m.fail(err)
+		} else {
+			removed := m.PendingSkill
+			m.removeSkillFromModel(removed)
+			m.complete("deleted " + removed.Name)
+		}
+	case "n", "N", "esc":
+		m.cancel("delete cancelled")
 	}
 	return m, nil
 }
@@ -292,9 +312,8 @@ func (m *Model) continuePendingAfterWriteGate() {
 		m.State = StateConfirmQuarantine
 		m.Message = fmt.Sprintf("Move this exact install into unlearn quarantine?\n%s", skillTarget(m.PendingSkill))
 	case ActionDelete:
-		m.State = StateInputDelete
-		m.Input = ""
-		m.Message = fmt.Sprintf("Permanently delete this exact active skill?\n%s\nType %s to confirm", skillTarget(m.PendingSkill), m.PendingSkill.Name)
+		m.State = StateConfirmDelete
+		m.Message = fmt.Sprintf("Permanently delete this exact active skill?\n%s", skillTarget(m.PendingSkill))
 	case ActionRename:
 		m.State = StateInputRename
 		m.Input = ""
@@ -310,12 +329,6 @@ func (m *Model) continuePendingAfterWriteGate() {
 
 func (m *Model) submitInput() {
 	switch m.State {
-	case StateInputDelete:
-		if err := m.Actions.Delete(m.PendingSkill, m.Input); err != nil {
-			m.fail(err)
-		} else {
-			m.complete("deleted " + m.PendingSkill.Name)
-		}
 	case StateInputRename:
 		if strings.TrimSpace(m.Input) == "" {
 			m.Status = "rename requires a new name"
@@ -412,6 +425,52 @@ func (m Model) selectedFinding() (analysis.Finding, bool) {
 	return analysis.Finding{}, false
 }
 
+func (m *Model) removeSkillFromModel(removed inventory.Skill) {
+	m.Skills = removeSkill(m.Skills, removed)
+	m.SkillGroups = groupedSkills(m.Skills)
+	m.Findings = pruneFindings(m.Findings, removed)
+	if m.Cursor >= m.itemCount() {
+		m.Cursor = max(0, m.itemCount()-1)
+	}
+}
+
+func removeSkill(skills []inventory.Skill, removed inventory.Skill) []inventory.Skill {
+	out := skills[:0]
+	for _, skill := range skills {
+		if !sameSkillInstall(skill, removed) {
+			out = append(out, skill)
+		}
+	}
+	return out
+}
+
+func pruneFindings(findings []analysis.Finding, removed inventory.Skill) []analysis.Finding {
+	out := findings[:0]
+	for _, finding := range findings {
+		finding.Skills = removeSkill(finding.Skills, removed)
+		if keepFindingAfterRemoval(finding) {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+func keepFindingAfterRemoval(finding analysis.Finding) bool {
+	switch finding.Type {
+	case analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap:
+		return len(finding.Skills) > 1
+	default:
+		return len(finding.Skills) > 0
+	}
+}
+
+func sameSkillInstall(a, b inventory.Skill) bool {
+	if a.ID != "" && b.ID != "" {
+		return a.ID == b.ID
+	}
+	return strings.EqualFold(a.Name, b.Name) && a.Root == b.Root && a.EncounteredPath == b.EncounteredPath && a.PrimaryPath == b.PrimaryPath
+}
+
 func (m *Model) resetInteraction() {
 	m.State = StateNormal
 	m.PendingAction = ActionNone
@@ -493,10 +552,15 @@ func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 		mode = "skills"
 	}
 	title := theme.AppTitle.Render("unlearn") + theme.Muted.Render("  cleanup workbench")
+	density := "compact"
+	if m.Density == DensityRich {
+		density = "rich"
+	}
 	stats := []string{
 		theme.Badge.Render(fmt.Sprintf("%d skills", len(m.Skills))),
 		theme.BadgeWarn.Render(fmt.Sprintf("%d findings", len(m.Findings))),
 		theme.Badge.Render(mode),
+		theme.Badge.Render(density),
 	}
 	if m.Status != "" {
 		stats = append(stats, theme.Status.Render(ui.Truncate(m.Status, max(10, width/4))))
@@ -521,10 +585,14 @@ func (m Model) renderList(theme ui.Theme, width, height int) string {
 }
 
 func (m Model) listTitle() string {
-	if m.Mode == ViewSkills {
-		return "Skill inventory"
+	suffix := ""
+	if m.Density == DensityRich {
+		suffix = " · rich"
 	}
-	return "Findings"
+	if m.Mode == ViewSkills {
+		return "Skill inventory" + suffix
+	}
+	return "Findings" + suffix
 }
 
 func (m Model) renderFindingRows(theme ui.Theme, width, height int) []string {
@@ -575,10 +643,12 @@ func findingRowText(finding analysis.Finding, width int) string {
 
 func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 	var lines []string
+	selectedLine := 0
 	for i, group := range m.SkillGroups {
 		prefix := "  "
 		if i == m.Cursor {
 			prefix = "▸ "
+			selectedLine = len(lines)
 		}
 		kind := string(group.Representative.Kind)
 		if kind == "" {
@@ -595,8 +665,14 @@ func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 			line = theme.Row.Render(ui.Truncate(line, width))
 		}
 		lines = append(lines, line)
+		if m.Density == DensityRich {
+			summary := richSkillSummary(group)
+			if summary != "" {
+				lines = append(lines, theme.Muted.Render("  "+ui.Truncate(summary, width-2)))
+			}
+		}
 	}
-	return windowLines(lines, height, m.Cursor)
+	return windowLines(lines, height, selectedLine)
 }
 
 func (m Model) renderModalBody(theme ui.Theme, width, height int) string {
@@ -663,7 +739,7 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 			lines = append(lines, style.Render(ui.Truncate(prefix+installChoiceLabel(skill), width)))
 		}
 	}
-	if m.Input != "" || m.State == StateInputDelete || m.State == StateInputRename || m.State == StateInputRestore {
+	if m.Input != "" || m.State == StateInputRename || m.State == StateInputRestore {
 		lines = append(lines, "", theme.Muted.Render("Input"), theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
 	}
 	lines = append(lines, "", theme.Muted.Render("Options"), optionLineForState(theme, m.State))
@@ -795,11 +871,11 @@ type keyPart struct{ Key, Label string }
 func (m Model) keyParts() []keyPart {
 	if m.State != StateNormal {
 		switch m.State {
-		case StateWriteGate, StateConfirmQuarantine, StatePreviewRename:
+		case StateWriteGate, StateConfirmQuarantine, StateConfirmDelete, StatePreviewRename:
 			return []keyPart{{"y", "confirm"}, {"n", "cancel"}, {"esc", "back"}}
 		case StateSelectInstall:
 			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "select"}, {"esc", "cancel"}}
-		case StateInputDelete, StateInputRename, StateInputRestore:
+		case StateInputRename, StateInputRestore:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		}
 	}
@@ -858,17 +934,28 @@ func padBetween(left, right string, width int) string {
 
 func optionLineForState(theme ui.Theme, state InteractionState) string {
 	switch state {
-	case StateWriteGate, StateConfirmQuarantine, StatePreviewRename:
+	case StateWriteGate, StateConfirmQuarantine, StateConfirmDelete, StatePreviewRename:
 		return theme.Key.Render("y") + " confirm  " + theme.Key.Render("n") + " cancel  " + theme.Key.Render("esc") + " back"
 	case StateSelectInstall:
 		return theme.Key.Render("enter") + " select highlighted install  " + theme.Key.Render("esc") + " cancel"
-	case StateInputDelete:
-		return theme.Key.Render("enter") + " delete after typed name  " + theme.Key.Render("esc") + " cancel"
 	case StateInputRename, StateInputRestore:
 		return theme.Key.Render("enter") + " submit  " + theme.Key.Render("esc") + " cancel"
 	default:
 		return theme.Key.Render("esc") + " back"
 	}
+}
+
+func richSkillSummary(group skillGroup) string {
+	skill := group.Representative
+	var parts []string
+	if skill.Description != "" && !broadGenericDescription(skill.Description) {
+		parts = append(parts, skill.Description)
+	}
+	parts = append(parts, rootSummary(group.Skills, 2))
+	if skill.ActivationRisk != "" {
+		parts = append(parts, "activation "+skill.ActivationRisk)
+	}
+	return strings.Join(parts, " · ")
 }
 
 func (m Model) pendingInstallChoices() []inventory.Skill {
@@ -912,18 +999,18 @@ func skillTarget(skill inventory.Skill) string {
 }
 
 func installChoiceLabel(skill inventory.Skill) string {
-	root := skill.Root
-	if root == "" {
-		root = "unknown root"
-	}
 	path := skill.EncounteredPath
 	if path == "" {
 		path = skill.PrimaryPath
 	}
-	if path == "" {
-		return fmt.Sprintf("%s · %s", skill.Name, root)
+	if path != "" {
+		return fmt.Sprintf("%s · %s", skill.Name, path)
 	}
-	return fmt.Sprintf("%s · %s · %s", skill.Name, root, path)
+	root := skill.Root
+	if root == "" {
+		root = "unknown root"
+	}
+	return fmt.Sprintf("%s · %s", skill.Name, root)
 }
 
 func broadGenericDescription(description string) bool {

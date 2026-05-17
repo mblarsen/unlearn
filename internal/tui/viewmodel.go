@@ -173,6 +173,9 @@ func tokenRange(skills []inventory.Skill) string {
 			high = skill.UpperTokens
 		}
 	}
+	if low == high {
+		return compactNumber(low)
+	}
 	return fmt.Sprintf("%s–%s", compactNumber(low), compactNumber(high))
 }
 

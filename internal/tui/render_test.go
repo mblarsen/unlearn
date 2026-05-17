@@ -61,6 +61,35 @@ func TestSkillDetailsSuppressesBroadGenericFixtureDescription(t *testing.T) {
 	}
 }
 
+func TestTokenRangeCollapsesEqualBounds(t *testing.T) {
+	skills := []inventory.Skill{{Name: "caveman", Kind: inventory.KindDirectory, LowerTokens: 2600, UpperTokens: 2600}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "2.6k–2.6k") || !strings.Contains(view, "2.6k") {
+		t.Fatalf("equal token bounds should render as one number:\n%s", view)
+	}
+}
+
+func TestDensityToggleChangesSkillListRendering(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Description: "Alpha-specific browser automation helper", Root: "/one", LowerTokens: 100, UpperTokens: 200}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	compact := m.View()
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	m = updated.(Model)
+	rich := m.View()
+	if compact == rich || !strings.Contains(rich, "rich") || !strings.Contains(rich, "Alpha-specific") {
+		t.Fatalf("density toggle should visibly change rendering:\ncompact:\n%s\nrich:\n%s", compact, rich)
+	}
+}
+
 func TestSkillInventoryGroupsDuplicateInstalls(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "alpha", Root: "/one", LowerTokens: 1000, UpperTokens: 3000},
