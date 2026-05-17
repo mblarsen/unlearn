@@ -152,6 +152,35 @@ func TestDashboardRequiresInstallChoiceForDuplicateFindingActions(t *testing.T) 
 	if len(service.quarantinedRoot) != 1 || service.quarantinedRoot[0] != "/two" {
 		t.Fatalf("quarantined roots=%v", service.quarantinedRoot)
 	}
+	if strings.Contains(m.View(), "3 installs") || !strings.Contains(m.View(), "2 installs") {
+		t.Fatalf("quarantine should update duplicate count in current view:\n%s", m.View())
+	}
+}
+
+func TestDashboardDeleteUpdatesDuplicateFindingCount(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/two": true}}
+	skills := []inventory.Skill{
+		{Name: "alpha", Root: "/one", EncounteredPath: "/one/alpha", PrimaryPath: "/one/alpha/SKILL.md"},
+		{Name: "alpha", Root: "/two", EncounteredPath: "/two/alpha", PrimaryPath: "/two/alpha/SKILL.md"},
+		{Name: "alpha", Root: "/three", EncounteredPath: "/three/alpha", PrimaryPath: "/three/alpha/SKILL.md"},
+	}
+	finding := analysis.Finding{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills}
+	m := NewWithActions(skills, []analysis.Finding{finding}, service)
+	updated, _ := m.Update(key("D"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(key("y"))
+	m = updated.(Model)
+	if len(service.deletedRoot) != 1 || service.deletedRoot[0] != "/two" {
+		t.Fatalf("deleted roots=%v", service.deletedRoot)
+	}
+	view := m.View()
+	if strings.Contains(view, "3 installs") || !strings.Contains(view, "2 installs") {
+		t.Fatalf("delete should update duplicate count in current view:\n%s", view)
+	}
 }
 
 func TestDashboardDeleteUsesModalConfirmation(t *testing.T) {

@@ -473,7 +473,7 @@ func (m *Model) removeSkillFromModel(removed inventory.Skill) {
 }
 
 func removeSkill(skills []inventory.Skill, removed inventory.Skill) []inventory.Skill {
-	out := skills[:0]
+	out := make([]inventory.Skill, 0, len(skills))
 	for _, skill := range skills {
 		if !sameSkillInstall(skill, removed) {
 			out = append(out, skill)
@@ -483,7 +483,7 @@ func removeSkill(skills []inventory.Skill, removed inventory.Skill) []inventory.
 }
 
 func pruneFindings(findings []analysis.Finding, removed inventory.Skill) []analysis.Finding {
-	out := findings[:0]
+	out := make([]analysis.Finding, 0, len(findings))
 	for _, finding := range findings {
 		finding.Skills = removeSkill(finding.Skills, removed)
 		if keepFindingAfterRemoval(finding) {
@@ -503,10 +503,30 @@ func keepFindingAfterRemoval(finding analysis.Finding) bool {
 }
 
 func sameSkillInstall(a, b inventory.Skill) bool {
-	if a.ID != "" && b.ID != "" {
-		return a.ID == b.ID
+	if a.ID != "" && b.ID != "" && a.ID == b.ID {
+		return true
 	}
-	return strings.EqualFold(a.Name, b.Name) && a.Root == b.Root && a.EncounteredPath == b.EncounteredPath && a.PrimaryPath == b.PrimaryPath
+	if a.EncounteredPath != "" && b.EncounteredPath != "" && a.EncounteredPath == b.EncounteredPath {
+		return true
+	}
+	if a.PrimaryPath != "" && b.PrimaryPath != "" && a.PrimaryPath == b.PrimaryPath {
+		return true
+	}
+	if !strings.EqualFold(a.Name, b.Name) || a.Root != b.Root {
+		return false
+	}
+	aPath := firstNonEmpty(a.EncounteredPath, a.PrimaryPath)
+	bPath := firstNonEmpty(b.EncounteredPath, b.PrimaryPath)
+	return aPath == "" || bPath == "" || aPath == bPath
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func (m *Model) resetInteraction() {

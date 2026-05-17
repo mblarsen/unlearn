@@ -63,6 +63,9 @@ func (s Scanner) scanRoot(root string) ([]Skill, error) {
 	}
 	var skills []Skill
 	for _, entry := range entries {
+		if ignoreRootEntry(entry.Name()) {
+			continue
+		}
 		path := filepath.Join(root, entry.Name())
 		info, lstatErr := os.Lstat(path)
 		if lstatErr != nil {
@@ -191,6 +194,10 @@ func unknownSkill(root, encountered, resolved string, isSymlink bool, name strin
 		Provenance:      inferProvenance(root, encountered, resolved, isSymlink),
 		ScannedAt:       time.Now(),
 	}
+}
+
+func ignoreRootEntry(name string) bool {
+	return name == ".system"
 }
 
 func resolve(path string) (string, bool) {

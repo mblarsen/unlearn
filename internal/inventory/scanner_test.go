@@ -31,6 +31,19 @@ func TestScannerFindsDirectoryMarkdownAndBrokenReferences(t *testing.T) {
 	}
 }
 
+func TestScannerIgnoresCodexSystemDirectory(t *testing.T) {
+	root := t.TempDir()
+	write(t, filepath.Join(root, ".system", "README.md"), "global skill root metadata")
+	write(t, filepath.Join(root, "alpha", "SKILL.md"), "---\nname: alpha\ndescription: Alpha skill\n---\nBody")
+	report, err := NewScanner().Scan(ScanOptions{Roots: []string{root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Skills) != 1 || report.Skills[0].Name != "alpha" {
+		t.Fatalf("expected .system to be ignored, got %#v", report.Skills)
+	}
+}
+
 func TestScannerRecordsBrokenSymlink(t *testing.T) {
 	root := t.TempDir()
 	if err := os.Symlink(filepath.Join(root, "missing"), filepath.Join(root, "broken")); err != nil {
