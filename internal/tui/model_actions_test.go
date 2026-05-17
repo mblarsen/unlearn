@@ -186,6 +186,27 @@ func TestDashboardCanQuarantineAllDuplicateInstalls(t *testing.T) {
 	}
 }
 
+func TestDashboardTabFocusesDuplicateInstallDefaultAction(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/two": true}}
+	skills := []inventory.Skill{
+		{Name: "alpha", Description: "Alpha in one", Root: "/one", EncounteredPath: "/one/alpha", PrimaryPath: "/one/alpha/SKILL.md"},
+		{Name: "alpha", Description: "Alpha in two", Root: "/two", EncounteredPath: "/two/alpha", PrimaryPath: "/two/alpha/SKILL.md"},
+	}
+	finding := analysis.Finding{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills}
+	m := NewWithActions(skills, []analysis.Finding{finding}, service)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyTab})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "Alpha in two") {
+		t.Fatalf("expected second install description after tab:\n%s", view)
+	}
+	updated, _ = m.Update(key("ctrl+d"))
+	m = updated.(Model)
+	if m.State != StateSelectInstall || m.InstallCursor != 1 {
+		t.Fatalf("expected action chooser to focus detail-selected install, state=%v cursor=%d", m.State, m.InstallCursor)
+	}
+}
+
 func TestDashboardRequiresInstallChoiceForDuplicateFindingActions(t *testing.T) {
 	service := &fakeActionService{writeRoots: map[string]bool{"/two": true}}
 	skills := []inventory.Skill{

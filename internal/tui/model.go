@@ -57,15 +57,16 @@ type batchRootChoice struct {
 }
 
 type Model struct {
-	Skills      []inventory.Skill
-	SkillGroups []skillGroup
-	Findings    []analysis.Finding
-	Actions     ActionService
-	Mode        ViewMode
-	Density     Density
-	Cursor      int
-	Width       int
-	Height      int
+	Skills       []inventory.Skill
+	SkillGroups  []skillGroup
+	Findings     []analysis.Finding
+	Actions      ActionService
+	Mode         ViewMode
+	Density      Density
+	Cursor       int
+	DetailCursor int
+	Width        int
+	Height       int
 
 	State             InteractionState
 	PendingAction     PendingAction
@@ -118,17 +119,25 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "j", "down":
 		if m.Cursor < m.itemCount()-1 {
 			m.Cursor++
+			m.DetailCursor = 0
 		}
 	case "k", "up":
 		if m.Cursor > 0 {
 			m.Cursor--
+			m.DetailCursor = 0
 		}
+	case "tab":
+		m.moveDetailCursor(1)
+	case "shift+tab":
+		m.moveDetailCursor(-1)
 	case "s":
 		m.Mode = ViewSkills
 		m.Cursor = 0
+		m.DetailCursor = 0
 	case "f":
 		m.Mode = ViewFindings
 		m.Cursor = 0
+		m.DetailCursor = 0
 	case "r":
 		if m.Density == DensityCompact {
 			m.Density = DensityRich
@@ -389,7 +398,7 @@ func (m *Model) beginSkillAction(action PendingAction) {
 		if finding, ok := m.selectedFinding(); ok && len(finding.Skills) > 1 {
 			m.PendingFinding = finding
 			m.PendingSkill = inventory.Skill{}
-			m.InstallCursor = 0
+			m.InstallCursor = m.clampedDetailCursor(finding)
 			m.State = StateSelectInstall
 			m.Message = fmt.Sprintf("Choose the exact %s install to %s", finding.Title, actionVerb(action))
 			return
@@ -539,7 +548,35 @@ func (m *Model) selectedSkill() (inventory.Skill, bool) {
 	if !ok || len(finding.Skills) == 0 {
 		return inventory.Skill{}, false
 	}
-	return finding.Skills[0], true
+	return finding.Skills[m.clampedDetailCursor(finding)], true
+}
+
+func (m *Model) moveDetailCursor(delta int) {
+	if m.Mode != ViewFindings {
+		return
+	}
+	finding, ok := m.selectedFinding()
+	if !ok || len(finding.Skills) == 0 {
+		m.DetailCursor = 0
+		return
+	}
+	m.DetailCursor += delta
+	if m.DetailCursor < 0 {
+		m.DetailCursor = len(finding.Skills) - 1
+	}
+	if m.DetailCursor >= len(finding.Skills) {
+		m.DetailCursor = 0
+	}
+}
+
+func (m Model) clampedDetailCursor(finding analysis.Finding) int {
+	if len(finding.Skills) == 0 || m.DetailCursor < 0 {
+		return 0
+	}
+	if m.DetailCursor >= len(finding.Skills) {
+		return len(finding.Skills) - 1
+	}
+	return m.DetailCursor
 }
 
 func (m Model) selectedSkillGroup() (skillGroup, bool) {
@@ -964,6 +1001,7 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	if !ok {
 		return []string{"", theme.Muted.Render("Nothing selected")}
 	}
+	selected := m.clampedDetailCursor(finding)
 	lines := []string{"", findingBadge(theme, finding.Type) + " " + theme.Accent.Render(ui.Truncate(finding.Title, width-12)), ""}
 	for _, reason := range finding.Reasons {
 		lines = appendBullet(lines, theme, reason, width)
@@ -971,20 +1009,27 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	lines = append(lines, "", theme.Section.Render("Summary"))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+installLabel(len(finding.Skills))+" across "+rootSummary(finding.Skills, 2), width)))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
-	lines = append(lines, "", theme.Section.Render("Instances"))
-	limit := max(1, height-len(lines)-1)
-	if limit > 4 {
-		limit = 4
+	if len(finding.Skills) > 1 {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• tab cycles install focus for actions", width)))
 	}
+	lines = append(lines, "", theme.Section.Render("Compare installs"))
 	for i, skill := range finding.Skills {
-		if i >= limit {
-			lines = append(lines, theme.Muted.Render(ui.Truncate(fmt.Sprintf("… %d more installs", len(finding.Skills)-i), width)))
-			break
+		prefix := "  "
+		style := theme.Row
+		if i == selected {
+			prefix = "▸ "
+			style = theme.SelectedRow.Width(width)
 		}
 		root := strings.TrimPrefix(skill.Root, homePrefix())
-		meta := fmt.Sprintf("%s · %s tokens · %s", root, tokenRange([]inventory.Skill{skill}), riskLabel(skill.ActivationRisk))
-		lines = append(lines, theme.Row.Render(ui.Truncate("▸ "+skill.Name, width)))
-		lines = append(lines, theme.Muted.Render(ui.Truncate("  "+meta, width)))
+		meta := fmt.Sprintf("%s · %s · %s", root, tokenRange([]inventory.Skill{skill}), riskLabel(skill.ActivationRisk))
+		desc := descriptionSnippet(skill, 32)
+		if desc != "" {
+			meta += " · " + desc
+		}
+		lines = append(lines, style.Render(ui.Truncate(prefix+meta, width)))
+		if i == selected && m.Density == DensityRich {
+			lines = append(lines, renderSelectedInstallDetails(theme, skill, width)...)
+		}
 	}
 	return lines
 }
@@ -1098,7 +1143,7 @@ func (m Model) keyParts() []keyPart {
 	}
 	parts := []keyPart{{"↑↓/jk", "move"}, {"r", "density"}}
 	if m.Mode == ViewFindings {
-		parts = append(parts, keyPart{"s", "skills"}, keyPart{"ctrl+g", "ignore"})
+		parts = append(parts, keyPart{"s", "skills"}, keyPart{"tab", "install"}, keyPart{"ctrl+g", "ignore"})
 	} else {
 		parts = append(parts, keyPart{"f", "findings"})
 	}
@@ -1234,6 +1279,35 @@ func optionLineForState(theme ui.Theme, state InteractionState) string {
 	default:
 		return theme.Key.Render("esc") + " back"
 	}
+}
+
+func renderSelectedInstallDetails(theme ui.Theme, skill inventory.Skill, width int) []string {
+	var lines []string
+	description := skill.Description
+	if broadGenericDescription(description) {
+		description = "Description is broad and not distinctive."
+	}
+	if description != "" {
+		for _, line := range ui.Wrap(description, width-4) {
+			lines = append(lines, theme.Row.Render(ui.Truncate("    "+line, width)))
+		}
+	}
+	path := firstNonEmpty(skill.EncounteredPath, skill.PrimaryPath)
+	if path != "" {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("    path "+path, width)))
+	}
+	if skill.Provenance != "" {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("    provenance "+skill.Provenance, width)))
+	}
+	return lines
+}
+
+func descriptionSnippet(skill inventory.Skill, width int) string {
+	description := strings.TrimSpace(skill.Description)
+	if description == "" || broadGenericDescription(description) {
+		return ""
+	}
+	return ui.Truncate(description, width)
 }
 
 func richSkillSummary(group skillGroup) string {
