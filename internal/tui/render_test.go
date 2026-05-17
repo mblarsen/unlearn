@@ -48,6 +48,19 @@ func TestFindingListScrollsToSelectedGroup(t *testing.T) {
 	}
 }
 
+func TestSkillDetailsSuppressesBroadGenericFixtureDescription(t *testing.T) {
+	skills := []inventory.Skill{{Name: "fastmail", Description: "Use this skill to plan build create design implement review fix improve optimize enhance refactor check many things across content long product areas.", Root: "/tmp/root", LowerTokens: 10, UpperTokens: 20}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "plan build create") || !strings.Contains(view, "Description is broad") || !strings.Contains(view, "distinctive") {
+		t.Fatalf("generic fixture description should be replaced with safety copy:\n%s", view)
+	}
+}
+
 func TestSkillInventoryGroupsDuplicateInstalls(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "alpha", Root: "/one", LowerTokens: 1000, UpperTokens: 3000},

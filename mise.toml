@@ -13,6 +13,10 @@ run = "mise install && pre-commit install --install-hooks --hook-type pre-commit
 description = "Run all pre-commit checks"
 run = "pre-commit run --all-files"
 
+[tasks.build]
+description = "Build the unlearn CLI"
+run = "go build -o unlearn ."
+
 [tasks.fmt]
 description = "Format Go files"
 run = "goimports -w ."

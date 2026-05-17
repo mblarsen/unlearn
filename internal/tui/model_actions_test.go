@@ -15,6 +15,7 @@ type fakeActionService struct {
 	kept            []string
 	ignored         []string
 	quarantined     []string
+	quarantinedRoot []string
 	deleted         []string
 	renamed         []string
 	restored        []string
@@ -39,6 +40,7 @@ func (f *fakeActionService) AllowWrite(root string) error {
 }
 func (f *fakeActionService) Quarantine(skill inventory.Skill) (string, error) {
 	f.quarantined = append(f.quarantined, skill.Name)
+	f.quarantinedRoot = append(f.quarantinedRoot, skill.Root)
 	return "/quarantine/" + skill.Name, nil
 }
 func (f *fakeActionService) Delete(skill inventory.Skill, typedName string) error {
@@ -78,18 +80,46 @@ func TestDashboardQuarantineRequiresWriteGateAndConfirmation(t *testing.T) {
 	m := testModel(service)
 	updated, _ := m.Update(key("Q"))
 	m = updated.(Model)
-	if m.State != StateWriteGate || !strings.Contains(m.View(), "y confirm") {
-		t.Fatalf("expected write gate, state=%v view=%s", m.State, m.View())
+	if m.State != StateWriteGate || !strings.Contains(m.View(), "this exact install") || !strings.Contains(m.View(), "/root/alpha") {
+		t.Fatalf("expected exact write gate, state=%v view=%s", m.State, m.View())
 	}
 	updated, _ = m.Update(key("y"))
 	m = updated.(Model)
-	if m.State != StateConfirmQuarantine {
-		t.Fatalf("expected quarantine confirmation, state=%v", m.State)
+	if m.State != StateConfirmQuarantine || !strings.Contains(m.View(), "/root/alpha") {
+		t.Fatalf("expected quarantine confirmation with target, state=%v view=%s", m.State, m.View())
 	}
 	updated, _ = m.Update(key("y"))
 	m = updated.(Model)
 	if m.State != StateNormal || len(service.quarantined) != 1 || service.quarantined[0] != "alpha" {
 		t.Fatalf("state=%v quarantined=%v", m.State, service.quarantined)
+	}
+}
+
+func TestDashboardRequiresInstallChoiceForDuplicateFindingActions(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/two": true}}
+	skills := []inventory.Skill{
+		{Name: "alpha", Root: "/one", EncounteredPath: "/one/alpha", PrimaryPath: "/one/alpha/SKILL.md"},
+		{Name: "alpha", Root: "/two", EncounteredPath: "/two/alpha", PrimaryPath: "/two/alpha/SKILL.md"},
+		{Name: "alpha", Root: "/three", EncounteredPath: "/three/alpha", PrimaryPath: "/three/alpha/SKILL.md"},
+	}
+	finding := analysis.Finding{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills}
+	m := NewWithActions(skills, []analysis.Finding{finding}, service)
+	updated, _ := m.Update(key("Q"))
+	m = updated.(Model)
+	if m.State != StateSelectInstall || !strings.Contains(m.View(), "CHOOSE INSTALL") || !strings.Contains(m.View(), "/one/alpha") || !strings.Contains(m.View(), "/three/alpha") {
+		t.Fatalf("expected install chooser before quarantine:\n%s", m.View())
+	}
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateConfirmQuarantine || m.PendingSkill.Root != "/two" {
+		t.Fatalf("expected selected /two confirm, state=%v skill=%#v view=%s", m.State, m.PendingSkill, m.View())
+	}
+	updated, _ = m.Update(key("y"))
+	m = updated.(Model)
+	if len(service.quarantinedRoot) != 1 || service.quarantinedRoot[0] != "/two" {
+		t.Fatalf("quarantined roots=%v", service.quarantinedRoot)
 	}
 }
 

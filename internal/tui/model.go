@@ -37,6 +37,7 @@ const (
 	StateInputRename
 	StatePreviewRename
 	StateInputRestore
+	StateSelectInstall
 )
 
 type PendingAction int
@@ -64,6 +65,7 @@ type Model struct {
 	PendingAction  PendingAction
 	PendingSkill   inventory.Skill
 	PendingFinding analysis.Finding
+	InstallCursor  int
 	Input          string
 	Message        string
 	Status         string
@@ -147,6 +149,8 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateInput(msg)
 	case StatePreviewRename:
 		return m.updateRenamePreview(msg)
+	case StateSelectInstall:
+		return m.updateInstallSelection(msg)
 	default:
 		m.resetInteraction()
 		return m, nil
@@ -201,6 +205,30 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	skills := m.pendingInstallChoices()
+	switch msg.String() {
+	case "j", "down":
+		if m.InstallCursor < len(skills)-1 {
+			m.InstallCursor++
+		}
+	case "k", "up":
+		if m.InstallCursor > 0 {
+			m.InstallCursor--
+		}
+	case "enter":
+		if len(skills) == 0 {
+			m.cancel("no install selected")
+			return m, nil
+		}
+		m.PendingSkill = skills[m.InstallCursor]
+		m.continuePendingWithSelectedSkill()
+	case "esc", "q":
+		m.cancel("action cancelled")
+	}
+	return m, nil
+}
+
 func (m Model) updateRenamePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
@@ -221,16 +249,38 @@ func (m Model) updateRenamePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) beginSkillAction(action PendingAction) {
+	m.PendingAction = action
+	if action != ActionRestore {
+		if finding, ok := m.selectedFinding(); ok && len(finding.Skills) > 1 {
+			m.PendingFinding = finding
+			m.PendingSkill = inventory.Skill{}
+			m.InstallCursor = 0
+			m.State = StateSelectInstall
+			m.Message = fmt.Sprintf("Choose the exact %s install to %s", finding.Title, actionVerb(action))
+			return
+		}
+		if group, ok := m.selectedSkillGroup(); ok && len(group.Skills) > 1 {
+			m.PendingFinding = analysis.Finding{Title: group.Name, Skills: group.Skills}
+			m.PendingSkill = inventory.Skill{}
+			m.InstallCursor = 0
+			m.State = StateSelectInstall
+			m.Message = fmt.Sprintf("Choose the exact %s install to %s", group.Name, actionVerb(action))
+			return
+		}
+	}
 	skill, ok := m.selectedSkill()
 	if !ok {
 		m.Status = "no skill selected"
 		return
 	}
-	m.PendingAction = action
 	m.PendingSkill = skill
-	if !m.Actions.CanWrite(skill.Root) {
+	m.continuePendingWithSelectedSkill()
+}
+
+func (m *Model) continuePendingWithSelectedSkill() {
+	if !m.Actions.CanWrite(m.PendingSkill.Root) {
 		m.State = StateWriteGate
-		m.Message = fmt.Sprintf("Allow write access for %s?", skill.Root)
+		m.Message = fmt.Sprintf("Allow write access for this exact install?\n%s", skillTarget(m.PendingSkill))
 		return
 	}
 	m.continuePendingAfterWriteGate()
@@ -240,15 +290,15 @@ func (m *Model) continuePendingAfterWriteGate() {
 	switch m.PendingAction {
 	case ActionQuarantine:
 		m.State = StateConfirmQuarantine
-		m.Message = fmt.Sprintf("Move %s into unlearn quarantine?", m.PendingSkill.Name)
+		m.Message = fmt.Sprintf("Move this exact install into unlearn quarantine?\n%s", skillTarget(m.PendingSkill))
 	case ActionDelete:
 		m.State = StateInputDelete
 		m.Input = ""
-		m.Message = fmt.Sprintf("Type %s to permanently delete active skill", m.PendingSkill.Name)
+		m.Message = fmt.Sprintf("Permanently delete this exact active skill?\n%s\nType %s to confirm", skillTarget(m.PendingSkill), m.PendingSkill.Name)
 	case ActionRename:
 		m.State = StateInputRename
 		m.Input = ""
-		m.Message = fmt.Sprintf("New name for %s", m.PendingSkill.Name)
+		m.Message = fmt.Sprintf("Rename this exact install?\n%s\nNew name", skillTarget(m.PendingSkill))
 	case ActionRestore:
 		m.State = StateInputRestore
 		m.Input = ""
@@ -326,13 +376,24 @@ func (m *Model) selectedSkill() (inventory.Skill, bool) {
 		return inventory.Skill{}, false
 	}
 	if m.Mode == ViewSkills {
-		return m.SkillGroups[m.Cursor].Representative, true
+		group, ok := m.selectedSkillGroup()
+		if !ok {
+			return inventory.Skill{}, false
+		}
+		return group.Representative, true
 	}
 	finding, ok := m.selectedFinding()
 	if !ok || len(finding.Skills) == 0 {
 		return inventory.Skill{}, false
 	}
 	return finding.Skills[0], true
+}
+
+func (m Model) selectedSkillGroup() (skillGroup, bool) {
+	if m.Mode != ViewSkills || len(m.SkillGroups) == 0 || m.Cursor < 0 || m.Cursor >= len(m.SkillGroups) {
+		return skillGroup{}, false
+	}
+	return m.SkillGroups[m.Cursor], true
 }
 
 func (m Model) selectedFinding() (analysis.Finding, bool) {
@@ -356,6 +417,7 @@ func (m *Model) resetInteraction() {
 	m.PendingAction = ActionNone
 	m.PendingSkill = inventory.Skill{}
 	m.PendingFinding = analysis.Finding{}
+	m.InstallCursor = 0
 	m.Input = ""
 	m.Message = ""
 	m.RenamePreview = fsactions.RenamePreview{}
@@ -551,9 +613,25 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 }
 
 func (m Model) renderInteraction(theme ui.Theme, width int) []string {
-	lines := []string{"", theme.BadgeWarn.Render("CONFIRM"), ""}
+	label := "CONFIRM"
+	if m.State == StateSelectInstall {
+		label = "CHOOSE INSTALL"
+	}
+	lines := []string{"", theme.BadgeWarn.Render(label), ""}
 	for _, line := range ui.Wrap(m.Message, width) {
 		lines = append(lines, theme.Row.Render(line))
+	}
+	if m.State == StateSelectInstall {
+		lines = append(lines, "")
+		for i, skill := range m.pendingInstallChoices() {
+			prefix := "  "
+			style := theme.Row
+			if i == m.InstallCursor {
+				prefix = "▸ "
+				style = theme.SelectedRow.Width(width)
+			}
+			lines = append(lines, style.Render(ui.Truncate(prefix+installChoiceLabel(skill), width)))
+		}
 	}
 	if m.Input != "" || m.State == StateInputDelete || m.State == StateInputRename || m.State == StateInputRestore {
 		lines = append(lines, "", theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
@@ -594,8 +672,12 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 func (m Model) renderSkillGroupDetails(theme ui.Theme, width, height int, group skillGroup) []string {
 	skill := group.Representative
 	lines := []string{"", theme.Accent.Render(ui.Truncate(group.Name, width)) + " " + theme.Badge.Render(installLabel(len(group.Skills))), ""}
-	if skill.Description != "" {
-		for _, line := range ui.Wrap(skill.Description, width) {
+	description := skill.Description
+	if broadGenericDescription(description) {
+		description = "Description is broad and not distinctive; review the exact install paths below before acting."
+	}
+	if description != "" {
+		for _, line := range ui.Wrap(description, width) {
 			lines = append(lines, theme.Row.Render(line))
 		}
 		lines = append(lines, "")
@@ -684,6 +766,8 @@ func (m Model) keyParts() []keyPart {
 		switch m.State {
 		case StateWriteGate, StateConfirmQuarantine, StatePreviewRename:
 			return []keyPart{{"y", "confirm"}, {"n", "cancel"}, {"esc", "back"}}
+		case StateSelectInstall:
+			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "select"}, {"esc", "cancel"}}
 		case StateInputDelete, StateInputRename, StateInputRestore:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		}
@@ -739,6 +823,76 @@ func padBetween(left, right string, width int) string {
 		return ui.Truncate(left, width-rightWidth-1) + " " + right
 	}
 	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
+}
+
+func (m Model) pendingInstallChoices() []inventory.Skill {
+	if len(m.PendingFinding.Skills) > 0 {
+		return m.PendingFinding.Skills
+	}
+	if m.PendingSkill.Name != "" {
+		return []inventory.Skill{m.PendingSkill}
+	}
+	return nil
+}
+
+func actionVerb(action PendingAction) string {
+	switch action {
+	case ActionQuarantine:
+		return "quarantine"
+	case ActionDelete:
+		return "delete"
+	case ActionRename:
+		return "rename"
+	case ActionRestore:
+		return "restore"
+	default:
+		return "act on"
+	}
+}
+
+func skillTarget(skill inventory.Skill) string {
+	parts := []string{skill.Name}
+	if skill.Root != "" {
+		parts = append(parts, "root "+skill.Root)
+	}
+	path := skill.EncounteredPath
+	if path == "" {
+		path = skill.PrimaryPath
+	}
+	if path != "" {
+		parts = append(parts, "path "+path)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func installChoiceLabel(skill inventory.Skill) string {
+	root := skill.Root
+	if root == "" {
+		root = "unknown root"
+	}
+	path := skill.EncounteredPath
+	if path == "" {
+		path = skill.PrimaryPath
+	}
+	if path == "" {
+		return fmt.Sprintf("%s · %s", skill.Name, root)
+	}
+	return fmt.Sprintf("%s · %s · %s", skill.Name, root, path)
+}
+
+func broadGenericDescription(description string) bool {
+	text := strings.ToLower(description)
+	if strings.Contains(text, "plan build create design implement review fix improve optimize enhance refactor check") {
+		return true
+	}
+	genericActions := []string{"plan", "build", "create", "design", "implement", "review", "fix", "improve", "optimize", "enhance", "refactor", "check"}
+	matches := 0
+	for _, action := range genericActions {
+		if strings.Contains(text, action) {
+			matches++
+		}
+	}
+	return matches >= 8 && strings.Contains(text, "many things")
 }
 
 func appendBullet(lines []string, theme ui.Theme, value string, width int) []string {
