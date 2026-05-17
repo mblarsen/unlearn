@@ -62,16 +62,29 @@ func Load(path string) (Config, error) {
 }
 
 func (c Config) Save(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	f, err := os.Create(path)
+	f, err := os.CreateTemp(dir, ".unlearn-config-*.toml")
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	tmp := f.Name()
+	defer os.Remove(tmp)
 	enc := toml.NewEncoder(f)
-	return enc.Encode(c)
+	if err := enc.Encode(c); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 func (c Config) IsTrusted(root string) bool {

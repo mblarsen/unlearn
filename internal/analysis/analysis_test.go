@@ -32,6 +32,14 @@ func TestAnalyzeDetectsOverlapHighTokenBroadActivationAndUnseen(t *testing.T) {
 	assertHasType(t, findings, FindingUnseen)
 }
 
+func TestAnalyzeUsageEvidenceMatchesSkillNamesCaseInsensitively(t *testing.T) {
+	skills := []inventory.Skill{{Name: "MySkill", ID: "a", ContentHash: "a"}}
+	findings := Analyze(skills, Options{UsageEvidence: UsageEvidence{"myskill": "strong"}})
+	if countType(findings, FindingUnseen) != 0 {
+		t.Fatalf("mixed-case skill was falsely marked unseen: %#v", findings)
+	}
+}
+
 func TestAnalyzeConsolidatesSameNameSingleSkillFindings(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "macos-calendar", ID: "a", ContentHash: "a", UpperTokens: 5000, LowerTokens: 2000, ActivationRisk: "high", Root: "/one"},

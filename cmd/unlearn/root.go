@@ -342,9 +342,17 @@ func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
 		cfg.LLMAssisted = true
 		changed = true
 	}
-	if len(opts.historyJSONL) > 0 && !cfg.HistoryScan {
-		cfg.HistoryScan = true
-		changed = true
+	if len(opts.historyJSONL) > 0 {
+		if !cfg.HistoryScan {
+			cfg.HistoryScan = true
+			changed = true
+		}
+		for _, path := range opts.historyJSONL {
+			if !containsString(cfg.HistoryJSONL, path) {
+				cfg.HistoryJSONL = append(cfg.HistoryJSONL, path)
+				changed = true
+			}
+		}
 	}
 	if changed {
 		if err := cfg.Save(paths.ConfigPath); err != nil {
@@ -352,6 +360,15 @@ func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func containsString(values []string, value string) bool {
+	for _, existing := range values {
+		if existing == value {
+			return true
+		}
+	}
+	return false
 }
 
 func pathsFromOptions(opts *cliOptions) (state.Paths, error) {

@@ -99,8 +99,8 @@ func TestAuditHistoryJSONLAddsUnseenFindings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(cfg), "history_scan = true") {
-		t.Fatalf("history opt-in not persisted:\n%s", cfg)
+	if !strings.Contains(string(cfg), "history_scan = true") || !strings.Contains(string(cfg), historyPath) {
+		t.Fatalf("history opt-in/paths not persisted:\n%s", cfg)
 	}
 }
 

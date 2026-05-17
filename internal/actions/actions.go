@@ -27,7 +27,7 @@ func (m Manager) Quarantine(skill inventory.Skill, confirm bool) (string, error)
 	if !confirm {
 		return "", ErrConfirmationRequired
 	}
-	timestamp := time.Now().UTC().Format("20060102T150405Z")
+	timestamp := time.Now().UTC().Format("20060102T150405.000000000Z")
 	dest := filepath.Join(m.QuarantineDir, timestamp, safeName(skill.Name))
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", err
@@ -56,6 +56,9 @@ func (m Manager) QuarantinedSkills() ([]string, error) {
 }
 
 func (m Manager) Restore(name string, destRoot string) (string, error) {
+	if !m.Config.CanWrite(destRoot) {
+		return "", ErrWritePermissionRequired
+	}
 	matches, err := filepath.Glob(filepath.Join(m.QuarantineDir, "*", safeName(name)))
 	if err != nil {
 		return "", err
@@ -108,25 +111,45 @@ func Rename(skill inventory.Skill, newName string, cfg config.Config, confirm bo
 	if preview.Warn != "" {
 		return preview, errors.New(preview.Warn)
 	}
-	if skill.PrimaryPath != "" && preview.WouldModifyMD {
-		data, err := os.ReadFile(skill.PrimaryPath)
-		if err != nil {
-			return preview, err
-		}
-		oldLine := "name: " + skill.Name
-		newLine := "name: " + newName
-		updated := strings.Replace(string(data), oldLine, newLine, 1)
-		if updated == string(data) {
-			updated = strings.Replace(string(data), "name: \""+skill.Name+"\"", "name: \""+newName+"\"", 1)
-		}
-		if err := os.WriteFile(skill.PrimaryPath, []byte(updated), 0o644); err != nil {
-			return preview, err
-		}
+	if _, err := os.Stat(preview.NewPath); err == nil {
+		return preview, fmt.Errorf("rename destination already exists: %s", preview.NewPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return preview, err
 	}
 	if err := os.Rename(skill.EncounteredPath, preview.NewPath); err != nil {
 		return preview, err
 	}
+	if skill.PrimaryPath != "" && preview.WouldModifyMD {
+		newPrimaryPath := filepath.Join(preview.NewPath, filepath.Base(skill.PrimaryPath))
+		data, err := os.ReadFile(newPrimaryPath)
+		if err != nil {
+			_ = os.Rename(preview.NewPath, skill.EncounteredPath)
+			return preview, err
+		}
+		updated, changed := updateSkillNameFrontmatter(string(data), skill.Name, newName)
+		if changed {
+			if err := os.WriteFile(newPrimaryPath, []byte(updated), 0o644); err != nil {
+				_ = os.Rename(preview.NewPath, skill.EncounteredPath)
+				return preview, err
+			}
+		}
+	}
 	return preview, nil
+}
+
+func updateSkillNameFrontmatter(content, oldName, newName string) (string, bool) {
+	lines := strings.SplitAfter(content, "\n")
+	for i, line := range lines {
+		trimmed := strings.TrimRight(line, "\r\n")
+		lineEnding := strings.TrimPrefix(line, trimmed)
+		for _, oldLine := range []string{"name: " + oldName, "name: \"" + oldName + "\"", "name: '" + oldName + "'"} {
+			if trimmed == oldLine {
+				lines[i] = "name: " + newName + lineEnding
+				return strings.Join(lines, ""), true
+			}
+		}
+	}
+	return content, false
 }
 
 func DeleteActive(skill inventory.Skill, cfg config.Config, typedName string) error {

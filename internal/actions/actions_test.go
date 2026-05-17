@@ -23,6 +23,32 @@ func TestQuarantineRequiresWritePermission(t *testing.T) {
 	}
 }
 
+func TestQuarantineSameNameInstallsDoNotCollide(t *testing.T) {
+	root := t.TempDir()
+	one := filepath.Join(root, "one")
+	two := filepath.Join(root, "two")
+	if err := os.Mkdir(one, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(two, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{Config: cfg, QuarantineDir: filepath.Join(t.TempDir(), "quarantine")}
+	first, err := mgr.Quarantine(inventory.Skill{Name: "demo", Root: root, EncounteredPath: one}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := mgr.Quarantine(inventory.Skill{Name: "demo", Root: root, EncounteredPath: two}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first == second {
+		t.Fatalf("quarantine destinations collided: %s", first)
+	}
+}
+
 func TestQuarantineAndRestoreFixture(t *testing.T) {
 	root := t.TempDir()
 	skillPath := filepath.Join(root, "demo")
@@ -45,6 +71,20 @@ func TestQuarantineAndRestoreFixture(t *testing.T) {
 	}
 	if restored != skillPath {
 		t.Fatalf("restored=%s want %s", restored, skillPath)
+	}
+}
+
+func TestRestoreRequiresWritePermission(t *testing.T) {
+	root := t.TempDir()
+	quarantineDir := filepath.Join(t.TempDir(), "quarantine")
+	quarantined := filepath.Join(quarantineDir, "20260101T000000.000000000Z", "demo")
+	if err := os.MkdirAll(quarantined, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mgr := Manager{Config: config.Default(), QuarantineDir: quarantineDir}
+	_, err := mgr.Restore("demo", root)
+	if !errors.Is(err, ErrWritePermissionRequired) {
+		t.Fatalf("err=%v", err)
 	}
 }
 
@@ -85,6 +125,42 @@ func TestDeleteQuarantinedRequiresConfirmation(t *testing.T) {
 	}
 	if err := DeleteQuarantined(path, true); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRenameRejectsExistingDestinationBeforeFrontmatterChange(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "old")
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	original := []byte("---\nname: old\ndescription: demo\n---\nBody")
+	if err := os.WriteFile(skillFile, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	if _, err := Rename(inventory.Skill{Name: "old", Root: root, EncounteredPath: skillDir, PrimaryPath: skillFile}, "new", cfg, true); err == nil {
+		t.Fatal("expected destination exists error")
+	}
+	data, err := os.ReadFile(skillFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("frontmatter changed despite failed rename: %s", data)
+	}
+}
+
+func TestRenameDoesNotReplacePartialFrontmatterName(t *testing.T) {
+	content := "---\nname: old-helper\ndescription: old\n---\nBody"
+	updated, changed := updateSkillNameFrontmatter(content, "old", "new")
+	if changed || updated != content {
+		t.Fatalf("partial name should not change: changed=%v content=%s", changed, updated)
 	}
 }
 

@@ -88,6 +88,9 @@ func (s *ConfigActionService) QuarantinedSkills() ([]string, error) {
 }
 
 func (s *ConfigActionService) Restore(name string, destRoot string) (string, error) {
+	if !s.Config.CanWrite(destRoot) {
+		return "", fsactions.ErrWritePermissionRequired
+	}
 	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
 	return mgr.Restore(name, destRoot)
 }

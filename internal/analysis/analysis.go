@@ -96,7 +96,7 @@ func groupedSingleSkillFindings(skills []inventory.Skill, opts Options) []Findin
 			groups[FindingBroadActivation][name] = append(groups[FindingBroadActivation][name], skill)
 		}
 		if opts.UsageEvidence != nil {
-			grade := opts.UsageEvidence[skill.Name]
+			grade := opts.UsageEvidence[logicalName(skill)]
 			if grade == "" || grade == "weak" {
 				groups[FindingUnseen][name] = append(groups[FindingUnseen][name], skill)
 			}
