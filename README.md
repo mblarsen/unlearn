@@ -61,7 +61,19 @@ Known default global roots:
 - Quarantine/restore support.
 - Batch duplicate cleanup by root.
 
-## Install from source
+## Install
+
+Recommended install methods:
+
+```bash
+mise use -g "github:mblarsen/unlearn"
+```
+
+Or download the latest binary from the [GitHub releases page](https://github.com/mblarsen/unlearn/releases/latest).
+
+### Build from source
+
+If you want to work on `unlearn` itself, build it locally:
 
 ```bash
 git clone git@github.com:mblarsen/unlearn.git
@@ -87,21 +99,23 @@ mise exec -- go run .
 Open the dashboard:
 
 ```bash
-./unlearn
+unlearn
 ```
+
+If you built from source, use `./unlearn` from the repository root instead.
 
 On first launch, `unlearn` opens setup. Choose which skill roots it may scan and whether to enable optional history or LLM-assisted analysis.
 
 You can rerun setup later:
 
 ```bash
-./unlearn setup
+unlearn setup
 ```
 
 For fixture or automation work, trust roots explicitly:
 
 ```bash
-./unlearn audit --root /tmp/test-skills --trust-root /tmp/test-skills
+unlearn audit --root /tmp/test-skills --trust-root /tmp/test-skills
 ```
 
 ## Commands
