@@ -106,7 +106,7 @@ func TestDashboardRequiresInstallChoiceForDuplicateFindingActions(t *testing.T) 
 	m := NewWithActions(skills, []analysis.Finding{finding}, service)
 	updated, _ := m.Update(key("Q"))
 	m = updated.(Model)
-	if m.State != StateSelectInstall || !strings.Contains(m.View(), "CHOOSE INSTALL") || !strings.Contains(m.View(), "/one/alpha") || !strings.Contains(m.View(), "/three/alpha") {
+	if m.State != StateSelectInstall || !strings.Contains(m.View(), "CHOOSE EXACT INSTALL") || !strings.Contains(m.View(), "/one/alpha") || !strings.Contains(m.View(), "/three/alpha") {
 		t.Fatalf("expected install chooser before quarantine:\n%s", m.View())
 	}
 	updated, _ = m.Update(key("j"))

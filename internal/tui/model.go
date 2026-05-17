@@ -460,9 +460,14 @@ func (m Model) View() string {
 		leftWidth = width - rightWidth - 1
 	}
 	header := m.renderHeader(theme, width, headerHeight)
-	left := theme.Panel.Width(leftWidth - 2).Height(bodyHeight - 2).Render(m.renderList(theme, leftWidth-4, bodyHeight-2))
-	right := theme.Panel.Width(rightWidth - 2).Height(bodyHeight - 2).Render(m.renderDetails(theme, rightWidth-4, bodyHeight-2))
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+	body := ""
+	if m.State != StateNormal {
+		body = m.renderModalBody(theme, width, bodyHeight)
+	} else {
+		left := theme.Panel.Width(leftWidth - 2).Height(bodyHeight - 2).Render(m.renderList(theme, leftWidth-4, bodyHeight-2))
+		right := theme.Panel.Width(rightWidth - 2).Height(bodyHeight - 2).Render(m.renderDetails(theme, rightWidth-4, bodyHeight-2))
+		body = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+	}
 	keybar := m.renderKeybar(theme, width)
 	return lipgloss.JoinVertical(lipgloss.Left, header, body, keybar)
 }
@@ -594,6 +599,20 @@ func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 	return windowLines(lines, height, m.Cursor)
 }
 
+func (m Model) renderModalBody(theme ui.Theme, width, height int) string {
+	modalWidth := width - 16
+	if modalWidth > 76 {
+		modalWidth = 76
+	}
+	if modalWidth < 52 {
+		modalWidth = width - 4
+	}
+	contentWidth := modalWidth - 6
+	lines := m.renderInteraction(theme, contentWidth)
+	modal := theme.Modal.Width(modalWidth - 2).Render(strings.Join(lines, "\n"))
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
+}
+
 func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 	lines := []string{theme.PanelTitle.Render("Details")}
 	if m.itemCount() == 0 {
@@ -613,16 +632,27 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 }
 
 func (m Model) renderInteraction(theme ui.Theme, width int) []string {
-	label := "CONFIRM"
+	label := "CONFIRM ACTION"
 	if m.State == StateSelectInstall {
-		label = "CHOOSE INSTALL"
+		label = "CHOOSE EXACT INSTALL"
 	}
-	lines := []string{"", theme.BadgeWarn.Render(label), ""}
-	for _, line := range ui.Wrap(m.Message, width) {
-		lines = append(lines, theme.Row.Render(line))
+	lines := []string{theme.BadgeWarn.Render(label), ""}
+	messageLines := strings.Split(m.Message, "\n")
+	if len(messageLines) > 0 && strings.TrimSpace(messageLines[0]) != "" {
+		for _, line := range ui.Wrap(messageLines[0], width) {
+			lines = append(lines, theme.Section.Render(line))
+		}
+	}
+	if len(messageLines) > 1 {
+		lines = append(lines, "", theme.Muted.Render("Target"))
+		for _, target := range messageLines[1:] {
+			for _, line := range ui.Wrap(target, width-2) {
+				lines = append(lines, theme.Row.Render("  "+line))
+			}
+		}
 	}
 	if m.State == StateSelectInstall {
-		lines = append(lines, "")
+		lines = append(lines, "", theme.Muted.Render("Use ↑/↓ then enter:"))
 		for i, skill := range m.pendingInstallChoices() {
 			prefix := "  "
 			style := theme.Row
@@ -634,8 +664,9 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 		}
 	}
 	if m.Input != "" || m.State == StateInputDelete || m.State == StateInputRename || m.State == StateInputRestore {
-		lines = append(lines, "", theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
+		lines = append(lines, "", theme.Muted.Render("Input"), theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
 	}
+	lines = append(lines, "", theme.Muted.Render("Options"), optionLineForState(theme, m.State))
 	return lines
 }
 
@@ -823,6 +854,21 @@ func padBetween(left, right string, width int) string {
 		return ui.Truncate(left, width-rightWidth-1) + " " + right
 	}
 	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
+}
+
+func optionLineForState(theme ui.Theme, state InteractionState) string {
+	switch state {
+	case StateWriteGate, StateConfirmQuarantine, StatePreviewRename:
+		return theme.Key.Render("y") + " confirm  " + theme.Key.Render("n") + " cancel  " + theme.Key.Render("esc") + " back"
+	case StateSelectInstall:
+		return theme.Key.Render("enter") + " select highlighted install  " + theme.Key.Render("esc") + " cancel"
+	case StateInputDelete:
+		return theme.Key.Render("enter") + " delete after typed name  " + theme.Key.Render("esc") + " cancel"
+	case StateInputRename, StateInputRestore:
+		return theme.Key.Render("enter") + " submit  " + theme.Key.Render("esc") + " cancel"
+	default:
+		return theme.Key.Render("esc") + " back"
+	}
 }
 
 func (m Model) pendingInstallChoices() []inventory.Skill {

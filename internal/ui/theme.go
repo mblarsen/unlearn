@@ -10,6 +10,7 @@ type Theme struct {
 	AppTitle     lipgloss.Style
 	Header       lipgloss.Style
 	Panel        lipgloss.Style
+	Modal        lipgloss.Style
 	PanelTitle   lipgloss.Style
 	Section      lipgloss.Style
 	Row          lipgloss.Style
@@ -33,6 +34,7 @@ func DefaultTheme() Theme {
 		AppTitle:     lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E5F4FF")),
 		Header:       lipgloss.NewStyle().Foreground(lipgloss.Color("#B9C6D3")),
 		Panel:        lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#324052")).Padding(0, 1),
+		Modal:        lipgloss.NewStyle().Border(lipgloss.ThickBorder()).BorderForeground(lipgloss.Color("#FBBF24")).Background(lipgloss.Color("#17202D")).Padding(1, 2),
 		PanelTitle:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E5F4FF")),
 		Section:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D7E1EA")),
 		Row:          lipgloss.NewStyle().Foreground(lipgloss.Color("#C9D3DE")),
