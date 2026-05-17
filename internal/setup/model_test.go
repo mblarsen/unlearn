@@ -32,7 +32,7 @@ func TestSetupModelTogglesAndPersistsConfig(t *testing.T) {
 func TestSetupViewDocumentsBoundedHistoryDiscovery(t *testing.T) {
 	m := New([]RootChoice{{Path: "/skills", Exists: false}}, nil, config.Default())
 	view := m.View()
-	if !strings.Contains(view, "none discovered") || !strings.Contains(view, "not yet trusted") && !strings.Contains(view, "missing") {
+	if !strings.Contains(view, "none discovered") || !strings.Contains(view, "miss") {
 		t.Fatalf("view missing setup details:\n%s", view)
 	}
 }

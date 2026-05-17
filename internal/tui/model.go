@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -9,6 +10,7 @@ import (
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/ui"
 )
 
 type ViewMode int
@@ -48,14 +50,15 @@ const (
 )
 
 type Model struct {
-	Skills   []inventory.Skill
-	Findings []analysis.Finding
-	Actions  ActionService
-	Mode     ViewMode
-	Density  Density
-	Cursor   int
-	Width    int
-	Height   int
+	Skills      []inventory.Skill
+	SkillGroups []skillGroup
+	Findings    []analysis.Finding
+	Actions     ActionService
+	Mode        ViewMode
+	Density     Density
+	Cursor      int
+	Width       int
+	Height      int
 
 	State          InteractionState
 	PendingAction  PendingAction
@@ -75,7 +78,7 @@ func NewWithActions(skills []inventory.Skill, findings []analysis.Finding, servi
 	if service == nil {
 		service = NoopActionService{}
 	}
-	return Model{Skills: skills, Findings: findings, Actions: service, Mode: ViewFindings, Density: DensityCompact}
+	return Model{Skills: skills, SkillGroups: groupedSkills(skills), Findings: findings, Actions: service, Mode: ViewFindings, Density: DensityCompact}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -227,7 +230,7 @@ func (m *Model) beginSkillAction(action PendingAction) {
 	m.PendingSkill = skill
 	if !m.Actions.CanWrite(skill.Root) {
 		m.State = StateWriteGate
-		m.Message = fmt.Sprintf("Allow unlearn to modify root %s? y/n", skill.Root)
+		m.Message = fmt.Sprintf("Allow write access for %s?", skill.Root)
 		return
 	}
 	m.continuePendingAfterWriteGate()
@@ -237,7 +240,7 @@ func (m *Model) continuePendingAfterWriteGate() {
 	switch m.PendingAction {
 	case ActionQuarantine:
 		m.State = StateConfirmQuarantine
-		m.Message = fmt.Sprintf("Quarantine %s? y/n", m.PendingSkill.Name)
+		m.Message = fmt.Sprintf("Move %s into unlearn quarantine?", m.PendingSkill.Name)
 	case ActionDelete:
 		m.State = StateInputDelete
 		m.Input = ""
@@ -270,9 +273,9 @@ func (m *Model) submitInput() {
 		}
 		m.RenamePreview = m.Actions.PreviewRename(m.PendingSkill, m.Input)
 		m.State = StatePreviewRename
-		m.Message = fmt.Sprintf("Rename dry run: %s -> %s; %s. Confirm? y/n", m.RenamePreview.OldPath, m.RenamePreview.NewPath, m.RenamePreview.Frontmatter)
+		m.Message = fmt.Sprintf("Rename dry run: %s → %s; %s", m.RenamePreview.OldPath, m.RenamePreview.NewPath, m.RenamePreview.Frontmatter)
 		if m.RenamePreview.Warn != "" {
-			m.Message = "Warning: " + m.RenamePreview.Warn + "; suggested action: quarantine. Press y to acknowledge or n to cancel."
+			m.Message = "Warning: " + m.RenamePreview.Warn + "; suggested action: quarantine."
 		}
 	case StateInputRestore:
 		if strings.TrimSpace(m.Input) == "" {
@@ -306,7 +309,11 @@ func (m *Model) ignoreSelectedFinding() {
 		m.Status = "ignore finding is only available in findings view"
 		return
 	}
-	finding := m.Findings[m.Cursor]
+	finding, ok := m.selectedFinding()
+	if !ok {
+		m.Status = "no finding selected"
+		return
+	}
 	if err := m.Actions.IgnoreFinding(finding); err != nil {
 		m.fail(err)
 		return
@@ -319,13 +326,29 @@ func (m *Model) selectedSkill() (inventory.Skill, bool) {
 		return inventory.Skill{}, false
 	}
 	if m.Mode == ViewSkills {
-		return m.Skills[m.Cursor], true
+		return m.SkillGroups[m.Cursor].Representative, true
 	}
-	finding := m.Findings[m.Cursor]
-	if len(finding.Skills) == 0 {
+	finding, ok := m.selectedFinding()
+	if !ok || len(finding.Skills) == 0 {
 		return inventory.Skill{}, false
 	}
 	return finding.Skills[0], true
+}
+
+func (m Model) selectedFinding() (analysis.Finding, bool) {
+	if m.Mode != ViewFindings || len(m.Findings) == 0 || m.Cursor < 0 || m.Cursor >= len(m.Findings) {
+		return analysis.Finding{}, false
+	}
+	idx := 0
+	for _, section := range groupedFindings(m.Findings) {
+		for _, finding := range section.Findings {
+			if idx == m.Cursor {
+				return finding, true
+			}
+			idx++
+		}
+	}
+	return analysis.Finding{}, false
 }
 
 func (m *Model) resetInteraction() {
@@ -354,137 +377,424 @@ func (m *Model) fail(err error) {
 }
 
 func (m Model) View() string {
-	if m.Width == 0 {
-		m.Width = 100
+	width, height := m.dimensions()
+	theme := ui.DefaultTheme()
+	headerHeight := 2
+	keybarHeight := 1
+	bodyHeight := height - headerHeight - keybarHeight
+	if bodyHeight < 8 {
+		bodyHeight = 8
 	}
-	leftWidth := m.Width / 2
-	if leftWidth < 35 {
-		leftWidth = 35
+	leftWidth := width * 52 / 100
+	if leftWidth < 38 {
+		leftWidth = 38
 	}
-	left := lipgloss.NewStyle().Width(leftWidth).Render(m.listView())
-	right := lipgloss.NewStyle().Width(m.Width - leftWidth - 2).Render(m.detailView())
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, "  ", right)
-	return body + "\n" + m.keyBar()
+	if leftWidth > 62 {
+		leftWidth = 62
+	}
+	rightWidth := width - leftWidth - 1
+	if rightWidth < 28 {
+		rightWidth = 28
+		leftWidth = width - rightWidth - 1
+	}
+	header := m.renderHeader(theme, width, headerHeight)
+	left := theme.Panel.Width(leftWidth - 2).Height(bodyHeight - 2).Render(m.renderList(theme, leftWidth-4, bodyHeight-2))
+	right := theme.Panel.Width(rightWidth - 2).Height(bodyHeight - 2).Render(m.renderDetails(theme, rightWidth-4, bodyHeight-2))
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
+	keybar := m.renderKeybar(theme, width)
+	return lipgloss.JoinVertical(lipgloss.Left, header, body, keybar)
 }
 
-func (m Model) listView() string {
-	title := "Findings"
-	if m.Mode == ViewSkills {
-		title = "Skills"
+func (m Model) dimensions() (int, int) {
+	width := m.Width
+	if width <= 0 {
+		width = 100
 	}
-	lines := []string{lipgloss.NewStyle().Bold(true).Render(title)}
+	height := m.Height
+	if height <= 0 {
+		height = 30
+	}
+	if width < 70 {
+		width = 70
+	}
+	return width, height
+}
+
+func (m Model) renderHeader(theme ui.Theme, width, height int) string {
+	mode := "findings"
+	if m.Mode == ViewSkills {
+		mode = "skills"
+	}
+	title := theme.AppTitle.Render("unlearn") + theme.Muted.Render("  cleanup workbench")
+	stats := []string{
+		theme.Badge.Render(fmt.Sprintf("%d skills", len(m.Skills))),
+		theme.BadgeWarn.Render(fmt.Sprintf("%d findings", len(m.Findings))),
+		theme.Badge.Render(mode),
+	}
+	if m.Status != "" {
+		stats = append(stats, theme.Status.Render(ui.Truncate(m.Status, max(10, width/4))))
+	}
+	line := padBetween(title, lipgloss.JoinHorizontal(lipgloss.Center, stats...), width)
+	sep := theme.Muted.Render(strings.Repeat("─", max(0, width)))
+	return strings.Join(ui.PadLines([]string{ui.Truncate(line, width), sep}, height), "\n")
+}
+
+func (m Model) renderList(theme ui.Theme, width, height int) string {
+	lines := []string{theme.PanelTitle.Render(m.listTitle())}
 	if m.itemCount() == 0 {
-		lines = append(lines, "No items")
-		return strings.Join(lines, "\n")
+		lines = append(lines, "", theme.Muted.Render("No items yet"))
+		return strings.Join(ui.PadLines(lines, height), "\n")
 	}
 	if m.Mode == ViewFindings {
-		for i, finding := range m.Findings {
+		lines = append(lines, m.renderFindingRows(theme, width, height-1)...)
+	} else {
+		lines = append(lines, m.renderSkillRows(theme, width, height-1)...)
+	}
+	return strings.Join(ui.PadLines(ui.FitLines(lines, height), height), "\n")
+}
+
+func (m Model) listTitle() string {
+	if m.Mode == ViewSkills {
+		return "Skill inventory"
+	}
+	return "Findings"
+}
+
+func (m Model) renderFindingRows(theme ui.Theme, width, height int) []string {
+	sections := groupedFindings(m.Findings)
+	selected := 0
+	selectedLine := 0
+	var lines []string
+	for _, section := range sections {
+		sectionLine := fmt.Sprintf("▾ %s", section.Title)
+		countLine := fmt.Sprintf("%d skills", sectionSkillCount(section))
+		lines = append(lines, theme.Section.Render(ui.Truncate(padBetween(sectionLine, countLine, width), width)))
+		for _, finding := range section.Findings {
 			prefix := "  "
-			if i == m.Cursor {
-				prefix = "› "
+			if selected == m.Cursor {
+				prefix = "▸ "
+				selectedLine = len(lines)
 			}
-			line := fmt.Sprintf("%s%s (%d)", prefix, finding.Title, len(finding.Skills))
-			if m.Density == DensityRich && len(finding.Reasons) > 0 {
-				line += " — " + finding.Reasons[0]
+			line := prefix + findingRowText(finding, width-2)
+			if selected == m.Cursor {
+				line = theme.SelectedRow.Width(width).Render(ui.Truncate(line, width))
+			} else {
+				line = theme.Row.Render(ui.Truncate(line, width))
 			}
 			lines = append(lines, line)
+			selected++
 		}
-		return strings.Join(lines, "\n")
 	}
-	for i, skill := range m.Skills {
+	return windowLines(lines, height, selectedLine)
+}
+
+func findingRowText(finding analysis.Finding, width int) string {
+	nameWidth := width - 24
+	if nameWidth < 12 {
+		nameWidth = 12
+	}
+	meta := findingInstallLabel(finding)
+	if finding.Type == analysis.FindingHighTokenCost {
+		meta += " · " + tokenRange(finding.Skills)
+	}
+	if finding.Type == analysis.FindingBroadActivation {
+		meta += " · high risk"
+	}
+	if finding.Type == analysis.FindingOverlap {
+		meta += " · cluster"
+	}
+	return padBetween(ui.Truncate(finding.Title, nameWidth), meta, width)
+}
+
+func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
+	var lines []string
+	for i, group := range m.SkillGroups {
 		prefix := "  "
 		if i == m.Cursor {
-			prefix = "› "
+			prefix = "▸ "
 		}
-		line := fmt.Sprintf("%s%s [%s]", prefix, skill.Name, skill.Kind)
-		if m.Density == DensityRich {
-			line += fmt.Sprintf(" — %d-%d tokens · %s", skill.LowerTokens, skill.UpperTokens, skill.ActivationRisk)
+		kind := string(group.Representative.Kind)
+		if kind == "" {
+			kind = "skill"
+		}
+		meta := fmt.Sprintf("%s · %s", installLabel(len(group.Skills)), tokenRange(group.Skills))
+		if len(group.Skills) == 1 {
+			meta = fmt.Sprintf("%s · %s", kind, tokenRange(group.Skills))
+		}
+		line := prefix + padBetween(ui.Truncate(group.Name, width-24), meta, width-2)
+		if i == m.Cursor {
+			line = theme.SelectedRow.Width(width).Render(ui.Truncate(line, width))
+		} else {
+			line = theme.Row.Render(ui.Truncate(line, width))
 		}
 		lines = append(lines, line)
 	}
-	return strings.Join(lines, "\n")
+	return windowLines(lines, height, m.Cursor)
 }
 
-func (m Model) detailView() string {
-	lines := []string{lipgloss.NewStyle().Bold(true).Render("Details")}
+func (m Model) renderDetails(theme ui.Theme, width, height int) string {
+	lines := []string{theme.PanelTitle.Render("Details")}
 	if m.itemCount() == 0 {
-		return strings.Join(lines, "\n")
+		lines = append(lines, "", theme.Muted.Render("Nothing selected"))
+		return strings.Join(ui.PadLines(lines, height), "\n")
 	}
 	if m.State != StateNormal {
-		lines = append(lines, m.Message)
-		if m.Input != "" {
-			lines = append(lines, "> "+m.Input)
-		}
-		return strings.Join(lines, "\n")
-	}
-	if m.Status != "" {
-		lines = append(lines, m.Status, "")
+		lines = append(lines, m.renderInteraction(theme, width)...)
+		return strings.Join(ui.PadLines(ui.FitLines(lines, height), height), "\n")
 	}
 	if m.Mode == ViewFindings {
-		finding := m.Findings[m.Cursor]
-		lines = append(lines, finding.Title, "Why flagged:")
-		for _, reason := range finding.Reasons {
-			lines = append(lines, "- "+reason)
-		}
-		for _, skill := range finding.Skills {
-			lines = append(lines, fmt.Sprintf("\n%s", skill.Name), fmt.Sprintf("tokens: %d-%d", skill.LowerTokens, skill.UpperTokens), "activation risk: "+skill.ActivationRisk, "provenance: "+skill.Provenance)
-		}
-		return strings.Join(lines, "\n")
-	}
-	skill := m.Skills[m.Cursor]
-	lines = append(lines,
-		skill.Name,
-		skill.Description,
-		fmt.Sprintf("tokens: %d-%d", skill.LowerTokens, skill.UpperTokens),
-		"activation risk: "+skill.ActivationRisk,
-		"provenance: "+skill.Provenance,
-		"usage evidence: not scanned",
-	)
-	return strings.Join(lines, "\n")
-}
-
-func (m Model) keyBar() string {
-	keys := []string{"j/k/↑/↓ move", "r density"}
-	if m.State != StateNormal {
-		keys = m.interactionKeys()
-		return lipgloss.NewStyle().Reverse(true).Render(strings.Join(keys, " · "))
-	}
-	if m.Mode == ViewFindings {
-		keys = append(keys, "s skill inventory")
+		lines = append(lines, m.renderFindingDetails(theme, width, height-1)...)
 	} else {
-		keys = append(keys, "f findings")
+		lines = append(lines, m.renderSkillGroupDetails(theme, width, height-1, m.SkillGroups[m.Cursor])...)
 	}
-	keys = append(keys, m.availableActionKeys()...)
-	keys = append(keys, "q quit")
-	return lipgloss.NewStyle().Reverse(true).Render(strings.Join(keys, " · "))
+	return strings.Join(ui.PadLines(ui.FitLines(lines, height), height), "\n")
 }
 
-func (m Model) interactionKeys() []string {
-	switch m.State {
-	case StateWriteGate, StateConfirmQuarantine, StatePreviewRename:
-		return []string{"y confirm", "n cancel", "esc cancel"}
-	case StateInputDelete, StateInputRename, StateInputRestore:
-		return []string{"type", "enter submit", "esc cancel"}
+func (m Model) renderInteraction(theme ui.Theme, width int) []string {
+	lines := []string{"", theme.BadgeWarn.Render("CONFIRM"), ""}
+	for _, line := range ui.Wrap(m.Message, width) {
+		lines = append(lines, theme.Row.Render(line))
+	}
+	if m.Input != "" || m.State == StateInputDelete || m.State == StateInputRename || m.State == StateInputRestore {
+		lines = append(lines, "", theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
+	}
+	return lines
+}
+
+func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string {
+	finding, ok := m.selectedFinding()
+	if !ok {
+		return []string{"", theme.Muted.Render("Nothing selected")}
+	}
+	lines := []string{"", findingBadge(theme, finding.Type) + " " + theme.Accent.Render(ui.Truncate(finding.Title, width-12)), ""}
+	for _, reason := range finding.Reasons {
+		lines = appendBullet(lines, theme, reason, width)
+	}
+	lines = append(lines, "", theme.Section.Render("Summary"))
+	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+installLabel(len(finding.Skills))+" across "+rootSummary(finding.Skills, 2), width)))
+	lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
+	lines = append(lines, "", theme.Section.Render("Instances"))
+	limit := max(1, height-len(lines)-1)
+	if limit > 4 {
+		limit = 4
+	}
+	for i, skill := range finding.Skills {
+		if i >= limit {
+			lines = append(lines, theme.Muted.Render(ui.Truncate(fmt.Sprintf("… %d more installs", len(finding.Skills)-i), width)))
+			break
+		}
+		root := strings.TrimPrefix(skill.Root, homePrefix())
+		meta := fmt.Sprintf("%s · %s tokens · %s", root, tokenRange([]inventory.Skill{skill}), riskLabel(skill.ActivationRisk))
+		lines = append(lines, theme.Row.Render(ui.Truncate("▸ "+skill.Name, width)))
+		lines = append(lines, theme.Muted.Render(ui.Truncate("  "+meta, width)))
+	}
+	return lines
+}
+
+func (m Model) renderSkillGroupDetails(theme ui.Theme, width, height int, group skillGroup) []string {
+	skill := group.Representative
+	lines := []string{"", theme.Accent.Render(ui.Truncate(group.Name, width)) + " " + theme.Badge.Render(installLabel(len(group.Skills))), ""}
+	if skill.Description != "" {
+		for _, line := range ui.Wrap(skill.Description, width) {
+			lines = append(lines, theme.Row.Render(line))
+		}
+		lines = append(lines, "")
+	}
+	facts := []string{
+		"tokens " + tokenRange(group.Skills),
+		"activation " + riskLabel(skill.ActivationRisk),
+		"kind " + kindLabel(skill.Kind),
+		"roots " + rootSummary(group.Skills, 2),
+	}
+	for _, fact := range facts {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• "+fact, width)))
+	}
+	lines = append(lines, "", theme.Section.Render("Installs"))
+	limit := max(1, height-len(lines))
+	if limit > 4 {
+		limit = 4
+	}
+	for i, item := range group.Skills {
+		if i >= limit {
+			lines = append(lines, theme.Muted.Render(ui.Truncate(fmt.Sprintf("… %d more installs", len(group.Skills)-i), width)))
+			break
+		}
+		root := strings.TrimPrefix(item.Root, homePrefix())
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• "+root, width)))
+	}
+	if skill.Provenance != "" && len(lines) < height-2 {
+		lines = append(lines, "", theme.Section.Render("Provenance"))
+		for _, line := range ui.Wrap(skill.Provenance, width) {
+			lines = append(lines, theme.Row.Render(line))
+		}
+	}
+	return lines
+}
+
+func findingBadge(theme ui.Theme, typ analysis.FindingType) string {
+	label := findingTypeBadge(typ)
+	switch typ {
+	case analysis.FindingConflict, analysis.FindingBroken:
+		return theme.BadgeDanger.Render(label)
+	case analysis.FindingHighTokenCost, analysis.FindingBroadActivation:
+		return theme.BadgeWarn.Render(label)
+	case analysis.FindingDuplicate:
+		return theme.BadgeSuccess.Render(label)
 	default:
-		return []string{"esc cancel"}
+		return theme.Badge.Render(label)
 	}
 }
 
-func (m Model) availableActionKeys() []string {
-	if m.itemCount() == 0 {
-		return nil
+func (m Model) renderKeybar(theme ui.Theme, width int) string {
+	parts := m.keyParts()
+	limit := width - 2
+	var out []string
+	used := 0
+	hidden := false
+	for _, part := range parts {
+		rendered := theme.Key.Render(part.Key) + " " + part.Label
+		separator := "  "
+		if len(out) == 0 {
+			separator = ""
+		}
+		partWidth := lipgloss.Width(separator + rendered)
+		if used+partWidth > limit {
+			hidden = true
+			break
+		}
+		out = append(out, separator+rendered)
+		used += partWidth
 	}
-	keys := []string{"enter inspect"}
+	line := strings.Join(out, "")
+	if hidden {
+		ellipsis := theme.Muted.Render("  …")
+		for lipgloss.Width(line+ellipsis) > limit && len(out) > 1 {
+			out = out[:len(out)-1]
+			line = strings.Join(out, "")
+		}
+		line += ellipsis
+	}
+	return theme.Keybar.Width(limit).Render(ui.Truncate(line, limit))
+}
+
+type keyPart struct{ Key, Label string }
+
+func (m Model) keyParts() []keyPart {
+	if m.State != StateNormal {
+		switch m.State {
+		case StateWriteGate, StateConfirmQuarantine, StatePreviewRename:
+			return []keyPart{{"y", "confirm"}, {"n", "cancel"}, {"esc", "back"}}
+		case StateInputDelete, StateInputRename, StateInputRestore:
+			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
+		}
+	}
+	parts := []keyPart{{"↑↓/jk", "move"}, {"r", "density"}}
 	if m.Mode == ViewFindings {
-		keys = append(keys, "I ignore finding")
+		parts = append(parts, keyPart{"s", "skills"}, keyPart{"I", "ignore"})
+	} else {
+		parts = append(parts, keyPart{"f", "findings"})
 	}
-	keys = append(keys, "K keep", "Q quarantine", "D delete", "N rename", "R restore")
-	return keys
+	parts = append(parts, keyPart{"K", "keep"}, keyPart{"Q", "quarantine"}, keyPart{"D", "delete"}, keyPart{"N", "rename"}, keyPart{"R", "restore"}, keyPart{"q", "quit"})
+	return parts
 }
 
 func (m Model) itemCount() int {
 	if m.Mode == ViewFindings {
 		return len(m.Findings)
 	}
-	return len(m.Skills)
+	return len(m.SkillGroups)
+}
+
+func windowLines(lines []string, height int, selectedLine int) []string {
+	if height <= 0 || len(lines) <= height {
+		return ui.FitLines(lines, height)
+	}
+	start := selectedLine - height/2
+	if start < 0 {
+		start = 0
+	}
+	if start+height > len(lines) {
+		start = len(lines) - height
+	}
+	out := append([]string(nil), lines[start:start+height]...)
+	if start > 0 {
+		out[0] = ui.Truncate("… above", lipgloss.Width(out[0]))
+	}
+	if start+height < len(lines) {
+		out[len(out)-1] = ui.Truncate("… more", lipgloss.Width(out[len(out)-1]))
+	}
+	return out
+}
+
+func padBetween(left, right string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+	if leftWidth+rightWidth+1 >= width {
+		if rightWidth+2 >= width {
+			return ui.Truncate(left, width)
+		}
+		return ui.Truncate(left, width-rightWidth-1) + " " + right
+	}
+	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
+}
+
+func appendBullet(lines []string, theme ui.Theme, value string, width int) []string {
+	wrapped := ui.Wrap(value, width-2)
+	for i, line := range wrapped {
+		prefix := "  "
+		if i == 0 {
+			prefix = "• "
+		}
+		lines = append(lines, theme.Muted.Render(ui.Truncate(prefix+line, width)))
+	}
+	return lines
+}
+
+func riskLabel(risk string) string {
+	if risk == "" {
+		return "unknown"
+	}
+	return risk
+}
+
+func kindLabel(kind inventory.SkillKind) string {
+	if kind == "" {
+		return "skill"
+	}
+	return string(kind)
+}
+
+func rootSummary(skills []inventory.Skill, limit int) string {
+	if len(skills) == 0 {
+		return "none"
+	}
+	seen := map[string]bool{}
+	var roots []string
+	for _, skill := range skills {
+		root := strings.TrimPrefix(skill.Root, homePrefix())
+		if root == "" {
+			root = "unknown"
+		}
+		if !seen[root] {
+			seen[root] = true
+			roots = append(roots, root)
+		}
+	}
+	sort.Strings(roots)
+	if limit > 0 && len(roots) > limit {
+		return strings.Join(roots[:limit], ", ") + fmt.Sprintf(" +%d", len(roots)-limit)
+	}
+	return strings.Join(roots, ", ")
+}
+
+func homePrefix() string { return "" }
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

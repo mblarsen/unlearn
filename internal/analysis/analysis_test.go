@@ -32,6 +32,77 @@ func TestAnalyzeDetectsOverlapHighTokenBroadActivationAndUnseen(t *testing.T) {
 	assertHasType(t, findings, FindingUnseen)
 }
 
+func TestAnalyzeConsolidatesSameNameSingleSkillFindings(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "macos-calendar", ID: "a", ContentHash: "a", UpperTokens: 5000, LowerTokens: 2000, ActivationRisk: "high", Root: "/one"},
+		{Name: "macos-calendar", ID: "b", ContentHash: "b", UpperTokens: 7800, LowerTokens: 4100, ActivationRisk: "high", Root: "/two"},
+	}
+	findings := Analyze(skills, Options{HighTokenLimit: 2000})
+	if countType(findings, FindingHighTokenCost) != 1 {
+		t.Fatalf("expected one consolidated token finding, got %#v", findings)
+	}
+	if countType(findings, FindingBroadActivation) != 1 {
+		t.Fatalf("expected one consolidated activation finding, got %#v", findings)
+	}
+	for _, finding := range findings {
+		if finding.Type == FindingHighTokenCost && len(finding.Skills) != 2 {
+			t.Fatalf("expected both installs in finding: %#v", finding)
+		}
+	}
+}
+
+func TestGenericActionWordsDoNotCreateOverlapSpam(t *testing.T) {
+	var skills []inventory.Skill
+	genericDescription := "plan build create design implement review fix improve optimize enhance refactor check many things across content long product areas"
+	names := []string{"macos-calendar", "macos-notes", "macos-reminders", "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"}
+	for _, name := range names {
+		skills = append(skills, inventory.Skill{Name: name, Description: genericDescription, Body: "Domain-specific skill with generic trigger words plus enough content to exceed token budgets.", ContentHash: name})
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingOverlap) != 0 {
+		t.Fatalf("generic action words created overlap spam: %#v", findings)
+	}
+}
+
+func TestOverlapUsesLogicalSkillNamesForClusters(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "a", Root: "/one"},
+		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "b", Root: "/two"},
+		{Name: "react-forms", Description: "React frontend accessibility aria keyboard", Body: "form semantic focus", ContentHash: "c"},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingOverlap) != 1 {
+		t.Fatalf("expected one overlap cluster, got %#v", findings)
+	}
+	for _, finding := range findings {
+		if finding.Type == FindingOverlap && len(finding.Skills) != 2 {
+			t.Fatalf("expected logical skills only in overlap, got %#v", finding)
+		}
+	}
+}
+
+func TestOverlapClustersConnectedComponents(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "a"},
+		{Name: "react-forms", Description: "React frontend accessibility aria keyboard", Body: "form semantic focus", ContentHash: "b"},
+		{Name: "react-dashboard", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "c"},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingOverlap) != 1 {
+		t.Fatalf("expected one overlap cluster, got %#v", findings)
+	}
+}
+
+func countType(findings []Finding, typ FindingType) int {
+	count := 0
+	for _, finding := range findings {
+		if finding.Type == typ {
+			count++
+		}
+	}
+	return count
+}
+
 func assertHasType(t *testing.T, findings []Finding, typ FindingType) {
 	t.Helper()
 	for _, finding := range findings {

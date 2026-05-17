@@ -43,38 +43,85 @@ func Analyze(skills []inventory.Skill, opts Options) []Finding {
 	var findings []Finding
 	findings = append(findings, duplicatesAndConflicts(skills)...)
 	findings = append(findings, overlaps(skills)...)
+	findings = append(findings, brokenFindings(skills)...)
+	findings = append(findings, groupedSingleSkillFindings(skills, opts)...)
+	SortFindings(findings)
+	return findings
+}
+
+func brokenFindings(skills []inventory.Skill) []Finding {
+	groups := map[string][]inventory.Skill{}
 	for _, skill := range skills {
 		if skill.Broken || len(skill.BrokenRefs) > 0 {
-			reasons := []string{}
+			groups[logicalName(skill)] = append(groups[logicalName(skill)], skill)
+		}
+	}
+	findings := make([]Finding, 0, len(groups))
+	for name, group := range groups {
+		reasons := []string{}
+		brokenCount := 0
+		missingRefs := map[string]bool{}
+		for _, skill := range group {
 			if skill.Broken {
-				reasons = append(reasons, "encountered path is a broken symlink or cannot be resolved")
+				brokenCount++
 			}
 			for _, ref := range skill.BrokenRefs {
-				reasons = append(reasons, "missing referenced support file: "+ref)
+				missingRefs[ref] = true
 			}
-			findings = append(findings, Finding{ID: "broken:" + skill.ID, Type: FindingBroken, Severity: 1, Title: "Broken symlink/reference: " + skill.Name, Skills: []inventory.Skill{skill}, Reasons: reasons})
 		}
+		if brokenCount > 0 {
+			reasons = append(reasons, fmt.Sprintf("%d install(s) have broken symlinks or unresolved paths", brokenCount))
+		}
+		refs := sortedKeys(missingRefs)
+		if len(refs) > 0 {
+			reasons = append(reasons, "missing referenced support files: "+strings.Join(refs, ", "))
+		}
+		findings = append(findings, Finding{ID: "broken:" + name, Type: FindingBroken, Severity: 1, Title: displayName(group), Skills: group, Reasons: reasons})
+	}
+	return findings
+}
+
+func groupedSingleSkillFindings(skills []inventory.Skill, opts Options) []Finding {
+	groups := map[FindingType]map[string][]inventory.Skill{
+		FindingHighTokenCost:   {},
+		FindingBroadActivation: {},
+		FindingUnseen:          {},
+	}
+	for _, skill := range skills {
+		name := logicalName(skill)
 		if skill.UpperTokens >= opts.HighTokenLimit {
-			findings = append(findings, Finding{ID: "tokens:" + skill.ID, Type: FindingHighTokenCost, Severity: 3, Title: "High token cost: " + skill.Name, Skills: []inventory.Skill{skill}, Reasons: []string{fmt.Sprintf("estimated token range %d-%d exceeds %d", skill.LowerTokens, skill.UpperTokens, opts.HighTokenLimit)}})
+			groups[FindingHighTokenCost][name] = append(groups[FindingHighTokenCost][name], skill)
 		}
 		if skill.ActivationRisk == "high" {
-			findings = append(findings, Finding{ID: "activation:" + skill.ID, Type: FindingBroadActivation, Severity: 3, Title: "Broad activation risk: " + skill.Name, Skills: []inventory.Skill{skill}, Reasons: []string{"description/body contains broad trigger language"}})
+			groups[FindingBroadActivation][name] = append(groups[FindingBroadActivation][name], skill)
 		}
 		if opts.UsageEvidence != nil {
 			grade := opts.UsageEvidence[skill.Name]
 			if grade == "" || grade == "weak" {
-				findings = append(findings, Finding{ID: "unseen:" + skill.ID, Type: FindingUnseen, Severity: 4, Title: "Unseen skill: " + skill.Name, Skills: []inventory.Skill{skill}, Reasons: []string{"no strong or medium invocation evidence found in opted-in history"}})
+				groups[FindingUnseen][name] = append(groups[FindingUnseen][name], skill)
 			}
 		}
 	}
-	SortFindings(findings)
+	var findings []Finding
+	for typ, byName := range groups {
+		for name, group := range byName {
+			switch typ {
+			case FindingHighTokenCost:
+				findings = append(findings, Finding{ID: "tokens:" + name, Type: typ, Severity: 3, Title: displayName(group), Skills: group, Reasons: []string{fmt.Sprintf("estimated token range %s exceeds %d", tokenRange(group), opts.HighTokenLimit)}})
+			case FindingBroadActivation:
+				findings = append(findings, Finding{ID: "activation:" + name, Type: typ, Severity: 3, Title: displayName(group), Skills: group, Reasons: []string{"description/body contains broad trigger language"}})
+			case FindingUnseen:
+				findings = append(findings, Finding{ID: "unseen:" + name, Type: typ, Severity: 4, Title: displayName(group), Skills: group, Reasons: []string{"no strong or medium invocation evidence found in opted-in history"}})
+			}
+		}
+	}
 	return findings
 }
 
 func duplicatesAndConflicts(skills []inventory.Skill) []Finding {
 	byName := map[string][]inventory.Skill{}
 	for _, skill := range skills {
-		byName[strings.ToLower(skill.Name)] = append(byName[strings.ToLower(skill.Name)], skill)
+		byName[logicalName(skill)] = append(byName[logicalName(skill)], skill)
 	}
 	var findings []Finding
 	for name, group := range byName {
@@ -86,31 +133,103 @@ func duplicatesAndConflicts(skills []inventory.Skill) []Finding {
 			byHash[skill.ContentHash] = append(byHash[skill.ContentHash], skill)
 		}
 		if len(byHash) == 1 {
-			findings = append(findings, Finding{ID: "duplicate:" + name, Type: FindingDuplicate, Severity: 1, Title: "Duplicate skill: " + group[0].Name, Skills: group, Reasons: []string{"same skill name and identical effective content"}})
+			findings = append(findings, Finding{ID: "duplicate:" + name, Type: FindingDuplicate, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name and identical effective content"}})
 			continue
 		}
-		findings = append(findings, Finding{ID: "conflict:" + name, Type: FindingConflict, Severity: 1, Title: "Conflicting skill: " + group[0].Name, Skills: group, Reasons: []string{"same skill name but different effective content"}})
+		findings = append(findings, Finding{ID: "conflict:" + name, Type: FindingConflict, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name but different effective content"}})
 	}
 	return findings
 }
 
 func overlaps(skills []inventory.Skill) []Finding {
-	var findings []Finding
-	for i := 0; i < len(skills); i++ {
-		for j := i + 1; j < len(skills); j++ {
-			a, b := skills[i], skills[j]
+	logicalSkills := representativeSkills(skills)
+	graph := map[int]map[int][]string{}
+	for i := 0; i < len(logicalSkills); i++ {
+		for j := i + 1; j < len(logicalSkills); j++ {
+			a, b := logicalSkills[i], logicalSkills[j]
 			if strings.EqualFold(a.Name, b.Name) {
 				continue
 			}
 			shared := sharedKeywords(a, b)
-			if len(shared) >= 3 {
-				idNames := []string{strings.ToLower(a.Name), strings.ToLower(b.Name)}
-				sort.Strings(idNames)
-				findings = append(findings, Finding{ID: "overlap:" + strings.Join(idNames, ":"), Type: FindingOverlap, Severity: 2, Title: "Overlapping skills: " + a.Name + " / " + b.Name, Skills: []inventory.Skill{a, b}, Reasons: []string{"shared purpose keywords: " + strings.Join(shared, ", ")}})
+			if len(shared) >= 2 {
+				if graph[i] == nil {
+					graph[i] = map[int][]string{}
+				}
+				if graph[j] == nil {
+					graph[j] = map[int][]string{}
+				}
+				graph[i][j] = shared
+				graph[j][i] = shared
 			}
 		}
 	}
+	visited := map[int]bool{}
+	var findings []Finding
+	for start := range graph {
+		if visited[start] {
+			continue
+		}
+		component := collectComponent(start, graph, visited)
+		if len(component) < 2 {
+			continue
+		}
+		componentSkills := make([]inventory.Skill, 0, len(component))
+		terms := map[string]bool{}
+		for _, idx := range component {
+			componentSkills = append(componentSkills, logicalSkills[idx])
+			for _, shared := range graph[idx] {
+				for _, term := range shared {
+					terms[term] = true
+				}
+			}
+		}
+		sort.Slice(componentSkills, func(i, j int) bool { return componentSkills[i].Name < componentSkills[j].Name })
+		names := make([]string, 0, len(componentSkills))
+		for _, skill := range componentSkills {
+			names = append(names, skill.Name)
+		}
+		sharedTerms := sortedKeys(terms)
+		if len(sharedTerms) > 6 {
+			sharedTerms = sharedTerms[:6]
+		}
+		findings = append(findings, Finding{ID: "overlap:" + strings.Join(lowerNames(names), ":"), Type: FindingOverlap, Severity: 2, Title: summarizeNames(names), Skills: componentSkills, Reasons: []string{"shared domain keywords: " + strings.Join(sharedTerms, ", ")}})
+	}
 	return findings
+}
+
+func representativeSkills(skills []inventory.Skill) []inventory.Skill {
+	byName := map[string]inventory.Skill{}
+	for _, skill := range skills {
+		name := logicalName(skill)
+		if existing, ok := byName[name]; !ok || skill.UpperTokens > existing.UpperTokens {
+			byName[name] = skill
+		}
+	}
+	out := make([]inventory.Skill, 0, len(byName))
+	for _, skill := range byName {
+		out = append(out, skill)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+func collectComponent(start int, graph map[int]map[int][]string, visited map[int]bool) []int {
+	queue := []int{start}
+	visited[start] = true
+	var component []int
+	for len(queue) > 0 {
+		idx := queue[0]
+		queue = queue[1:]
+		component = append(component, idx)
+		for next := range graph[idx] {
+			if !visited[next] {
+				visited[next] = true
+				queue = append(queue, next)
+			}
+		}
+	}
+	sort.Ints(component)
+	return component
 }
 
 func sharedKeywords(a, b inventory.Skill) []string {
@@ -130,11 +249,10 @@ func sharedKeywords(a, b inventory.Skill) []string {
 }
 
 func keywords(text string) map[string]bool {
-	stop := map[string]bool{"the": true, "and": true, "for": true, "with": true, "that": true, "this": true, "when": true, "from": true, "your": true, "you": true, "use": true, "skill": true, "skills": true, "agent": true, "agents": true, "must": true, "any": true, "all": true}
 	fields := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool { return r < 'a' || r > 'z' })
 	out := map[string]bool{}
 	for _, field := range fields {
-		if len(field) < 5 || stop[field] {
+		if len(field) < 4 || genericKeyword(field) {
 			continue
 		}
 		out[field] = true
@@ -142,13 +260,29 @@ func keywords(text string) map[string]bool {
 	return out
 }
 
+func genericKeyword(word string) bool {
+	stop := map[string]bool{
+		"about": true, "across": true, "action": true, "actions": true, "agent": true, "agents": true, "allow": true, "always": true, "area": true, "areas": true, "around": true, "assist": true, "assisted": true, "before": true, "body": true, "broad": true, "budget": true, "budgets": true, "build": true, "check": true, "cleanup": true, "code": true, "coding": true, "common": true, "component": true, "content": true, "create": true, "debug": true, "describe": true, "description": true, "design": true, "develop": true, "development": true, "does": true, "domain": true, "edit": true, "enable": true, "enhance": true, "enough": true, "every": true, "exceed": true, "feature": true, "find": true, "fix": true, "from": true, "generate": true, "generated": true, "generic": true, "help": true, "implement": true, "improve": true, "instance": true, "instances": true, "language": true, "local": true, "long": true, "manage": true, "management": true, "many": true, "material": true, "modify": true, "must": true, "optimize": true, "plan": true, "plus": true, "product": true, "project": true, "read": true, "refactor": true, "request": true, "requests": true, "review": true, "scan": true, "skill": true, "skills": true, "specific": true, "summary": true, "summaries": true, "support": true, "task": true, "tasks": true, "that": true, "things": true, "this": true, "token": true, "tokens": true, "tool": true, "tools": true, "trigger": true, "use": true, "used": true, "user": true, "when": true, "with": true, "words": true, "work": true, "workflow": true, "your": true,
+	}
+	return stop[word]
+}
+
 func SortFindings(findings []Finding) {
+	order := map[FindingType]int{
+		FindingDuplicate:       1,
+		FindingConflict:        2,
+		FindingBroken:          3,
+		FindingOverlap:         4,
+		FindingHighTokenCost:   5,
+		FindingBroadActivation: 6,
+		FindingUnseen:          7,
+	}
 	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].Severity != findings[j].Severity {
-			return findings[i].Severity < findings[j].Severity
+		if order[findings[i].Type] != order[findings[j].Type] {
+			return order[findings[i].Type] < order[findings[j].Type]
 		}
-		if findings[i].Type != findings[j].Type {
-			return findings[i].Type < findings[j].Type
+		if len(findings[i].Skills) != len(findings[j].Skills) {
+			return len(findings[i].Skills) > len(findings[j].Skills)
 		}
 		return findings[i].Title < findings[j].Title
 	})
@@ -160,4 +294,56 @@ func FindingCounts(findings []Finding) map[FindingType]int {
 		counts[finding.Type]++
 	}
 	return counts
+}
+
+func logicalName(skill inventory.Skill) string {
+	return strings.ToLower(strings.TrimSpace(skill.Name))
+}
+
+func displayName(skills []inventory.Skill) string {
+	if len(skills) == 0 {
+		return "unknown"
+	}
+	return skills[0].Name
+}
+
+func tokenRange(skills []inventory.Skill) string {
+	if len(skills) == 0 {
+		return "0-0"
+	}
+	minLower := skills[0].LowerTokens
+	maxUpper := skills[0].UpperTokens
+	for _, skill := range skills[1:] {
+		if skill.LowerTokens < minLower {
+			minLower = skill.LowerTokens
+		}
+		if skill.UpperTokens > maxUpper {
+			maxUpper = skill.UpperTokens
+		}
+	}
+	return fmt.Sprintf("%d-%d", minLower, maxUpper)
+}
+
+func sortedKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func lowerNames(names []string) []string {
+	out := make([]string, len(names))
+	for i, name := range names {
+		out[i] = strings.ToLower(name)
+	}
+	return out
+}
+
+func summarizeNames(names []string) string {
+	if len(names) <= 3 {
+		return strings.Join(names, " / ")
+	}
+	return fmt.Sprintf("%s / %s / %s +%d", names[0], names[1], names[2], len(names)-3)
 }

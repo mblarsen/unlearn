@@ -7,6 +7,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mblarsen/unlearn/internal/config"
+	"github.com/mblarsen/unlearn/internal/ui"
 )
 
 type RootChoice struct {
@@ -24,6 +25,7 @@ type Model struct {
 	Done         bool
 	Cancelled    bool
 	Width        int
+	Height       int
 }
 
 func New(roots []RootChoice, historyJSONL []string, cfg config.Config) Model {
@@ -41,6 +43,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
+		m.Height = msg.Height
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc", "q":
@@ -69,36 +72,125 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) View() string {
-	lines := []string{lipgloss.NewStyle().Bold(true).Render("unlearn setup"), "", "Skill roots:"}
+	theme := ui.DefaultTheme()
+	width := m.Width
+	if width <= 0 {
+		width = 90
+	}
+	height := m.Height
+	if height <= 0 {
+		height = 25
+	}
+	if width < 70 {
+		width = 70
+	}
+	panelWidth := width - 4
+	bodyHeight := height - 4
+	if bodyHeight < 12 {
+		bodyHeight = 12
+	}
+	contentWidth := panelWidth - 4
+	lines := []string{
+		theme.AppTitle.Render("unlearn setup") + theme.Muted.Render("  first launch permissions"),
+		theme.Muted.Render(ui.Truncate("Choose exactly what unlearn may scan. Write access is still requested later per action.", contentWidth)),
+		"",
+		theme.Section.Render("Skill roots"),
+	}
 	for i, root := range m.Roots {
-		cursor := "  "
-		if i == m.Cursor {
-			cursor = "› "
-		}
-		mark := "[ ]"
-		if root.Trusted {
-			mark = "[x]"
-		}
-		status := "missing"
-		if root.Exists {
-			status = "scan trusted"
-			if !root.Trusted {
-				status = "not yet trusted"
-			}
-		}
-		lines = append(lines, fmt.Sprintf("%s%s %s  %s", cursor, mark, root.Path, status))
+		lines = append(lines, m.rootLine(theme, i, root, contentWidth))
 	}
-	lines = append(lines, "", "Options:")
-	lines = append(lines, optionLine(m.Cursor == len(m.Roots), m.LLMEnabled, "Enable LLM-assisted summaries and overlap detection"))
-	historyLabel := "Scan local Pi JSONL histories for actual invocation evidence"
+	lines = append(lines, "", theme.Section.Render("Options"))
+	lines = append(lines, m.optionLine(theme, len(m.Roots), m.LLMEnabled, "LLM-assisted summaries and semantic overlap", contentWidth))
+	historyLabel := "Pi JSONL history evidence"
 	if len(m.HistoryJSONL) == 0 {
-		historyLabel += " (none discovered)"
+		historyLabel += " · none discovered"
 	} else {
-		historyLabel += fmt.Sprintf(" (%d files discovered; paths only so far)", len(m.HistoryJSONL))
+		historyLabel += fmt.Sprintf(" · %d paths discovered · read only after opt-in", len(m.HistoryJSONL))
 	}
-	lines = append(lines, optionLine(m.Cursor == len(m.Roots)+1, m.HistoryScan, historyLabel))
-	lines = append(lines, "", "space toggle · l LLM · h history · enter continue · q cancel")
-	return strings.Join(lines, "\n")
+	lines = append(lines, m.optionLine(theme, len(m.Roots)+1, m.HistoryScan, historyLabel, contentWidth))
+	lines = ui.FitLines(lines, bodyHeight-2)
+	panel := theme.Panel.Width(panelWidth - 2).Height(bodyHeight - 2).Render(strings.Join(ui.PadLines(lines, bodyHeight-2), "\n"))
+	keybar := renderSetupKeybar(theme, width)
+	return lipgloss.JoinVertical(lipgloss.Left, panel, keybar)
+}
+
+func (m Model) rootLine(theme ui.Theme, index int, root RootChoice, width int) string {
+	mark := "□"
+	if root.Trusted {
+		mark = "■"
+	}
+	statusText := "missing"
+	status := theme.Muted.Render(statusText)
+	if root.Exists && root.Trusted {
+		statusText = "trusted"
+		status = theme.Success.Render(statusText)
+	} else if root.Exists {
+		statusText = "not trusted"
+		status = theme.Warning.Render(statusText)
+	}
+	rowWidth := width - 2
+	left := fmt.Sprintf("%s %s", mark, root.Path)
+	line := padBetween(ui.Truncate(left, rowWidth-lipgloss.Width(statusText)-1), status, rowWidth)
+	if index == m.Cursor {
+		return theme.SelectedRow.Width(width).Render("▸ " + line)
+	}
+	return theme.Row.Render("  " + line)
+}
+
+func (m Model) optionLine(theme ui.Theme, index int, enabled bool, label string, width int) string {
+	mark := "□"
+	if enabled {
+		mark = "■"
+	}
+	line := ui.Truncate(fmt.Sprintf("%s %s", mark, label), width-2)
+	if index == m.Cursor {
+		return theme.SelectedRow.Width(width).Render("▸ " + line)
+	}
+	return theme.Row.Render("  " + line)
+}
+
+func padBetween(left, right string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	leftWidth := lipgloss.Width(left)
+	rightWidth := lipgloss.Width(right)
+	if leftWidth+rightWidth+1 >= width {
+		if rightWidth+2 >= width {
+			return ui.Truncate(left, width)
+		}
+		return ui.Truncate(left, width-rightWidth-1) + " " + right
+	}
+	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
+}
+
+func renderSetupKeybar(theme ui.Theme, width int) string {
+	parts := []string{
+		theme.Key.Render("space") + " toggle",
+		theme.Key.Render("j/k") + " move",
+		theme.Key.Render("l") + " llm",
+		theme.Key.Render("h") + " history",
+		theme.Key.Render("enter") + " continue",
+		theme.Key.Render("q") + " cancel",
+	}
+	limit := width - 2
+	line := ""
+	hidden := false
+	for _, part := range parts {
+		candidate := part
+		if line != "" {
+			candidate = line + "  " + part
+		}
+		if lipgloss.Width(candidate) > limit {
+			hidden = true
+			break
+		}
+		line = candidate
+	}
+	if hidden && lipgloss.Width(line+"  …") <= limit {
+		line += theme.Muted.Render("  …")
+	}
+	return theme.Keybar.Width(limit).Render(ui.Truncate(line, limit))
 }
 
 func (m Model) ApplyTo(cfg config.Config) config.Config {
@@ -130,16 +222,4 @@ func (m *Model) toggleCurrent() {
 		return
 	}
 	m.HistoryScan = !m.HistoryScan
-}
-
-func optionLine(selected bool, enabled bool, label string) string {
-	cursor := "  "
-	if selected {
-		cursor = "› "
-	}
-	mark := "[ ]"
-	if enabled {
-		mark = "[x]"
-	}
-	return fmt.Sprintf("%s%s %s", cursor, mark, label)
 }

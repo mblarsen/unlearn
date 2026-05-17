@@ -123,3 +123,14 @@ This checklist maps implementation work to the product design in `docs/superpowe
 ## Current focus
 
 Initial v1 implementation is complete enough for fixture/temp-root validation. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, and dashboard actions execute against the current selected skill/finding rather than providing full multi-select batch workflows.
+
+## QA notes — 2026-05-17 UI/UX cleanup
+
+Manual deterministic render QA used a temporary in-repo harness with fixture-only roots under `/tmp/unlearn-qa`; no real installed skills or agent configs were scanned or modified. Fixture shape: 11 logical skills (`macos-calendar`, `macos-notes`, `macos-reminders`, `fastmail`, `mcp2cli`, `wrangler`, `ui-ux-pro-max`, `frontend-design`, `work-on-ticket`, `improve-codebase-architecture`, `self-improving-agent`) with two installs each, high token ranges, high activation risk, and generic broad descriptions. Render checks covered setup at ~90×25, findings dashboard at ~90×25, grouped skill inventory at ~90×25, and wider inventory at ~120×35.
+
+Observations from this pass:
+
+- Generic prose/action words no longer create one giant overlap cluster; the broad fixture produced duplicate, high-token, and broad-activation findings without overlap spam.
+- The setup screen keeps status labels intact at 90 columns (`not trusted`, `missing`) and truncates paths/descriptions deliberately.
+- The dashboard now uses a compact header, grouped finding sections, selected-row highlight, badges, summarized details, and a width-aware keybar that preserves core keys and shows `…` when lower-priority actions do not fit.
+- The skill inventory consolidates repeated installs into one logical row with instance count and summarized roots instead of repeating same-skill rows.
