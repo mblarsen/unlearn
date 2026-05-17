@@ -77,19 +77,34 @@ func TestTokenRangeCollapsesEqualBounds(t *testing.T) {
 	}
 }
 
-func TestDensityToggleChangesSkillListRendering(t *testing.T) {
-	skills := []inventory.Skill{{Name: "alpha", Description: "Alpha-specific browser automation helper", Root: "/one", LowerTokens: 100, UpperTokens: 200}}
-	m := New(skills, nil)
+func TestDensityHintAppearsInFindingDetails(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "alpha", Description: "Alpha-specific browser automation helper", Root: "/one", LowerTokens: 100, UpperTokens: 200},
+		{Name: "alpha", Description: "Second alpha helper", Root: "/two", LowerTokens: 100, UpperTokens: 200},
+	}
+	findings := []analysis.Finding{{ID: "duplicate:alpha", Type: analysis.FindingDuplicate, Title: "alpha", Skills: skills}}
+	m := New(skills, findings)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
-	m = updated.(Model)
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	m = updated.(Model)
 	compact := m.View()
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	m = updated.(Model)
 	rich := m.View()
-	if compact == rich || !strings.Contains(rich, "rich") || !strings.Contains(rich, "Alpha-specific") {
-		t.Fatalf("density toggle should visibly change rendering:\ncompact:\n%s\nrich:\n%s", compact, rich)
+	if !strings.Contains(compact, "r rich shows") || !strings.Contains(rich, "r compact hides") || !strings.Contains(rich, "Alpha-specific") {
+		t.Fatalf("density hint should explain rich finding details:\ncompact:\n%s\nrich:\n%s", compact, rich)
+	}
+}
+
+func TestSkillListOmitsKindLabel(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Kind: inventory.KindDirectory, Root: "/one", LowerTokens: 100, UpperTokens: 200}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "directory ·") || strings.Contains(view, "Skill inventory · rich") {
+		t.Fatalf("skill list should omit kind labels and rich suffix:\n%s", view)
 	}
 }
 

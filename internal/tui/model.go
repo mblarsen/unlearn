@@ -788,14 +788,13 @@ func (m Model) renderList(theme ui.Theme, width, height int) string {
 }
 
 func (m Model) listTitle() string {
-	suffix := ""
-	if m.Density == DensityRich {
-		suffix = " · rich"
-	}
 	if m.Mode == ViewSkills {
-		return "Skill inventory" + suffix
+		return "Skill inventory"
 	}
-	return "Findings" + suffix
+	if m.Density == DensityRich {
+		return "Findings · rich"
+	}
+	return "Findings"
 }
 
 func (m Model) renderFindingRows(theme ui.Theme, width, height int) []string {
@@ -858,13 +857,9 @@ func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 			prefix = "▸ "
 			selectedLine = len(lines)
 		}
-		kind := string(group.Representative.Kind)
-		if kind == "" {
-			kind = "skill"
-		}
 		meta := fmt.Sprintf("%s · %s", installLabel(len(group.Skills)), tokenRange(group.Skills))
 		if len(group.Skills) == 1 {
-			meta = fmt.Sprintf("%s · %s", kind, tokenRange(group.Skills))
+			meta = tokenRange(group.Skills)
 		}
 		line := prefix + padBetween(ui.Truncate(group.Name, width-24), meta, width-2)
 		if i == m.Cursor {
@@ -873,12 +868,6 @@ func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 			line = theme.Row.Render(ui.Truncate(line, width))
 		}
 		lines = append(lines, line)
-		if m.Density == DensityRich {
-			summary := richSkillSummary(group)
-			if summary != "" {
-				lines = append(lines, theme.Muted.Render("  "+ui.Truncate(summary, width-2)))
-			}
-		}
 	}
 	return windowLines(lines, height, selectedLine)
 }
@@ -1036,6 +1025,7 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 			lines = append(lines, renderSelectedInstallDetails(theme, skill, width)...)
 		}
 	}
+	lines = append(lines, "", renderDensityHint(theme, m.Density, width))
 	return lines
 }
 
@@ -1286,6 +1276,13 @@ func optionLineForState(theme ui.Theme, state InteractionState) string {
 	}
 }
 
+func renderDensityHint(theme ui.Theme, density Density, width int) string {
+	if density == DensityRich {
+		return theme.Muted.Render(ui.Truncate("r compact hides install description details", width))
+	}
+	return theme.Muted.Render(ui.Truncate("r rich shows selected install description, path, provenance", width))
+}
+
 func renderSelectedInstallDetails(theme ui.Theme, skill inventory.Skill, width int) []string {
 	var lines []string
 	description := skill.Description
@@ -1313,19 +1310,6 @@ func descriptionSnippet(skill inventory.Skill, width int) string {
 		return ""
 	}
 	return ui.Truncate(description, width)
-}
-
-func richSkillSummary(group skillGroup) string {
-	skill := group.Representative
-	var parts []string
-	if skill.Description != "" && !broadGenericDescription(skill.Description) {
-		parts = append(parts, skill.Description)
-	}
-	parts = append(parts, rootSummary(group.Skills, 2))
-	if skill.ActivationRisk != "" {
-		parts = append(parts, "activation "+skill.ActivationRisk)
-	}
-	return strings.Join(parts, " · ")
 }
 
 func (m Model) pendingInstallChoices() []inventory.Skill {
