@@ -18,6 +18,7 @@ type ActionService interface {
 	Delete(skill inventory.Skill, typedName string) error
 	PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview
 	Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error)
+	QuarantinedSkills() ([]string, error)
 	Restore(name string, destRoot string) (string, error)
 }
 
@@ -35,6 +36,7 @@ func (NoopActionService) PreviewRename(skill inventory.Skill, newName string) fs
 func (NoopActionService) Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error) {
 	return fsactions.PreviewRename(skill, newName), nil
 }
+func (NoopActionService) QuarantinedSkills() ([]string, error)                 { return nil, nil }
 func (NoopActionService) Restore(name string, destRoot string) (string, error) { return "", nil }
 
 type ConfigActionService struct {
@@ -78,6 +80,11 @@ func (s *ConfigActionService) PreviewRename(skill inventory.Skill, newName strin
 
 func (s *ConfigActionService) Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error) {
 	return fsactions.Rename(skill, newName, s.Config, true)
+}
+
+func (s *ConfigActionService) QuarantinedSkills() ([]string, error) {
+	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
+	return mgr.QuarantinedSkills()
 }
 
 func (s *ConfigActionService) Restore(name string, destRoot string) (string, error) {

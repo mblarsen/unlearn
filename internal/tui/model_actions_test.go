@@ -20,6 +20,7 @@ type fakeActionService struct {
 	deletedRoot     []string
 	renamed         []string
 	restored        []string
+	quarantinedList []string
 	deleteTypedName string
 }
 
@@ -57,6 +58,9 @@ func (f *fakeActionService) Rename(skill inventory.Skill, newName string) (fsact
 	f.renamed = append(f.renamed, skill.Name+":"+newName)
 	return fsactions.PreviewRename(skill, newName), nil
 }
+func (f *fakeActionService) QuarantinedSkills() ([]string, error) {
+	return append([]string(nil), f.quarantinedList...), nil
+}
 func (f *fakeActionService) Restore(name string, destRoot string) (string, error) {
 	f.restored = append(f.restored, name+":"+destRoot)
 	return destRoot + "/" + name, nil
@@ -65,12 +69,12 @@ func (f *fakeActionService) Restore(name string, destRoot string) (string, error
 func TestDashboardKeepAndIgnoreFindingActions(t *testing.T) {
 	service := &fakeActionService{}
 	m := testModel(service)
-	updated, _ := m.Update(key("K"))
+	updated, _ := m.Update(key("ctrl+k"))
 	m = updated.(Model)
 	if len(service.kept) != 1 || service.kept[0] != "alpha" {
 		t.Fatalf("kept=%v", service.kept)
 	}
-	updated, _ = m.Update(key("I"))
+	updated, _ = m.Update(key("ctrl+g"))
 	m = updated.(Model)
 	if len(service.ignored) != 1 || service.ignored[0] != "duplicate:alpha" {
 		t.Fatalf("ignored=%v", service.ignored)
@@ -80,7 +84,7 @@ func TestDashboardKeepAndIgnoreFindingActions(t *testing.T) {
 func TestDashboardQuarantineRequiresWriteGateAndConfirmation(t *testing.T) {
 	service := &fakeActionService{writeRoots: map[string]bool{}}
 	m := testModel(service)
-	updated, _ := m.Update(key("Q"))
+	updated, _ := m.Update(key("ctrl+q"))
 	m = updated.(Model)
 	if m.State != StateWriteGate || !strings.Contains(m.View(), "this install") || !strings.Contains(m.View(), "/root/alpha") {
 		t.Fatalf("expected exact write gate, state=%v view=%s", m.State, m.View())
@@ -105,7 +109,7 @@ func TestDashboardCanQuarantineAllDuplicateInstalls(t *testing.T) {
 	}
 	finding := analysis.Finding{ID: "duplicate:cloudflare", Title: "cloudflare", Type: analysis.FindingDuplicate, Skills: skills}
 	m := NewWithActions(skills, []analysis.Finding{finding}, service)
-	updated, _ := m.Update(key("Q"))
+	updated, _ := m.Update(key("ctrl+q"))
 	m = updated.(Model)
 	if !strings.Contains(m.View(), "All 2 installs") {
 		t.Fatalf("expected all option:\n%s", m.View())
@@ -135,7 +139,7 @@ func TestDashboardRequiresInstallChoiceForDuplicateFindingActions(t *testing.T) 
 	}
 	finding := analysis.Finding{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills}
 	m := NewWithActions(skills, []analysis.Finding{finding}, service)
-	updated, _ := m.Update(key("Q"))
+	updated, _ := m.Update(key("ctrl+q"))
 	m = updated.(Model)
 	if m.State != StateSelectInstall || !strings.Contains(m.View(), "CHOOSE EXACT INSTALL") || !strings.Contains(m.View(), "/one/alpha") || !strings.Contains(m.View(), "/three/alpha") {
 		t.Fatalf("expected install chooser before quarantine:\n%s", m.View())
@@ -166,7 +170,7 @@ func TestDashboardDeleteUpdatesDuplicateFindingCount(t *testing.T) {
 	}
 	finding := analysis.Finding{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills}
 	m := NewWithActions(skills, []analysis.Finding{finding}, service)
-	updated, _ := m.Update(key("D"))
+	updated, _ := m.Update(key("ctrl+d"))
 	m = updated.(Model)
 	updated, _ = m.Update(key("j"))
 	m = updated.(Model)
@@ -186,7 +190,7 @@ func TestDashboardDeleteUpdatesDuplicateFindingCount(t *testing.T) {
 func TestDashboardDeleteUsesModalConfirmation(t *testing.T) {
 	service := &fakeActionService{writeRoots: map[string]bool{"/root": true}}
 	m := testModel(service)
-	updated, _ := m.Update(key("D"))
+	updated, _ := m.Update(key("ctrl+d"))
 	m = updated.(Model)
 	if m.State != StateConfirmDelete || !strings.Contains(m.View(), "y confirm") || strings.Contains(m.View(), "type") {
 		t.Fatalf("expected delete confirmation modal, state=%v view=%s", m.State, m.View())
@@ -201,7 +205,7 @@ func TestDashboardDeleteUsesModalConfirmation(t *testing.T) {
 func TestDashboardRenameDryRunAndConfirmation(t *testing.T) {
 	service := &fakeActionService{writeRoots: map[string]bool{"/root": true}}
 	m := testModel(service)
-	updated, _ := m.Update(key("N"))
+	updated, _ := m.Update(key("ctrl+r"))
 	m = updated.(Model)
 	for _, r := range "beta" {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -224,7 +228,7 @@ func TestDashboardRenameWarnsForSymlinkedSkill(t *testing.T) {
 	skill := inventory.Skill{Name: "alpha", Root: "/root", EncounteredPath: "/root/alpha", PrimaryPath: "/root/alpha/SKILL.md", IsSymlink: true}
 	m := NewWithActions([]inventory.Skill{skill}, nil, service)
 	m.Mode = ViewSkills
-	updated, _ := m.Update(key("N"))
+	updated, _ := m.Update(key("ctrl+r"))
 	m = updated.(Model)
 	for _, r := range "beta" {
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -242,18 +246,19 @@ func TestDashboardRenameWarnsForSymlinkedSkill(t *testing.T) {
 	}
 }
 
-func TestDashboardRestoreUsesSelectedRoot(t *testing.T) {
-	service := &fakeActionService{writeRoots: map[string]bool{"/root": true}}
+func TestDashboardRestoreUsesPopupSelection(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/root": true}, quarantinedList: []string{"old", "older"}}
 	m := testModel(service)
-	updated, _ := m.Update(key("R"))
+	updated, _ := m.Update(key("ctrl+u"))
 	m = updated.(Model)
-	for _, r := range "old" {
-		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		m = updated.(Model)
+	if m.State != StateSelectRestore || !strings.Contains(m.View(), "RESTORE SKILL") || !strings.Contains(m.View(), "old") {
+		t.Fatalf("expected restore chooser:\n%s", m.View())
 	}
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
-	if len(service.restored) != 1 || service.restored[0] != "old:/root" {
+	if len(service.restored) != 1 || service.restored[0] != "older:/root" {
 		t.Fatalf("restored=%v", service.restored)
 	}
 }
@@ -265,5 +270,20 @@ func testModel(service *fakeActionService) Model {
 }
 
 func key(value string) tea.KeyMsg {
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+	switch value {
+	case "ctrl+k":
+		return tea.KeyMsg{Type: tea.KeyCtrlK}
+	case "ctrl+g":
+		return tea.KeyMsg{Type: tea.KeyCtrlG}
+	case "ctrl+q":
+		return tea.KeyMsg{Type: tea.KeyCtrlQ}
+	case "ctrl+d":
+		return tea.KeyMsg{Type: tea.KeyCtrlD}
+	case "ctrl+r":
+		return tea.KeyMsg{Type: tea.KeyCtrlR}
+	case "ctrl+u":
+		return tea.KeyMsg{Type: tea.KeyCtrlU}
+	default:
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
+	}
 }

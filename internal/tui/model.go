@@ -36,7 +36,7 @@ const (
 	StateConfirmDelete
 	StateInputRename
 	StatePreviewRename
-	StateInputRestore
+	StateSelectRestore
 	StateSelectInstall
 )
 
@@ -67,6 +67,8 @@ type Model struct {
 	PendingSkills  []inventory.Skill
 	PendingFinding analysis.Finding
 	InstallCursor  int
+	RestoreCursor  int
+	RestoreChoices []string
 	Input          string
 	Message        string
 	Status         string
@@ -124,17 +126,17 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		} else {
 			m.Density = DensityCompact
 		}
-	case "K":
+	case "ctrl+k":
 		m.keepSelected()
-	case "I":
+	case "ctrl+g":
 		m.ignoreSelectedFinding()
-	case "Q":
+	case "ctrl+q":
 		m.beginSkillAction(ActionQuarantine)
-	case "D":
+	case "ctrl+d":
 		m.beginSkillAction(ActionDelete)
-	case "N":
+	case "ctrl+r":
 		m.beginSkillAction(ActionRename)
-	case "R":
+	case "ctrl+u":
 		m.beginSkillAction(ActionRestore)
 	}
 	return m, nil
@@ -148,8 +150,10 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateQuarantineConfirm(msg)
 	case StateConfirmDelete:
 		return m.updateDeleteConfirm(msg)
-	case StateInputRename, StateInputRestore:
+	case StateInputRename:
 		return m.updateInput(msg)
+	case StateSelectRestore:
+		return m.updateRestoreSelection(msg)
 	case StatePreviewRename:
 		return m.updateRenamePreview(msg)
 	case StateSelectInstall:
@@ -244,6 +248,33 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateRestoreSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		if m.RestoreCursor < len(m.RestoreChoices)-1 {
+			m.RestoreCursor++
+		}
+	case "k", "up":
+		if m.RestoreCursor > 0 {
+			m.RestoreCursor--
+		}
+	case "enter":
+		if len(m.RestoreChoices) == 0 {
+			m.cancel("no quarantined skills")
+			return m, nil
+		}
+		dest, err := m.Actions.Restore(m.RestoreChoices[m.RestoreCursor], m.PendingSkill.Root)
+		if err != nil {
+			m.fail(err)
+		} else {
+			m.complete(fmt.Sprintf("restored %s -> %s", m.RestoreChoices[m.RestoreCursor], dest))
+		}
+	case "esc", "q":
+		m.cancel("restore cancelled")
+	}
+	return m, nil
+}
+
 func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	skills := m.pendingInstallChoices()
 	maxCursor := len(skills) - 1
@@ -299,6 +330,10 @@ func (m Model) updateRenamePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) beginSkillAction(action PendingAction) {
 	m.PendingAction = action
+	if action == ActionRestore {
+		m.beginRestoreAction()
+		return
+	}
 	if action != ActionRestore {
 		if finding, ok := m.selectedFinding(); ok && len(finding.Skills) > 1 {
 			m.PendingFinding = finding
@@ -356,10 +391,6 @@ func (m *Model) continuePendingAfterWriteGate() {
 		m.State = StateInputRename
 		m.Input = ""
 		m.Message = fmt.Sprintf("Rename this exact install?\n%s\nNew name", skillTarget(m.PendingSkill))
-	case ActionRestore:
-		m.State = StateInputRestore
-		m.Input = ""
-		m.Message = fmt.Sprintf("Quarantined skill name to restore into %s", m.PendingSkill.Root)
 	default:
 		m.resetInteraction()
 	}
@@ -378,18 +409,25 @@ func (m *Model) submitInput() {
 		if m.RenamePreview.Warn != "" {
 			m.Message = "Warning: " + m.RenamePreview.Warn + "; suggested action: quarantine."
 		}
-	case StateInputRestore:
-		if strings.TrimSpace(m.Input) == "" {
-			m.Status = "restore requires a skill name"
-			return
-		}
-		dest, err := m.Actions.Restore(m.Input, m.PendingSkill.Root)
-		if err != nil {
-			m.fail(err)
-		} else {
-			m.complete(fmt.Sprintf("restored %s -> %s", m.Input, dest))
-		}
 	}
+}
+
+func (m *Model) beginRestoreAction() {
+	skill, ok := m.selectedSkill()
+	if !ok {
+		m.Status = "select a destination skill/root before restore"
+		return
+	}
+	choices, err := m.Actions.QuarantinedSkills()
+	if err != nil {
+		m.fail(err)
+		return
+	}
+	m.PendingSkill = skill
+	m.RestoreChoices = choices
+	m.RestoreCursor = 0
+	m.State = StateSelectRestore
+	m.Message = fmt.Sprintf("Restore quarantined skill into %s", skill.Root)
 }
 
 func (m *Model) keepSelected() {
@@ -536,6 +574,8 @@ func (m *Model) resetInteraction() {
 	m.PendingSkills = nil
 	m.PendingFinding = analysis.Finding{}
 	m.InstallCursor = 0
+	m.RestoreCursor = 0
+	m.RestoreChoices = nil
 	m.Input = ""
 	m.Message = ""
 	m.RenamePreview = fsactions.RenamePreview{}
@@ -771,6 +811,9 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 	if m.State == StateSelectInstall {
 		label = "CHOOSE EXACT INSTALL"
 	}
+	if m.State == StateSelectRestore {
+		label = "RESTORE SKILL"
+	}
 	lines := []string{theme.BadgeWarn.Render(label), ""}
 	messageLines := strings.Split(m.Message, "\n")
 	if len(messageLines) > 0 && strings.TrimSpace(messageLines[0]) != "" {
@@ -784,6 +827,21 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 			for _, line := range ui.Wrap(target, width-2) {
 				lines = append(lines, theme.Row.Render("  "+line))
 			}
+		}
+	}
+	if m.State == StateSelectRestore {
+		lines = append(lines, "", theme.Muted.Render("Use ↑/↓ then enter:"))
+		if len(m.RestoreChoices) == 0 {
+			lines = append(lines, theme.Muted.Render("  No quarantined skills found"))
+		}
+		for i, name := range m.RestoreChoices {
+			prefix := "  "
+			style := theme.Row
+			if i == m.RestoreCursor {
+				prefix = "▸ "
+				style = theme.SelectedRow.Width(width)
+			}
+			lines = append(lines, style.Render(ui.Truncate(prefix+name, width)))
 		}
 	}
 	if m.State == StateSelectInstall {
@@ -807,7 +865,7 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 			lines = append(lines, style.Render(ui.Truncate(prefix+fmt.Sprintf("All %d installs", len(m.pendingInstallChoices())), width)))
 		}
 	}
-	if m.Input != "" || m.State == StateInputRename || m.State == StateInputRestore {
+	if m.Input != "" || m.State == StateInputRename {
 		lines = append(lines, "", theme.Muted.Render("Input"), theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
 	}
 	lines = append(lines, "", theme.Muted.Render("Options"), optionLineForState(theme, m.State))
@@ -943,17 +1001,19 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"y", "confirm"}, {"n", "cancel"}, {"esc", "back"}}
 		case StateSelectInstall:
 			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "select"}, {"esc", "cancel"}}
-		case StateInputRename, StateInputRestore:
+		case StateSelectRestore:
+			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "restore"}, {"esc", "cancel"}}
+		case StateInputRename:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		}
 	}
 	parts := []keyPart{{"↑↓/jk", "move"}, {"r", "density"}}
 	if m.Mode == ViewFindings {
-		parts = append(parts, keyPart{"s", "skills"}, keyPart{"I", "ignore"})
+		parts = append(parts, keyPart{"s", "skills"}, keyPart{"ctrl+g", "ignore"})
 	} else {
 		parts = append(parts, keyPart{"f", "findings"})
 	}
-	parts = append(parts, keyPart{"K", "keep"}, keyPart{"Q", "quarantine"}, keyPart{"D", "delete"}, keyPart{"N", "rename"}, keyPart{"R", "restore"}, keyPart{"q", "quit"})
+	parts = append(parts, keyPart{"ctrl+k", "keep"}, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"q", "quit"})
 	return parts
 }
 
@@ -1032,7 +1092,9 @@ func optionLineForState(theme ui.Theme, state InteractionState) string {
 		return theme.Key.Render("y") + " confirm  " + theme.Key.Render("n") + " cancel  " + theme.Key.Render("esc") + " back"
 	case StateSelectInstall:
 		return theme.Key.Render("enter") + " select highlighted install  " + theme.Key.Render("esc") + " cancel"
-	case StateInputRename, StateInputRestore:
+	case StateSelectRestore:
+		return theme.Key.Render("enter") + " restore highlighted skill  " + theme.Key.Render("esc") + " cancel"
+	case StateInputRename:
 		return theme.Key.Render("enter") + " submit  " + theme.Key.Render("esc") + " cancel"
 	default:
 		return theme.Key.Render("esc") + " back"

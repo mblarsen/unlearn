@@ -38,6 +38,23 @@ func (m Manager) Quarantine(skill inventory.Skill, confirm bool) (string, error)
 	return dest, nil
 }
 
+func (m Manager) QuarantinedSkills() ([]string, error) {
+	matches, err := filepath.Glob(filepath.Join(m.QuarantineDir, "*", "*"))
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(matches))
+	seen := map[string]bool{}
+	for i := len(matches) - 1; i >= 0; i-- {
+		name := filepath.Base(matches[i])
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	return names, nil
+}
+
 func (m Manager) Restore(name string, destRoot string) (string, error) {
 	matches, err := filepath.Glob(filepath.Join(m.QuarantineDir, "*", safeName(name)))
 	if err != nil {
