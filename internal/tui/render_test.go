@@ -22,6 +22,9 @@ func TestFindingsRenderGroupedAndConsolidatedAtSmallWidth(t *testing.T) {
 	if !strings.Contains(view, "High token cost") || !strings.Contains(view, "Broad activation risk") {
 		t.Fatalf("missing grouped sections:\n%s", view)
 	}
+	if !strings.Contains(view, "▌") {
+		t.Fatalf("section headers should have a subtle visual marker:\n%s", view)
+	}
 	if strings.Count(view, "macos-calendar") > 5 {
 		t.Fatalf("same-name finding appears too often:\n%s", view)
 	}

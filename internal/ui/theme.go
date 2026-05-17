@@ -36,7 +36,7 @@ func DefaultTheme() Theme {
 		Panel:        lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#324052")).Padding(0, 1),
 		Modal:        lipgloss.NewStyle().Border(lipgloss.ThickBorder()).BorderForeground(lipgloss.Color("#FBBF24")).Background(lipgloss.Color("#17202D")).Padding(1, 2),
 		PanelTitle:   lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E5F4FF")),
-		Section:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#D7E1EA")),
+		Section:      lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#E5F4FF")),
 		Row:          lipgloss.NewStyle().Foreground(lipgloss.Color("#C9D3DE")),
 		SelectedRow:  lipgloss.NewStyle().Foreground(lipgloss.Color("#F8FBFF")).Background(lipgloss.Color("#243246")).Bold(true),
 		Muted:        lipgloss.NewStyle().Foreground(lipgloss.Color("#788696")),

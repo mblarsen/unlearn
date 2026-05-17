@@ -804,9 +804,7 @@ func (m Model) renderFindingRows(theme ui.Theme, width, height int) []string {
 	selectedLine := 0
 	var lines []string
 	for _, section := range sections {
-		sectionLine := fmt.Sprintf("▾ %s", section.Title)
-		countLine := fmt.Sprintf("%d skills", sectionSkillCount(section))
-		lines = append(lines, theme.Section.Render(ui.Truncate(padBetween(sectionLine, countLine, width), width)))
+		lines = append(lines, renderFindingSectionHeader(theme, section, width))
 		for _, finding := range section.Findings {
 			prefix := "  "
 			if selected == m.Cursor {
@@ -824,6 +822,13 @@ func (m Model) renderFindingRows(theme ui.Theme, width, height int) []string {
 		}
 	}
 	return windowLines(lines, height, selectedLine)
+}
+
+func renderFindingSectionHeader(theme ui.Theme, section findingSection, width int) string {
+	title := theme.Accent.Render("▌ ") + theme.Section.Render(section.Title)
+	count := theme.Muted.Render(fmt.Sprintf("%d skills", sectionSkillCount(section)))
+	line := padBetween(title, count, width)
+	return ui.Truncate(line, width)
 }
 
 func findingRowText(finding analysis.Finding, width int) string {
