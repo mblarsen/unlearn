@@ -1,0 +1,48 @@
+version: 2
+project_name: unlearn
+
+gomod:
+  proxy: false
+
+report_sizes: true
+
+builds:
+  - id: unlearn
+    main: .
+    binary: unlearn
+    env:
+      - CGO_ENABLED=0
+    tags:
+      - netgo
+      - osusergo
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: amd64
+    ldflags:
+      - -s -w
+
+archives:
+  - id: unlearn-archives
+    ids:
+      - unlearn
+
+release:
+  github:
+    owner: mblarsen
+    name: unlearn
+  draft: false
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^build:'
+      - '^chore:'
+      - '^ci:'
+      - '^docs:'

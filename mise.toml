@@ -4,6 +4,7 @@ pre-commit = "latest"
 "go:golang.org/x/tools/cmd/goimports" = "latest"
 "aqua:trufflesecurity/trufflehog" = "3.88.29"
 "pipx:commitizen" = "4.16.2"
+goreleaser = "2.15.4"
 
 [tasks.setup]
 description = "Install project tooling and git hooks"
@@ -16,6 +17,20 @@ run = "pre-commit run --all-files"
 [tasks.build]
 description = "Build the unlearn CLI"
 run = "go build -o unlearn ."
+
+[tasks.tidy]
+description = "Tidy Go module dependencies"
+run = "go mod tidy"
+
+[tasks.goreleaser-check]
+description = "Validate the GoReleaser configuration"
+depends = ["tidy"]
+run = "goreleaser check"
+
+[tasks.release-snapshot]
+description = "Build a local GoReleaser snapshot"
+depends = ["tidy"]
+run = "goreleaser release --snapshot --clean"
 
 [tasks.fmt]
 description = "Format Go files"
