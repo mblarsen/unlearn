@@ -24,6 +24,7 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - [x] Support directory skills with `SKILL.md`.
 - [x] Support standalone markdown-file skills.
 - [x] Treat unknown skill-like shapes as read-only inventory items.
+- [x] Ignore scanner/root metadata entries such as `.system`.
 - [x] Parse frontmatter and body.
 - [x] Extract explicit support-file references.
 - [x] Estimate token-cost lower/upper range.
@@ -47,7 +48,10 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - [x] Implement keep and ignore-finding decisions.
 - [x] Implement quarantine with confirmation and write-permission gate.
 - [x] Implement restore from quarantine.
-- [x] Implement direct delete gates, including typed skill name for active skills.
+- [x] Implement direct delete gates with exact install selection and modal confirmation.
+- [x] Implement duplicate install action selection, space-based multi-select, and `All N installs` for quarantine/delete.
+- [x] Implement restore through a navigable quarantined-skill modal list.
+- [x] Implement batch duplicate cleanup by root.
 - [x] Implement rename dry-run and execution for directory + `SKILL.md` frontmatter.
 - [x] Warn/suggest quarantine for symlinked or package-managed rename targets.
 - [x] Implement batch dry-run summaries.
@@ -59,9 +63,13 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - [x] Findings view is default.
 - [x] Skill inventory view is secondary.
 - [x] Compact density is default, rich density toggle exists.
-- [x] Render dynamic bottom key bar only.
+- [x] Rich mode focuses selected finding/install detail; skill inventory rows stay compact.
+- [x] Render dynamic bottom key bar only with width-aware truncation.
 - [x] Support Vim keys and arrow keys.
+- [x] Support control-chord action shortcuts (`ctrl+q`, `ctrl+d`, `ctrl+r`, `ctrl+u`, `ctrl+k`, `ctrl+g`, `ctrl+b`).
 - [x] Detail pane explains selected skill/finding, token-cost range, activation risk, provenance, usage evidence, and available actions.
+- [x] Duplicate/conflict details are comparison-first with `tab` / `shift+tab` focused-install cycling.
+- [x] Action confirmations and selections use modal overlays.
 
 ## 7. Quick commands
 
@@ -89,6 +97,7 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - [x] TUI model tests: view/density toggles, key handling, dynamic key bar/action availability.
 - [x] Setup model tests: trust toggles, LLM/history opt-ins, TOML persistence shape, bounded Pi JSONL discovery.
 - [x] TUI action tests: keep, ignore finding, quarantine, delete, rename, restore, write gates, confirmations, and warning states through injected action service.
+- [x] TUI action tests: exact install selection, duplicate multi-select, `All N installs`, restore modal list, focused-install cycling, and batch duplicate cleanup.
 
 ## Milestones
 
@@ -122,7 +131,7 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
-Initial v1 implementation is complete enough for fixture/temp-root validation. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, and dashboard actions execute against the current selected skill/finding rather than providing full multi-select batch workflows.
+Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
 
 ## QA notes — 2026-05-17 UI/UX cleanup
 
@@ -134,3 +143,20 @@ Observations from this pass:
 - The setup screen keeps status labels intact at 90 columns (`not trusted`, `missing`) and truncates paths/descriptions deliberately.
 - The dashboard now uses a compact header, grouped finding sections, selected-row highlight, badges, summarized details, and a width-aware keybar that preserves core keys and shows `…` when lower-priority actions do not fit.
 - The skill inventory consolidates repeated installs into one logical row with instance count and summarized roots instead of repeating same-skill rows.
+
+## QA notes — 2026-05-17 interactive action refinements
+
+Interactive QA extended the original dashboard interaction plan. The implemented behavior now differs from the original draft in these accepted ways:
+
+- Action confirmations and selection flows are centered modal overlays rather than detail-pane-only interaction states.
+- Destructive/action shortcuts use control chords: `ctrl+q` quarantine, `ctrl+d` delete, `ctrl+r` rename, `ctrl+u` restore/undo, `ctrl+k` keep, `ctrl+g` ignore finding, and `ctrl+b` batch duplicate cleanup. `ctrl+g` is used because `ctrl+i` is indistinguishable from Tab in terminals.
+- Duplicate install actions require choosing exact install(s), support space-based multi-select, and include an explicit `All N installs` option for quarantine/delete.
+- Duplicate cleanup can be batched by root with `ctrl+b`, quarantining duplicate installs from a selected root across many duplicate findings.
+- Restore uses a navigable modal list of quarantined skills instead of a typed skill-name prompt.
+- Duplicate/conflict details are comparison-first: `tab` and `shift+tab` cycle the focused install, and actions default to that focused install unless the user selects multiple installs or `All N installs`.
+- Rich mode now expands focused finding/install hints; skill inventory rows stay compact in both density modes.
+- Finding section headers use a subtle accent marker to strengthen hierarchy.
+- Scanner ignores `.system` entries under skill roots so agent metadata does not appear as a fake skill.
+- Equal token bounds render as a single compact value, such as `2.6k`, rather than a repeated range like `2.6k–2.6k`.
+
+Relevant commits: `0d8c029`, `b291529`, `99099c6`, `b9b9eff`, `0054000`, `f62bb1a`, `424c699`, `8058fc6`, `fd055a6`, `7ac6b68`.

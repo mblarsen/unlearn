@@ -46,6 +46,10 @@ A skill with a different name from another installed skill but a similar purpose
 
 An estimated range for how much context a skill may consume. The lower bound counts the skill's primary `SKILL.md`; the upper bound additionally counts referenced supporting material such as `references/*.md`, scripts, examples, or other files the skill may direct an agent to read.
 
+### Token-cost display
+
+The dashboard rendering of token cost. Equal lower and upper bounds are displayed as one compact value, such as `2.6k`, instead of a repeated range like `2.6k–2.6k`.
+
 ### Activation risk
 
 An estimate of how likely a skill is to be pulled into an agent context, based on breadth of frontmatter description, trigger language, and overlap with common user requests.
@@ -60,7 +64,7 @@ The default audit target for `unlearn`: skills installed in known global agent s
 
 ### Skill root
 
-A filesystem location that may contain one or more installed skills. `unlearn` should discover skills from known global roots and from user-provided roots. V1 has first-class support for directories containing `SKILL.md`, secondary support for standalone markdown files under known skill roots, and treats unknown shapes as skill-like items that should not be acted on destructively.
+A filesystem location that may contain one or more installed skills. `unlearn` should discover skills from known global roots and from user-provided roots. V1 has first-class support for directories containing `SKILL.md`, secondary support for standalone markdown files under known skill roots, and treats unknown shapes as skill-like items that should not be acted on destructively. Scanner metadata entries such as `.system` are ignored so agent/root bookkeeping does not appear as fake skills.
 
 ### Symlink-aware discovery
 
@@ -96,7 +100,7 @@ The ordering of suggested cleanup candidates. V1 should sort candidates by deter
 
 ### Dashboard layout
 
-The dashboard presentation for `unlearn`. It supports explicit view modes: findings view and skill inventory view. Findings view is the default and groups cleanup work by issue type; skill inventory view lists skills directly for browsing/searching. It also supports density modes: compact and rich. Compact is the default and is optimized for scanning many findings quickly; rich expands rows or details with summaries, token-cost range, activation risk, provenance, usage evidence, and actions. A dynamic key bar at the bottom shows the currently available actions and shortcuts. Navigation supports common Vim keys and arrow keys.
+The dashboard presentation for `unlearn`. It supports explicit view modes: findings view and skill inventory view. Findings view is the default and groups cleanup work by issue type; skill inventory view lists logical skills directly for browsing/searching, consolidating repeated installs into one row. It also supports density modes: compact and rich. Compact is the default and is optimized for scanning many findings quickly; rich focuses on selected finding/install detail rather than expanding every inventory row. The dashboard uses a Charmbracelet-style workbench layout with a header/status summary, grouped findings, a comparison-first detail pane, modal overlays for action confirmations, and a dynamic key bar at the bottom. Navigation supports common Vim keys and arrow keys.
 
 ### Safe quick fix
 
@@ -108,7 +112,7 @@ The default `unlearn` dashboard view groups work by cleanup finding, such as dup
 
 ### Skill inventory view
 
-A secondary dashboard view that lists skills directly, useful for browsing, searching, and inspecting a specific skill. A root-based view is not a v1 priority.
+A secondary dashboard view that lists logical skills directly, useful for browsing, searching, and inspecting a specific skill. Multiple installs of the same logical skill are consolidated into one row with install count, token-cost display, summarized roots, and detailed install paths in the detail pane. A root-based view is not a v1 priority.
 
 ### Usage evidence
 
@@ -152,11 +156,23 @@ A remembered user preference such as keeping a skill, ignoring a finding, or mar
 
 ### Dashboard action
 
-A standard action available from the dashboard. V1 actions use direct terminology: `keep`, `ignore finding`, `quarantine`, `delete`, `rename`, and `inspect`. Branded synonyms such as `forget`, `stash`, or `protect` are avoided. Rename updates both the skill directory name and `SKILL.md` frontmatter name by default, with a dry-run preview. If the skill appears symlinked or package-managed, `unlearn` should warn and suggest quarantine instead of rename.
+A standard action available from the dashboard. V1 actions use direct terminology: `keep`, `ignore finding`, `quarantine`, `delete`, `rename`, `restore`, `inspect`, and `batch`. Branded synonyms such as `forget`, `stash`, or `protect` are avoided. Dashboard shortcuts use control chords for destructive or stateful actions: `ctrl+q` quarantine, `ctrl+d` delete, `ctrl+r` rename, `ctrl+u` restore/undo, `ctrl+k` keep, `ctrl+g` ignore finding, and `ctrl+b` batch duplicate cleanup. `ctrl+g` is used because `ctrl+i` is indistinguishable from Tab in terminals. Rename updates both the skill directory name and `SKILL.md` frontmatter name by default, with a dry-run preview. If the skill appears symlinked or package-managed, `unlearn` should warn and suggest quarantine instead of rename.
+
+### Action modal
+
+A centered overlay used for confirmations, exact-install selection, restore selection, and other action flows. Action modals keep destructive decisions visually separate from the detail pane and show only the keys relevant to the current step.
+
+### Focused install
+
+The install currently highlighted in a comparison-first finding detail pane. In duplicate/conflict findings, `tab` and `shift+tab` cycle the focused install, and actions default to that exact install unless the user explicitly selects multiple installs or the `All N installs` option.
+
+### Batch duplicate cleanup
+
+A dashboard action for duplicate findings that quarantines duplicate installs from a selected root across many duplicate findings. It is exposed with `ctrl+b` and remains safety-gated by write permission and confirmation.
 
 ### Destructive safety
 
-The safety model for cleanup actions. Quarantine requires normal confirmation. Direct deletion of an active skill is allowed but requires typing the skill name. Deleting from quarantine can use normal confirmation. Batch actions show a dry-run summary before execution. V1 does not edit agent configuration files; it may report configuration issues, but cleanup actions operate on skill files/directories and `unlearn`'s own state only.
+The safety model for cleanup actions. Quarantine and delete require modal confirmation after the user has selected the exact install(s) to affect. Duplicate install actions support exact install selection, multi-select with space, and an explicit `All N installs` option for quarantine/delete. Restore uses a navigable modal list of quarantined skills instead of a typed name prompt. Batch duplicate cleanup is limited to duplicate installs from a selected root and remains write-gated. V1 does not edit agent configuration files; it may report configuration issues, but cleanup actions operate on skill files/directories and `unlearn`'s own state only.
 
 ### Trusted skill root
 

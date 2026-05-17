@@ -52,6 +52,7 @@ Responsibilities:
 - Parse `SKILL.md` frontmatter and body.
 - Support standalone markdown-file skills as secondary format.
 - Treat unknown skill-like shapes as read-only inventory items.
+- Ignore scanner/root metadata entries such as `.system` so agent bookkeeping does not appear as fake skills.
 - Extract explicit support-file references from `SKILL.md`.
 - Estimate token-cost ranges.
 - Infer display-only provenance from paths, symlink targets, package roots, git remotes, and install layout.
@@ -64,7 +65,7 @@ Findings:
 
 - `duplicate`: same name and identical effective content.
 - `conflict`: same name and different effective content.
-- `overlap`: different names but similar purpose, trigger area, or operational role.
+- `overlap`: different names but similar purpose, trigger area, or operational role. Deterministic overlap ignores generic action/prose/filler words and groups by logical skill so broad descriptions do not create pairwise overlap spam.
 - `unseen`: no actual invocation evidence from opted-in history scans.
 - `high token cost`: large context footprint.
 - `broad activation risk`: likely to trigger for many requests.
@@ -108,25 +109,27 @@ There is no root-first view in v1.
 The dashboard has two density modes:
 
 - **Compact**: default. Optimized for scanning many findings quickly.
-- **Rich**: expands rows or detail panes with summaries, token-cost range, activation risk, provenance, usage evidence, and actions.
+- **Rich**: expands selected finding/install details with summaries, token-cost range, activation risk, provenance, usage evidence, and action hints. Skill inventory rows stay compact; rich mode focuses detail panes rather than expanding every row.
 
 ### Layout
 
-The dashboard uses a list/detail workbench with a dynamic key bar at the bottom.
+The dashboard uses a Charmbracelet-style list/detail workbench with a compact header, grouped findings, subtle accent markers on finding section headers, comparison-first details, modal overlays for actions, and a dynamic key bar at the bottom.
 
 ```text
-┌ Findings / Skills ──────────┬ Details ─────────────────────────────┐
-│ Duplicates (3)               │ selected skill/finding               │
-│   caveman-help               │ what it does / why flagged           │
-│ Conflicts (1)                │ token cost / usage / provenance      │
-│   caveman                    │ available actions                    │
-│ Overlaps (8)                 │                                      │
-├──────────────────────────────┴──────────────────────────────────────┤
-│ j/k/↑/↓ move · s skill inventory · d details · q quit               │
-└─────────────────────────────────────────────────────────────────────┘
+unlearn  cleanup workbench                         22 skills  33 findings  findings
+────────────────────────────────────────────────────────────────────────────────────
+╭ Findings ───────────────────────╮ ╭ Details ───────────────────────────────────╮
+│ ▾ Duplicates          11 skills │ │  DUP  fastmail                              │
+│ ▸ fastmail           2 installs │ │ • same skill name and identical content     │
+│   frontend-design    2 installs │ │                                             │
+│ ▾ High token cost     11 skills │ │ Compare installs                            │
+│   fastmail     2 installs · 24k │ │ ▸ /tmp/root-a/fastmail                      │
+│   macos-notes  2 installs · 24k │ │   /tmp/root-b/fastmail                      │
+╰─────────────────────────────────╯ ╰─────────────────────────────────────────────╯
+ ↑↓/jk move  r density  s skills  tab install  ctrl+q quarantine  ctrl+d delete  …
 ```
 
-Navigation supports common Vim keys and arrow keys. Available actions and shortcuts are shown only in the dynamic bottom key bar, not duplicated as fixed labels in the main content.
+Navigation supports common Vim keys and arrow keys. Available actions and shortcuts are shown only in the dynamic bottom key bar, not duplicated as fixed labels in the main content. The key bar is width-aware: it preserves core navigation/actions and hides lower-priority items behind `…` instead of clipping text.
 
 ### Actions
 
@@ -138,8 +141,23 @@ Dashboard action vocabulary is direct:
 - `quarantine`
 - `delete`
 - `rename`
+- `restore`
+- `batch`
 
 No branded synonyms such as `forget`, `stash`, or `protect` in v1.
+
+Shortcut model:
+
+- `ctrl+q`: quarantine
+- `ctrl+d`: delete
+- `ctrl+r`: rename
+- `ctrl+u`: restore/undo
+- `ctrl+k`: keep
+- `ctrl+g`: ignore finding (`ctrl+i` is avoided because terminals report it as Tab)
+- `ctrl+b`: batch duplicate cleanup by root
+- `tab` / `shift+tab`: cycle focused install in duplicate/conflict details
+
+Action flows use centered modal overlays instead of only detail-pane prompts. Duplicate install actions support exact install selection, space-based multi-select, and an explicit `All N installs` option for quarantine/delete. Restore uses a navigable modal list of quarantined skills.
 
 ## First-launch and permissions
 
@@ -225,7 +243,7 @@ Store:
 
 ### Decisions
 
-V1 decisions are keyed primarily by skill name for simplicity. The UI should show enough context to let users revise decisions if skill content changes.
+V1 decisions are keyed primarily by skill name for simplicity. Finding/install details show enough context to let users revise decisions if skill content changes, including exact install paths for duplicate/conflict comparisons.
 
 ### Quarantine
 
@@ -246,7 +264,7 @@ Token cost is a range:
 - lower bound: primary `SKILL.md`
 - upper bound: `SKILL.md` plus explicitly referenced support material
 
-Referenced support material includes files linked or mentioned from `SKILL.md`. `unlearn` does not blindly count every file in the skill directory. Unreferenced markdown may be surfaced separately as a warning.
+Referenced support material includes files linked or mentioned from `SKILL.md`. `unlearn` does not blindly count every file in the skill directory. Unreferenced markdown may be surfaced separately as a warning. When lower and upper bounds are equal, the dashboard displays a single compact value such as `2.6k` rather than a repeated range such as `2.6k–2.6k`.
 
 Activation risk estimates how likely a skill is to be pulled into agent context, based on breadth of frontmatter description, trigger language, and overlap with common user requests.
 
@@ -336,11 +354,13 @@ No standalone `unlearn dedupe` or `unlearn resolve` in v1. Those flows are dashb
 
 Cleanup actions operate only on skill files/directories and `unlearn`'s own state.
 
-- `quarantine`: normal confirmation.
-- `delete`: active skill deletion requires typing the skill name.
+- `quarantine`: modal confirmation after selecting the exact install(s).
+- `delete`: modal confirmation after selecting the exact active install(s). Duplicate findings support exact install selection, space-based multi-select, and an explicit `All N installs` option.
 - `delete from quarantine`: normal confirmation.
+- `restore`: navigable modal list of quarantined skills.
 - `rename`: updates both directory name and `SKILL.md` frontmatter `name`, with dry-run preview.
 - `rename` on symlinked or package-managed skills: warn and suggest quarantine instead.
+- `batch duplicate cleanup`: root-selection modal for quarantining duplicate installs from one root across many duplicate findings.
 - batch actions: dry-run summary before execution.
 
 V1 does not edit agent configuration files.
@@ -385,8 +405,9 @@ V1 does not edit agent configuration files.
 - findings/skill-inventory view mode toggles
 - compact/rich density toggles
 - Vim and arrow key handling
-- dynamic key bar action availability
-- action confirmation states
+- dynamic key bar action availability and width-aware truncation
+- modal action confirmation states
+- duplicate install selection, multi-select, `All N installs`, focused-install cycling, restore modal list, and batch duplicate cleanup
 
 ## Open questions
 
