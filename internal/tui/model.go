@@ -64,6 +64,7 @@ type Model struct {
 	State          InteractionState
 	PendingAction  PendingAction
 	PendingSkill   inventory.Skill
+	PendingSkills  []inventory.Skill
 	PendingFinding analysis.Finding
 	InstallCursor  int
 	Input          string
@@ -166,7 +167,7 @@ func (m Model) updateWriteGate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.fail(err)
 			return m, nil
 		}
-		m.continuePendingAfterWriteGate()
+		m.continuePendingWithSelectedSkills()
 	case "n", "N", "esc":
 		m.cancel("write permission declined")
 	}
@@ -176,13 +177,23 @@ func (m Model) updateWriteGate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		dest, err := m.Actions.Quarantine(m.PendingSkill)
-		if err != nil {
-			m.fail(err)
+		removed := m.selectedPendingSkills()
+		var lastDest string
+		for _, skill := range removed {
+			dest, err := m.Actions.Quarantine(skill)
+			if err != nil {
+				m.fail(err)
+				return m, nil
+			}
+			lastDest = dest
+		}
+		for _, skill := range removed {
+			m.removeSkillFromModel(skill)
+		}
+		if len(removed) == 1 {
+			m.complete(fmt.Sprintf("quarantined %s -> %s", removed[0].Name, lastDest))
 		} else {
-			removed := m.PendingSkill
-			m.removeSkillFromModel(removed)
-			m.complete(fmt.Sprintf("quarantined %s -> %s", removed.Name, dest))
+			m.complete(fmt.Sprintf("quarantined %d installs", len(removed)))
 		}
 	case "n", "N", "esc":
 		m.cancel("quarantine cancelled")
@@ -193,12 +204,20 @@ func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		if err := m.Actions.Delete(m.PendingSkill, m.PendingSkill.Name); err != nil {
-			m.fail(err)
+		removed := m.selectedPendingSkills()
+		for _, skill := range removed {
+			if err := m.Actions.Delete(skill, skill.Name); err != nil {
+				m.fail(err)
+				return m, nil
+			}
+		}
+		for _, skill := range removed {
+			m.removeSkillFromModel(skill)
+		}
+		if len(removed) == 1 {
+			m.complete("deleted " + removed[0].Name)
 		} else {
-			removed := m.PendingSkill
-			m.removeSkillFromModel(removed)
-			m.complete("deleted " + removed.Name)
+			m.complete(fmt.Sprintf("deleted %d installs", len(removed)))
 		}
 	case "n", "N", "esc":
 		m.cancel("delete cancelled")
@@ -227,9 +246,13 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	skills := m.pendingInstallChoices()
+	maxCursor := len(skills) - 1
+	if m.canActOnAllInstalls() {
+		maxCursor = len(skills)
+	}
 	switch msg.String() {
 	case "j", "down":
-		if m.InstallCursor < len(skills)-1 {
+		if m.InstallCursor < maxCursor {
 			m.InstallCursor++
 		}
 	case "k", "up":
@@ -241,8 +264,14 @@ func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancel("no install selected")
 			return m, nil
 		}
-		m.PendingSkill = skills[m.InstallCursor]
-		m.continuePendingWithSelectedSkill()
+		if m.canActOnAllInstalls() && m.InstallCursor == len(skills) {
+			m.PendingSkills = append([]inventory.Skill(nil), skills...)
+			m.PendingSkill = skills[0]
+		} else {
+			m.PendingSkill = skills[m.InstallCursor]
+			m.PendingSkills = []inventory.Skill{m.PendingSkill}
+		}
+		m.continuePendingWithSelectedSkills()
 	case "esc", "q":
 		m.cancel("action cancelled")
 	}
@@ -294,26 +323,35 @@ func (m *Model) beginSkillAction(action PendingAction) {
 		return
 	}
 	m.PendingSkill = skill
-	m.continuePendingWithSelectedSkill()
+	m.PendingSkills = []inventory.Skill{skill}
+	m.continuePendingWithSelectedSkills()
 }
 
-func (m *Model) continuePendingWithSelectedSkill() {
-	if !m.Actions.CanWrite(m.PendingSkill.Root) {
-		m.State = StateWriteGate
-		m.Message = fmt.Sprintf("Allow write access for this exact install?\n%s", skillTarget(m.PendingSkill))
-		return
+func (m *Model) continuePendingWithSelectedSkills() {
+	for _, skill := range m.selectedPendingSkills() {
+		if !m.Actions.CanWrite(skill.Root) {
+			m.PendingSkill = skill
+			m.State = StateWriteGate
+			m.Message = fmt.Sprintf("Allow write access for this install?\n%s", skillTarget(skill))
+			return
+		}
 	}
 	m.continuePendingAfterWriteGate()
 }
 
 func (m *Model) continuePendingAfterWriteGate() {
+	target := m.pendingTargetText()
+	scope := "this exact install"
+	if len(m.selectedPendingSkills()) > 1 {
+		scope = fmt.Sprintf("all %d installs", len(m.selectedPendingSkills()))
+	}
 	switch m.PendingAction {
 	case ActionQuarantine:
 		m.State = StateConfirmQuarantine
-		m.Message = fmt.Sprintf("Move this exact install into unlearn quarantine?\n%s", skillTarget(m.PendingSkill))
+		m.Message = fmt.Sprintf("Move %s into unlearn quarantine?\n%s", scope, target)
 	case ActionDelete:
 		m.State = StateConfirmDelete
-		m.Message = fmt.Sprintf("Permanently delete this exact active skill?\n%s", skillTarget(m.PendingSkill))
+		m.Message = fmt.Sprintf("Permanently delete %s?\n%s", scope, target)
 	case ActionRename:
 		m.State = StateInputRename
 		m.Input = ""
@@ -475,6 +513,7 @@ func (m *Model) resetInteraction() {
 	m.State = StateNormal
 	m.PendingAction = ActionNone
 	m.PendingSkill = inventory.Skill{}
+	m.PendingSkills = nil
 	m.PendingFinding = analysis.Finding{}
 	m.InstallCursor = 0
 	m.Input = ""
@@ -738,6 +777,15 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 			}
 			lines = append(lines, style.Render(ui.Truncate(prefix+installChoiceLabel(skill), width)))
 		}
+		if m.canActOnAllInstalls() {
+			prefix := "  "
+			style := theme.Row
+			if m.InstallCursor == len(m.pendingInstallChoices()) {
+				prefix = "▸ "
+				style = theme.SelectedRow.Width(width)
+			}
+			lines = append(lines, style.Render(ui.Truncate(prefix+fmt.Sprintf("All %d installs", len(m.pendingInstallChoices())), width)))
+		}
 	}
 	if m.Input != "" || m.State == StateInputRename || m.State == StateInputRestore {
 		lines = append(lines, "", theme.Muted.Render("Input"), theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
@@ -930,6 +978,32 @@ func padBetween(left, right string, width int) string {
 		return ui.Truncate(left, width-rightWidth-1) + " " + right
 	}
 	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
+}
+
+func (m Model) selectedPendingSkills() []inventory.Skill {
+	if len(m.PendingSkills) > 0 {
+		return m.PendingSkills
+	}
+	if m.PendingSkill.Name != "" {
+		return []inventory.Skill{m.PendingSkill}
+	}
+	return nil
+}
+
+func (m Model) pendingTargetText() string {
+	skills := m.selectedPendingSkills()
+	if len(skills) == 1 {
+		return skillTarget(skills[0])
+	}
+	var lines []string
+	for _, skill := range skills {
+		lines = append(lines, installChoiceLabel(skill))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) canActOnAllInstalls() bool {
+	return (m.PendingAction == ActionQuarantine || m.PendingAction == ActionDelete) && len(m.pendingInstallChoices()) > 1
 }
 
 func optionLineForState(theme ui.Theme, state InteractionState) string {

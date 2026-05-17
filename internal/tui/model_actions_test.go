@@ -17,6 +17,7 @@ type fakeActionService struct {
 	quarantined     []string
 	quarantinedRoot []string
 	deleted         []string
+	deletedRoot     []string
 	renamed         []string
 	restored        []string
 	deleteTypedName string
@@ -46,6 +47,7 @@ func (f *fakeActionService) Quarantine(skill inventory.Skill) (string, error) {
 func (f *fakeActionService) Delete(skill inventory.Skill, typedName string) error {
 	f.deleteTypedName = typedName
 	f.deleted = append(f.deleted, skill.Name)
+	f.deletedRoot = append(f.deletedRoot, skill.Root)
 	return nil
 }
 func (f *fakeActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
@@ -80,7 +82,7 @@ func TestDashboardQuarantineRequiresWriteGateAndConfirmation(t *testing.T) {
 	m := testModel(service)
 	updated, _ := m.Update(key("Q"))
 	m = updated.(Model)
-	if m.State != StateWriteGate || !strings.Contains(m.View(), "this exact install") || !strings.Contains(m.View(), "/root/alpha") {
+	if m.State != StateWriteGate || !strings.Contains(m.View(), "this install") || !strings.Contains(m.View(), "/root/alpha") {
 		t.Fatalf("expected exact write gate, state=%v view=%s", m.State, m.View())
 	}
 	updated, _ = m.Update(key("y"))
@@ -92,6 +94,35 @@ func TestDashboardQuarantineRequiresWriteGateAndConfirmation(t *testing.T) {
 	m = updated.(Model)
 	if m.State != StateNormal || len(service.quarantined) != 1 || service.quarantined[0] != "alpha" {
 		t.Fatalf("state=%v quarantined=%v", m.State, service.quarantined)
+	}
+}
+
+func TestDashboardCanQuarantineAllDuplicateInstalls(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/one": true, "/two": true}}
+	skills := []inventory.Skill{
+		{Name: "cloudflare", Root: "/one", EncounteredPath: "/one/cloudflare", PrimaryPath: "/one/cloudflare/SKILL.md"},
+		{Name: "cloudflare", Root: "/two", EncounteredPath: "/two/cloudflare", PrimaryPath: "/two/cloudflare/SKILL.md"},
+	}
+	finding := analysis.Finding{ID: "duplicate:cloudflare", Title: "cloudflare", Type: analysis.FindingDuplicate, Skills: skills}
+	m := NewWithActions(skills, []analysis.Finding{finding}, service)
+	updated, _ := m.Update(key("Q"))
+	m = updated.(Model)
+	if !strings.Contains(m.View(), "All 2 installs") {
+		t.Fatalf("expected all option:\n%s", m.View())
+	}
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateConfirmQuarantine || !strings.Contains(m.View(), "all 2 installs") {
+		t.Fatalf("expected all quarantine confirmation, state=%v view=%s", m.State, m.View())
+	}
+	updated, _ = m.Update(key("y"))
+	m = updated.(Model)
+	if len(service.quarantinedRoot) != 2 || m.itemCount() != 0 {
+		t.Fatalf("quarantined roots=%v itemCount=%d", service.quarantinedRoot, m.itemCount())
 	}
 }
 
