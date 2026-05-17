@@ -101,6 +101,62 @@ func TestDashboardQuarantineRequiresWriteGateAndConfirmation(t *testing.T) {
 	}
 }
 
+func TestDashboardCanMarkMultipleDuplicateInstalls(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/two": true, "/three": true}}
+	skills := []inventory.Skill{
+		{Name: "simplify", Root: "/one", EncounteredPath: "/one/simplify", PrimaryPath: "/one/simplify/SKILL.md"},
+		{Name: "simplify", Root: "/two", EncounteredPath: "/two/simplify", PrimaryPath: "/two/simplify/SKILL.md"},
+		{Name: "simplify", Root: "/three", EncounteredPath: "/three/simplify", PrimaryPath: "/three/simplify/SKILL.md"},
+	}
+	finding := analysis.Finding{ID: "duplicate:simplify", Title: "simplify", Type: analysis.FindingDuplicate, Skills: skills}
+	m := NewWithActions(skills, []analysis.Finding{finding}, service)
+	updated, _ := m.Update(key("ctrl+d"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateConfirmDelete || len(m.PendingSkills) != 2 || !strings.Contains(m.View(), "all 2 installs") {
+		t.Fatalf("expected two selected installs for delete, state=%v pending=%v view=%s", m.State, len(m.PendingSkills), m.View())
+	}
+	updated, _ = m.Update(key("y"))
+	m = updated.(Model)
+	if len(service.deletedRoot) != 2 || service.deletedRoot[0] != "/two" || service.deletedRoot[1] != "/three" {
+		t.Fatalf("deleted roots=%v", service.deletedRoot)
+	}
+}
+
+func TestDashboardBatchDuplicatesByRoot(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/drop": true}}
+	skills := []inventory.Skill{
+		{Name: "alpha", Root: "/keep", EncounteredPath: "/keep/alpha"},
+		{Name: "alpha", Root: "/drop", EncounteredPath: "/drop/alpha"},
+		{Name: "beta", Root: "/keep", EncounteredPath: "/keep/beta"},
+		{Name: "beta", Root: "/drop", EncounteredPath: "/drop/beta"},
+	}
+	findings := []analysis.Finding{
+		{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills[:2]},
+		{ID: "duplicate:beta", Title: "beta", Type: analysis.FindingDuplicate, Skills: skills[2:]},
+	}
+	m := NewWithActions(skills, findings, service)
+	updated, _ := m.Update(key("ctrl+b"))
+	m = updated.(Model)
+	if m.State != StateSelectBatchRoot || !strings.Contains(m.View(), "/drop") {
+		t.Fatalf("expected batch root picker:\n%s", m.View())
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateConfirmQuarantine || len(m.PendingSkills) != 2 {
+		t.Fatalf("expected batch quarantine preview, state=%v pending=%d view=%s", m.State, len(m.PendingSkills), m.View())
+	}
+}
+
 func TestDashboardCanQuarantineAllDuplicateInstalls(t *testing.T) {
 	service := &fakeActionService{writeRoots: map[string]bool{"/one": true, "/two": true}}
 	skills := []inventory.Skill{
@@ -283,6 +339,8 @@ func key(value string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyCtrlR}
 	case "ctrl+u":
 		return tea.KeyMsg{Type: tea.KeyCtrlU}
+	case "ctrl+b":
+		return tea.KeyMsg{Type: tea.KeyCtrlB}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(value)}
 	}

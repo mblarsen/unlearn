@@ -38,6 +38,7 @@ const (
 	StatePreviewRename
 	StateSelectRestore
 	StateSelectInstall
+	StateSelectBatchRoot
 )
 
 type PendingAction int
@@ -50,6 +51,11 @@ const (
 	ActionRestore
 )
 
+type batchRootChoice struct {
+	Root   string
+	Skills []inventory.Skill
+}
+
 type Model struct {
 	Skills      []inventory.Skill
 	SkillGroups []skillGroup
@@ -61,18 +67,21 @@ type Model struct {
 	Width       int
 	Height      int
 
-	State          InteractionState
-	PendingAction  PendingAction
-	PendingSkill   inventory.Skill
-	PendingSkills  []inventory.Skill
-	PendingFinding analysis.Finding
-	InstallCursor  int
-	RestoreCursor  int
-	RestoreChoices []string
-	Input          string
-	Message        string
-	Status         string
-	RenamePreview  fsactions.RenamePreview
+	State             InteractionState
+	PendingAction     PendingAction
+	PendingSkill      inventory.Skill
+	PendingSkills     []inventory.Skill
+	PendingFinding    analysis.Finding
+	InstallCursor     int
+	InstallSelections map[int]bool
+	RestoreCursor     int
+	RestoreChoices    []string
+	BatchRootCursor   int
+	BatchRootChoices  []batchRootChoice
+	Input             string
+	Message           string
+	Status            string
+	RenamePreview     fsactions.RenamePreview
 }
 
 func New(skills []inventory.Skill, findings []analysis.Finding) Model {
@@ -138,6 +147,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.beginSkillAction(ActionRename)
 	case "ctrl+u":
 		m.beginSkillAction(ActionRestore)
+	case "ctrl+b":
+		m.beginBatchRootAction()
 	}
 	return m, nil
 }
@@ -158,6 +169,8 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateRenamePreview(msg)
 	case StateSelectInstall:
 		return m.updateInstallSelection(msg)
+	case StateSelectBatchRoot:
+		return m.updateBatchRootSelection(msg)
 	default:
 		m.resetInteraction()
 		return m, nil
@@ -290,12 +303,23 @@ func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.InstallCursor > 0 {
 			m.InstallCursor--
 		}
+	case " ":
+		if m.InstallCursor < len(skills) {
+			if m.InstallSelections == nil {
+				m.InstallSelections = map[int]bool{}
+			}
+			m.InstallSelections[m.InstallCursor] = !m.InstallSelections[m.InstallCursor]
+		}
 	case "enter":
 		if len(skills) == 0 {
 			m.cancel("no install selected")
 			return m, nil
 		}
-		if m.canActOnAllInstalls() && m.InstallCursor == len(skills) {
+		selected := m.selectedInstallChoices(skills)
+		if len(selected) > 0 {
+			m.PendingSkills = selected
+			m.PendingSkill = selected[0]
+		} else if m.canActOnAllInstalls() && m.InstallCursor == len(skills) {
 			m.PendingSkills = append([]inventory.Skill(nil), skills...)
 			m.PendingSkill = skills[0]
 		} else {
@@ -305,6 +329,33 @@ func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.continuePendingWithSelectedSkills()
 	case "esc", "q":
 		m.cancel("action cancelled")
+	}
+	return m, nil
+}
+
+func (m Model) updateBatchRootSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		if m.BatchRootCursor < len(m.BatchRootChoices)-1 {
+			m.BatchRootCursor++
+		}
+	case "k", "up":
+		if m.BatchRootCursor > 0 {
+			m.BatchRootCursor--
+		}
+	case "enter":
+		if len(m.BatchRootChoices) == 0 {
+			m.cancel("no duplicate root selected")
+			return m, nil
+		}
+		choice := m.BatchRootChoices[m.BatchRootCursor]
+		m.PendingAction = ActionQuarantine
+		m.PendingSkills = append([]inventory.Skill(nil), choice.Skills...)
+		m.PendingSkill = choice.Skills[0]
+		m.Message = fmt.Sprintf("Quarantine duplicate installs from %s", choice.Root)
+		m.continuePendingWithSelectedSkills()
+	case "esc", "q":
+		m.cancel("batch cleanup cancelled")
 	}
 	return m, nil
 }
@@ -410,6 +461,19 @@ func (m *Model) submitInput() {
 			m.Message = "Warning: " + m.RenamePreview.Warn + "; suggested action: quarantine."
 		}
 	}
+}
+
+func (m *Model) beginBatchRootAction() {
+	choices := m.duplicateRootChoices()
+	if len(choices) == 0 {
+		m.Status = "no duplicate roots to batch clean"
+		return
+	}
+	m.PendingAction = ActionQuarantine
+	m.BatchRootChoices = choices
+	m.BatchRootCursor = 0
+	m.State = StateSelectBatchRoot
+	m.Message = "Choose a root to quarantine duplicate installs from"
 }
 
 func (m *Model) beginRestoreAction() {
@@ -574,7 +638,10 @@ func (m *Model) resetInteraction() {
 	m.PendingSkills = nil
 	m.PendingFinding = analysis.Finding{}
 	m.InstallCursor = 0
+	m.InstallSelections = nil
 	m.RestoreCursor = 0
+	m.BatchRootCursor = 0
+	m.BatchRootChoices = nil
 	m.RestoreChoices = nil
 	m.Input = ""
 	m.Message = ""
@@ -814,6 +881,9 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 	if m.State == StateSelectRestore {
 		label = "RESTORE SKILL"
 	}
+	if m.State == StateSelectBatchRoot {
+		label = "BATCH DUPLICATES BY ROOT"
+	}
 	lines := []string{theme.BadgeWarn.Render(label), ""}
 	messageLines := strings.Split(m.Message, "\n")
 	if len(messageLines) > 0 && strings.TrimSpace(messageLines[0]) != "" {
@@ -844,16 +914,33 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 			lines = append(lines, style.Render(ui.Truncate(prefix+name, width)))
 		}
 	}
-	if m.State == StateSelectInstall {
+	if m.State == StateSelectBatchRoot {
 		lines = append(lines, "", theme.Muted.Render("Use ↑/↓ then enter:"))
+		for i, choice := range m.BatchRootChoices {
+			prefix := "  "
+			style := theme.Row
+			if i == m.BatchRootCursor {
+				prefix = "▸ "
+				style = theme.SelectedRow.Width(width)
+			}
+			line := fmt.Sprintf("%s · %d duplicate installs", choice.Root, len(choice.Skills))
+			lines = append(lines, style.Render(ui.Truncate(prefix+line, width)))
+		}
+	}
+	if m.State == StateSelectInstall {
+		lines = append(lines, "", theme.Muted.Render("Use ↑/↓, space to mark many, enter:"))
 		for i, skill := range m.pendingInstallChoices() {
+			mark := "[ ]"
+			if m.InstallSelections[i] {
+				mark = "[x]"
+			}
 			prefix := "  "
 			style := theme.Row
 			if i == m.InstallCursor {
 				prefix = "▸ "
 				style = theme.SelectedRow.Width(width)
 			}
-			lines = append(lines, style.Render(ui.Truncate(prefix+installChoiceLabel(skill), width)))
+			lines = append(lines, style.Render(ui.Truncate(prefix+mark+" "+installChoiceLabel(skill), width)))
 		}
 		if m.canActOnAllInstalls() {
 			prefix := "  "
@@ -1003,6 +1090,8 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "select"}, {"esc", "cancel"}}
 		case StateSelectRestore:
 			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "restore"}, {"esc", "cancel"}}
+		case StateSelectBatchRoot:
+			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "preview"}, {"esc", "cancel"}}
 		case StateInputRename:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		}
@@ -1013,7 +1102,7 @@ func (m Model) keyParts() []keyPart {
 	} else {
 		parts = append(parts, keyPart{"f", "findings"})
 	}
-	parts = append(parts, keyPart{"ctrl+k", "keep"}, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"q", "quit"})
+	parts = append(parts, keyPart{"ctrl+k", "keep"}, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"q", "quit"})
 	return parts
 }
 
@@ -1060,6 +1149,50 @@ func padBetween(left, right string, width int) string {
 	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
 }
 
+func (m Model) selectedInstallChoices(skills []inventory.Skill) []inventory.Skill {
+	var selected []inventory.Skill
+	for i, skill := range skills {
+		if m.InstallSelections[i] {
+			selected = append(selected, skill)
+		}
+	}
+	return selected
+}
+
+func (m Model) duplicateRootChoices() []batchRootChoice {
+	byRoot := map[string]map[string]inventory.Skill{}
+	for _, finding := range m.Findings {
+		if finding.Type != analysis.FindingDuplicate || len(finding.Skills) < 2 {
+			continue
+		}
+		for _, skill := range finding.Skills {
+			if byRoot[skill.Root] == nil {
+				byRoot[skill.Root] = map[string]inventory.Skill{}
+			}
+			byRoot[skill.Root][finding.ID] = skill
+		}
+	}
+	choices := make([]batchRootChoice, 0, len(byRoot))
+	for root, byFinding := range byRoot {
+		if len(byFinding) == 0 {
+			continue
+		}
+		skills := make([]inventory.Skill, 0, len(byFinding))
+		for _, skill := range byFinding {
+			skills = append(skills, skill)
+		}
+		sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+		choices = append(choices, batchRootChoice{Root: root, Skills: skills})
+	}
+	sort.Slice(choices, func(i, j int) bool {
+		if len(choices[i].Skills) != len(choices[j].Skills) {
+			return len(choices[i].Skills) > len(choices[j].Skills)
+		}
+		return choices[i].Root < choices[j].Root
+	})
+	return choices
+}
+
 func (m Model) selectedPendingSkills() []inventory.Skill {
 	if len(m.PendingSkills) > 0 {
 		return m.PendingSkills
@@ -1094,6 +1227,8 @@ func optionLineForState(theme ui.Theme, state InteractionState) string {
 		return theme.Key.Render("enter") + " select highlighted install  " + theme.Key.Render("esc") + " cancel"
 	case StateSelectRestore:
 		return theme.Key.Render("enter") + " restore highlighted skill  " + theme.Key.Render("esc") + " cancel"
+	case StateSelectBatchRoot:
+		return theme.Key.Render("enter") + " preview root cleanup  " + theme.Key.Render("esc") + " cancel"
 	case StateInputRename:
 		return theme.Key.Render("enter") + " submit  " + theme.Key.Render("esc") + " cancel"
 	default:
