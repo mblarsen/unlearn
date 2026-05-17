@@ -207,9 +207,11 @@ Domain language is captured in:
 CONTEXT.md
 ```
 
-## Current limitations
+## Roadmap
 
-- LLM-assisted summaries/overlap analysis are represented by an opt-in stub.
-- SQLite history adapters are not implemented yet.
-- Pi history discovery is bounded to known JSONL session locations.
-- Batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
+- Finish the opt-in Pi history scanner: turn bounded JSONL discovery into a polished scan flow with clear progress, cancellation, derived evidence, and dashboard surfacing.
+- Add a generic SQLite history scanner for agents that store sessions in database files, with table discovery, text-column limits, and no raw excerpt persistence by default.
+- Add real LLM-assisted summaries and semantic overlap detection behind the existing opt-in/cache interface.
+- Extend batch cleanup beyond duplicate-by-root once the interaction model is proven safe.
+- Improve quarantine management with filtering, previewing, restoring, and deleting old quarantined items.
+- Polish release/install paths with packaged binaries and upgrade documentation.
