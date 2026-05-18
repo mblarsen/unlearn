@@ -20,17 +20,19 @@ import (
 )
 
 type cliOptions struct {
-	roots        []string
-	trustRoots   []string
-	writeRoots   []string
-	configPath   string
-	stateDir     string
-	indexPath    string
-	fix          bool
-	yes          bool
-	restoreRoot  string
-	historyJSONL []string
-	withLLM      bool
+	roots          []string
+	trustRoots     []string
+	writeRoots     []string
+	configPath     string
+	stateDir       string
+	indexPath      string
+	fix            bool
+	yes            bool
+	restoreRoot    string
+	historyJSONL   []string
+	withLLM        bool
+	activeAgents   []string
+	inactiveAgents []string
 }
 
 func Execute() error {
@@ -195,9 +197,13 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 	if cfg.SetupComplete && !force {
 		return nil
 	}
+	activeAgents, inactiveAgents := agentSelection(opts, cfg)
 	roots := opts.roots
 	if len(roots) == 0 {
-		roots = inventory.KnownGlobalRoots()
+		roots = inventory.RootsForAgents(append(activeAgents, inactiveAgents...))
+		if len(roots) == 0 {
+			roots = inventory.KnownGlobalRoots()
+		}
 	}
 	choices := make([]setupflow.RootChoice, 0, len(roots))
 	for _, root := range roots {
@@ -208,7 +214,7 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 	if err != nil {
 		return err
 	}
-	model := setupflow.New(choices, historyPaths, cfg)
+	model := setupflow.New(choices, historyPaths, cfg, inventory.AgentStatuses())
 	program := tea.NewProgram(model, tea.WithOutput(out), tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err != nil {
@@ -242,6 +248,8 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringVar(&opts.indexPath, "index", "", "SQLite index path")
 	cmd.Flags().StringSliceVar(&opts.historyJSONL, "history-jsonl", nil, "opt-in JSONL history file to scan for derived invocation evidence; may be repeated")
 	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to LLM-assisted analysis plumbing; current build uses deterministic analysis plus a disabled analyzer stub")
+	cmd.Flags().StringSliceVar(&opts.activeAgents, "active-agent", nil, "active agent harness whose global skill roots should be audited; may be repeated")
+	cmd.Flags().StringSliceVar(&opts.inactiveAgents, "inactive-agent", nil, "inactive agent harness whose skill roots should be scanned as cleanup candidates; may be repeated")
 }
 
 func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
@@ -256,9 +264,13 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	activeAgents, inactiveAgents := agentSelection(opts, cfg)
 	roots := opts.roots
 	if len(roots) == 0 {
-		roots = inventory.KnownGlobalRoots()
+		roots = inventory.RootsForAgents(append(activeAgents, inactiveAgents...))
+		if len(roots) == 0 {
+			roots = inventory.KnownGlobalRoots()
+		}
 	}
 	var scanRoots []string
 	var skipped []string
@@ -269,7 +281,8 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 			skipped = append(skipped, root)
 		}
 	}
-	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots})
+	owners := inventory.RootOwnershipForAgents(activeAgents, inactiveAgents)
+	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots, RootOwnerships: owners})
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -279,6 +292,16 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 	}
 	findings := analysis.Analyze(report.Skills, analysis.Options{UsageEvidence: usage})
 	return report.Skills, findings, skipped, nil
+}
+
+func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
+	if len(opts.activeAgents) > 0 || len(opts.inactiveAgents) > 0 {
+		return append([]string(nil), opts.activeAgents...), append([]string(nil), opts.inactiveAgents...)
+	}
+	if cfg.HasAgentSelection() {
+		return append([]string(nil), cfg.ActiveAgents...), append([]string(nil), cfg.InactiveAgents...)
+	}
+	return inventory.CandidateAgentIDs()
 }
 
 func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill) (analysis.UsageEvidence, error) {
@@ -336,6 +359,14 @@ func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
 	for _, root := range opts.writeRoots {
 		cfg.TrustRoot(root)
 		cfg.AllowWrite(root)
+		changed = true
+	}
+	if len(opts.activeAgents) > 0 {
+		cfg.ActiveAgents = append([]string(nil), opts.activeAgents...)
+		changed = true
+	}
+	if len(opts.inactiveAgents) > 0 {
+		cfg.InactiveAgents = append([]string(nil), opts.inactiveAgents...)
 		changed = true
 	}
 	if opts.withLLM && !cfg.LLMAssisted {
@@ -400,7 +431,7 @@ func printAudit(out io.Writer, skills []inventory.Skill, findings []analysis.Fin
 	}
 	counts := analysis.FindingCounts(findings)
 	fmt.Fprintln(out, "Findings:")
-	for _, typ := range []analysis.FindingType{analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap, analysis.FindingBroken, analysis.FindingHighTokenCost, analysis.FindingBroadActivation, analysis.FindingUnseen} {
+	for _, typ := range []analysis.FindingType{analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap, analysis.FindingBroken, analysis.FindingInactiveRoot, analysis.FindingHighTokenCost, analysis.FindingBroadActivation, analysis.FindingUnseen} {
 		fmt.Fprintf(out, "  %s: %d\n", typ, counts[typ])
 	}
 	fmt.Fprintln(out, "Top cleanup candidates:")

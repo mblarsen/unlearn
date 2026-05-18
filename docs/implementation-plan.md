@@ -133,6 +133,18 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
 
+## Issue #1 — harness-aware roots
+
+- [x] Use `vercel-labs/skills/src/agents.ts` as the source reference for supported agent skill roots.
+- [x] Add a Go-side agent catalog with display name, project root, global root, detection paths, and env/XDG overrides.
+- [x] Persist active and inactive harness selections in TOML config.
+- [x] Extend first-launch setup with active/inactive/off harness toggles.
+- [x] Derive default scan roots from selected harnesses instead of a four-root hardcoded list.
+- [x] Attach active/inactive harness ownership metadata to scanned skills.
+- [x] Only report duplicate/conflict findings when installs are visible to at least one shared active harness.
+- [x] Report skills installed only in inactive harness roots as cleanup candidates.
+- [x] Cover agent catalog, config, setup, duplicate semantics, and inactive-root findings with tests.
+
 ## QA notes — 2026-05-17 UI/UX cleanup
 
 Manual deterministic render QA used a temporary in-repo harness with fixture-only roots under `/tmp/unlearn-qa`; no real installed skills or agent configs were scanned or modified. Fixture shape: 11 logical skills (`macos-calendar`, `macos-notes`, `macos-reminders`, `fastmail`, `mcp2cli`, `wrangler`, `ui-ux-pro-max`, `frontend-design`, `work-on-ticket`, `improve-codebase-architecture`, `self-improving-agent`) with two installs each, high token ranges, high activation risk, and generic broad descriptions. Render checks covered setup at ~90×25, findings dashboard at ~90×25, grouped skill inventory at ~90×25, and wider inventory at ~120×35.

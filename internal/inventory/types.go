@@ -31,6 +31,9 @@ type Skill struct {
 	ContentHash     string
 	ActivationRisk  string
 	Provenance      string
+	RootKnown       bool
+	ActiveAgents    []string
+	InactiveAgents  []string
 	ScannedAt       time.Time
 }
 
@@ -42,7 +45,8 @@ type SupportRef struct {
 }
 
 type ScanOptions struct {
-	Roots []string
+	Roots          []string
+	RootOwnerships map[string]RootOwnership
 }
 
 type Report struct {

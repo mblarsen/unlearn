@@ -32,7 +32,7 @@ A removal flow where `unlearn` asks for the action per selected skill instead of
 
 ### Duplicate skill
 
-A skill that has the same name and identical effective content as another installed skill.
+A skill that has the same name and identical effective content as another installed skill, and the installs are visible to at least one shared active harness. Same-name/content installs in roots for different non-overlapping active harnesses are not actionable duplicates, because each harness may need its own readable copy.
 
 ### Conflicting skill
 
@@ -60,7 +60,7 @@ Supporting skill files that are explicitly linked or mentioned from `SKILL.md`. 
 
 ### Global skill inventory
 
-The default audit target for `unlearn`: skills installed in known global agent skill roots, such as `~/.agents/skills`, `~/.pi/agent/skills`, `~/.codex/skills`, and `~/.config/opencode/skills`. `unlearn` builds this inventory with an independent filesystem scanner rather than treating `npx skills` output as the source of truth.
+The default audit target for `unlearn`: skills installed in known global agent skill roots for the user's active and inactive harness selections. The agent/root catalog is adapted from `vercel-labs/skills/src/agents.ts` instead of copied from issue screenshots, and includes global roots such as `~/.agents/skills`, `~/.pi/agent/skills`, `~/.codex/skills`, `~/.config/opencode/skills`, `~/.claude/skills`, and other Skills-compatible agents. `unlearn` builds this inventory with an independent filesystem scanner rather than treating `npx skills` output as the source of truth.
 
 ### Skill root
 

@@ -122,6 +122,23 @@ func TestAuditWithLLMPersistsOptIn(t *testing.T) {
 	}
 }
 
+func TestAuditInactiveAgentRootFinding(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	claudeRoot := filepath.Join(home, ".claude", "skills")
+	writeSkill(t, filepath.Join(claudeRoot, "legacy"), "legacy", "same")
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"audit", "--trust-root", claudeRoot, "--active-agent", "pi", "--inactive-agent", "claude-code", "--state-dir", t.TempDir(), "--config", filepath.Join(t.TempDir(), "config.toml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "inactive-harness-root: 1") {
+		t.Fatalf("expected inactive harness finding:\n%s", got)
+	}
+}
+
 func TestAuditSkipsUntrustedRoot(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "a"), "demo", "same")
