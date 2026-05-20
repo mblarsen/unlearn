@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -565,7 +566,8 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 		}
 	}
 	jsonlAdapter := history.JSONLAdapter{}
-	for _, path := range jsonlPaths {
+	for index, path := range jsonlPaths {
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Current: index + 1, Total: len(jsonlPaths) + len(sqlitePaths), Detail: filepath.Base(path)})
 		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return jsonlAdapter.ScanWithOptions(path, names, scanOpts)
 		})
@@ -575,7 +577,8 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 		merge(evidence)
 	}
 	sqliteAdapter := history.SQLiteAdapter{}
-	for _, path := range sqlitePaths {
+	for index, path := range sqlitePaths {
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Current: len(jsonlPaths) + index + 1, Total: len(jsonlPaths) + len(sqlitePaths), Detail: filepath.Base(path)})
 		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return sqliteAdapter.ScanWithOptions(path, names, scanOpts)
 		})
@@ -584,6 +587,7 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 		}
 		merge(evidence)
 	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Detail: fmt.Sprintf("%d file(s), %d matching skills", len(jsonlPaths)+len(sqlitePaths), len(usage)), Done: true})
 	return usage, sources, lastSeen, nil
 }
 
