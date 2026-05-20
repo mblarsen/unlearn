@@ -86,9 +86,13 @@ func (a GeminiAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedS
 		"Skills JSON:",
 		string(data),
 	}, "\n")
-	text, err := a.generateText(ctx, prompt, 1200, true)
+	text, err := a.generateText(ctx, prompt, 4096, true)
 	if err != nil {
 		return nil, err
+	}
+	jsonText := extractJSONObject(text)
+	if strings.TrimSpace(jsonText) == "" {
+		return nil, fmt.Errorf("gemini overlap response did not contain JSON: %q", truncateForError(text, 240))
 	}
 	var decoded struct {
 		Overlaps []struct {
@@ -96,8 +100,8 @@ func (a GeminiAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedS
 			Reason     string   `json:"reason"`
 		} `json:"overlaps"`
 	}
-	if err := json.Unmarshal([]byte(extractJSONObject(text)), &decoded); err != nil {
-		return nil, fmt.Errorf("parse gemini overlap JSON: %w", err)
+	if err := json.Unmarshal([]byte(jsonText), &decoded); err != nil {
+		return nil, fmt.Errorf("parse gemini overlap JSON: %w; response: %q", err, truncateForError(text, 240))
 	}
 	overlaps := make([]SemanticOverlap, 0, len(decoded.Overlaps))
 	for _, item := range decoded.Overlaps {
@@ -216,6 +220,14 @@ func firstLine(value string) string {
 		return strings.TrimSpace(value[:idx])
 	}
 	return value
+}
+
+func truncateForError(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "…"
 }
 
 func extractJSONObject(value string) string {

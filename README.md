@@ -135,7 +135,7 @@ Open the dashboard.
 unlearn audit
 ```
 
-Print a concise read-only overview with skill count, finding counts, and top cleanup candidates. Add `--history-jsonl <path>` or `--history-sqlite <path>` to opt in local history evidence for unseen-skill findings. If history scanning is enabled, `unlearn` also discovers `.db`, `.sqlite`, and `.sqlite3` files under configured/trusted scan roots.
+Print a concise read-only overview with skill count, finding counts, and top cleanup candidates. Add `--history-jsonl <path>` or `--history-sqlite <path>` to opt in local history evidence for unseen-skill findings. If history scanning is enabled, `unlearn` also discovers `.db`, `.sqlite`, and `.sqlite3` files under configured/trusted scan roots. Longer-running scan and LLM steps report Charm-styled progress on stderr so stdout remains pipe-friendly.
 
 ```bash
 unlearn audit --with-llm

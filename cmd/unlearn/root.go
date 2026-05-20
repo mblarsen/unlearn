@@ -84,7 +84,8 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		Use:   "audit",
 		Short: "Print a concise read-only skill cleanup overview",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			skills, findings, skipped, err := loadInventory(opts)
+			progress := newAuditProgressPrinter(cmd.ErrOrStderr())
+			skills, findings, skipped, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Progress: progress.Update})
 			if err != nil {
 				return err
 			}
@@ -425,6 +426,7 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 type inventoryLoadOptions struct {
 	Context         context.Context
 	HistoryProgress func(history.ScanProgress)
+	Progress        func(inventoryProgress)
 }
 
 func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
@@ -460,17 +462,22 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 			skipped = append(skipped, root)
 		}
 	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "scan-roots", Detail: fmt.Sprintf("%d trusted root(s), %d skipped", len(scanRoots), len(skipped))})
 	owners := inventory.RootOwnershipForAgents(activeAgents, inactiveAgents)
 	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots, RootOwnerships: owners})
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "scan-roots", Detail: fmt.Sprintf("%d skill install(s)", len(report.Skills)), Done: true})
 	usage, sources, lastSeen, err := loadUsageEvidence(opts, cfg, report.Skills, scanRoots, loadOpts)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	skills := attachUsageEvidence(report.Skills, usage, sources, lastSeen)
-	analysisOpts := analysis.Options{UsageEvidence: usage}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: "duplicates, conflicts, keywords, safety findings"})
+	analysisOpts := analysis.Options{UsageEvidence: usage, Progress: func(event analysis.ProgressEvent) {
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
+	}}
 	if cfg.LLMAssisted {
 		if analyzer, ok := llm.NewGeminiAnalyzerFromEnv(); ok {
 			analysisOpts.LLMAnalyzer = llm.NewCachedAnalyzer(paths.LLMCacheDir, analyzer)
@@ -485,9 +492,16 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
 	if err != nil {
 		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM analysis failed (%v); using deterministic analysis.", err))
-		findings = analysis.Analyze(report.Skills, analysis.Options{UsageEvidence: usage})
+		findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
 	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: fmt.Sprintf("%d finding(s)", len(findings)), Done: true})
 	return skills, findings, skipped, nil
+}
+
+func reportInventoryProgress(progress func(inventoryProgress), event inventoryProgress) {
+	if progress != nil {
+		progress(event)
+	}
 }
 
 func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
@@ -590,7 +604,14 @@ func historyEvidenceForPath(db *sql.DB, path string, names []string, opts *cliOp
 			return state.LoadHistoryEvidence(db, path)
 		}
 	}
-	evidence, err := scan(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Detail: path})
+	historyProgress := func(progress history.ScanProgress) {
+		if loadOpts.HistoryProgress != nil {
+			loadOpts.HistoryProgress(progress)
+		}
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Detail: fmt.Sprintf("%s · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches), Done: progress.Done})
+	}
+	evidence, err := scan(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: historyProgress})
 	if err != nil {
 		return nil, err
 	}

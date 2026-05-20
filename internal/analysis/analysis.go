@@ -34,10 +34,21 @@ type Finding struct {
 
 type UsageEvidence map[string]string
 
+type ProgressEvent struct {
+	Step    string
+	Current int
+	Total   int
+	Detail  string
+	Done    bool
+}
+
+type ProgressFunc func(ProgressEvent)
+
 type Options struct {
 	UsageEvidence  UsageEvidence
 	HighTokenLimit int
 	LLMAnalyzer    llm.Analyzer
+	Progress       ProgressFunc
 }
 
 const minOverlapSharedKeywords = 3
@@ -55,7 +66,7 @@ func AnalyzeWithLLM(ctx context.Context, skills []inventory.Skill, opts Options)
 	findings = append(findings, duplicatesAndConflicts(skills)...)
 	findings = append(findings, overlaps(skills)...)
 	if opts.LLMAnalyzer != nil {
-		llmFindings, err := llmOverlaps(ctx, skills, opts.LLMAnalyzer)
+		llmFindings, err := llmOverlaps(ctx, skills, opts.LLMAnalyzer, opts.Progress)
 		if err != nil {
 			SortFindings(findings)
 			return findings, err
@@ -265,11 +276,12 @@ func overlaps(skills []inventory.Skill) []Finding {
 	return findings
 }
 
-func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Analyzer) ([]Finding, error) {
+func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Analyzer, progress ProgressFunc) ([]Finding, error) {
 	logicalSkills := representativeSkills(skills)
 	summaries := make([]llm.GeneratedSummary, 0, len(logicalSkills))
 	byName := map[string]inventory.Skill{}
-	for _, skill := range logicalSkills {
+	for index, skill := range logicalSkills {
+		reportProgress(progress, ProgressEvent{Step: "llm-summary", Current: index + 1, Total: len(logicalSkills), Detail: skill.Name})
 		summary, err := analyzer.Summarize(ctx, skill.Name, deterministicSummary(skill), skill.ContentHash)
 		if err != nil {
 			return nil, err
@@ -277,10 +289,13 @@ func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Ana
 		summaries = append(summaries, summary)
 		byName[logicalName(skill)] = skill
 	}
+	reportProgress(progress, ProgressEvent{Step: "llm-summary", Current: len(logicalSkills), Total: len(logicalSkills), Detail: fmt.Sprintf("%d skill summaries ready", len(summaries)), Done: true})
+	reportProgress(progress, ProgressEvent{Step: "llm-overlap", Detail: "asking Gemini to group semantic overlaps"})
 	overlaps, err := analyzer.FindOverlaps(ctx, summaries)
 	if err != nil {
 		return nil, err
 	}
+	reportProgress(progress, ProgressEvent{Step: "llm-overlap", Current: len(overlaps), Detail: fmt.Sprintf("%d LLM overlap group(s)", len(overlaps)), Done: true})
 	findings := make([]Finding, 0, len(overlaps))
 	for _, overlap := range overlaps {
 		group := make([]inventory.Skill, 0, len(overlap.SkillNames))
@@ -295,6 +310,12 @@ func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Ana
 		findings = append(findings, llmOverlapFinding(group, overlap))
 	}
 	return findings, nil
+}
+
+func reportProgress(progress ProgressFunc, event ProgressEvent) {
+	if progress != nil {
+		progress(event)
+	}
 }
 
 func deterministicSummary(skill inventory.Skill) string {
