@@ -225,7 +225,7 @@ type fakeAnalyzer struct {
 }
 
 func (a fakeAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (llm.GeneratedSummary, error) {
-	return llm.GeneratedSummary{Summary: deterministicSummary, Provider: "test", Model: "fake", ContentHash: contentHash}, nil
+	return llm.GeneratedSummary{Name: name, Summary: deterministicSummary, Provider: "test", Model: "fake", ContentHash: contentHash}, nil
 }
 
 func (a fakeAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.GeneratedSummary) ([]llm.SemanticOverlap, error) {

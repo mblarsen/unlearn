@@ -21,7 +21,7 @@ func TestCachedAnalyzerReusesSummaryByContentHash(t *testing.T) {
 	if delegate.calls != 1 {
 		t.Fatalf("expected delegate once, got %d", delegate.calls)
 	}
-	if second.Summary != first.Summary || second.ContentHash != "hash/one" {
+	if second.Summary != first.Summary || second.ContentHash != "hash/one" || second.Name != "skill" {
 		t.Fatalf("cache miss or malformed summary: first=%#v second=%#v", first, second)
 	}
 }
@@ -32,7 +32,7 @@ type countingAnalyzer struct {
 
 func (a *countingAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (GeneratedSummary, error) {
 	a.calls++
-	return GeneratedSummary{Summary: deterministicSummary, Provider: "test", Model: "fake", ContentHash: contentHash}, nil
+	return GeneratedSummary{Name: name, Summary: deterministicSummary, Provider: "test", Model: "fake", ContentHash: contentHash}, nil
 }
 
 func (a *countingAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedSummary) ([]SemanticOverlap, error) {

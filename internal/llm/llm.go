@@ -10,6 +10,7 @@ import (
 )
 
 type GeneratedSummary struct {
+	Name        string `json:"name,omitempty"`
 	Summary     string `json:"summary"`
 	Provider    string `json:"provider"`
 	Model       string `json:"model"`
@@ -53,7 +54,7 @@ type Analyzer interface {
 type DisabledAnalyzer struct{}
 
 func (DisabledAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (GeneratedSummary, error) {
-	return GeneratedSummary{Summary: deterministicSummary, Provider: "disabled", Model: "disabled", ContentHash: contentHash}, nil
+	return GeneratedSummary{Name: name, Summary: deterministicSummary, Provider: "disabled", Model: "disabled", ContentHash: contentHash}, nil
 }
 
 func (DisabledAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedSummary) ([]SemanticOverlap, error) {
@@ -80,6 +81,9 @@ func (a CachedAnalyzer) Summarize(ctx context.Context, name, deterministicSummar
 	path := a.summaryPath(contentHash)
 	cached, err := readSummary(path)
 	if err == nil && cached.ContentHash == contentHash {
+		if cached.Name == "" {
+			cached.Name = name
+		}
 		return cached, nil
 	}
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -88,6 +92,9 @@ func (a CachedAnalyzer) Summarize(ctx context.Context, name, deterministicSummar
 	summary, err := a.next().Summarize(ctx, name, deterministicSummary, contentHash)
 	if err != nil {
 		return GeneratedSummary{}, err
+	}
+	if summary.Name == "" {
+		summary.Name = name
 	}
 	if summary.ContentHash == "" {
 		summary.ContentHash = contentHash

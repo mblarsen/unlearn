@@ -314,10 +314,13 @@ func TestSQLiteHistoryProgressIsForwardedDuringLoad(t *testing.T) {
 }
 
 func TestAuditWithLLMPersistsOptIn(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	cmd := newRootCmd(&bytes.Buffer{})
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
 	cmd.SetArgs([]string{"audit", "--root", root, "--trust-root", root, "--with-llm", "--state-dir", t.TempDir(), "--config", configPath})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -328,6 +331,9 @@ func TestAuditWithLLMPersistsOptIn(t *testing.T) {
 	}
 	if !strings.Contains(string(cfg), "llm_assisted = true") {
 		t.Fatalf("LLM opt-in not persisted:\n%s", cfg)
+	}
+	if !strings.Contains(out.String(), "GEMINI_API_KEY/GOOGLE_API_KEY is not set") {
+		t.Fatalf("missing deterministic fallback warning:\n%s", out.String())
 	}
 }
 

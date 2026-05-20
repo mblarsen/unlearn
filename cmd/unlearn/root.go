@@ -44,6 +44,7 @@ type cliOptions struct {
 	withLLM         bool
 	activeAgents    []string
 	inactiveAgents  []string
+	warnings        []string
 }
 
 func Execute() error {
@@ -88,8 +89,10 @@ func newRootCmd(out io.Writer) *cobra.Command {
 				return err
 			}
 			if opts.fix {
+				printWarnings(out, opts.warnings)
 				return runFix(out, opts, findings)
 			}
+			printWarnings(out, opts.warnings)
 			printAudit(out, skills, findings, skipped)
 			return nil
 		},
@@ -128,6 +131,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err := state.ReplaceIndex(db, skills, findings); err != nil {
 				return err
 			}
+			printWarnings(out, opts.warnings)
 			fmt.Fprintf(out, "Indexed %d skills and %d findings.\n", len(skills), len(findings))
 			if len(skipped) > 0 {
 				fmt.Fprintf(out, "Skipped untrusted roots: %s\n", strings.Join(skipped, ", "))
@@ -413,7 +417,7 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringSliceVar(&opts.historySQLite, "history-sqlite", nil, "opt-in SQLite history database to scan text columns for derived invocation evidence; may be repeated")
 	cmd.Flags().DurationVar(&opts.historyCacheTTL, "history-cache-ttl", 24*time.Hour, "reuse cached history evidence until it is older than this duration")
 	cmd.Flags().BoolVar(&opts.rescanSources, "rescan-sources", false, "ignore cached source/history evidence and rescan local sources")
-	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to LLM-assisted analysis plumbing; current build uses deterministic analysis plus a disabled analyzer stub")
+	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to Gemini-assisted semantic overlap analysis; uses GEMINI_API_KEY or GOOGLE_API_KEY")
 	cmd.Flags().StringSliceVar(&opts.activeAgents, "active-agent", nil, "active agent harness whose global skill roots should be audited; may be repeated")
 	cmd.Flags().StringSliceVar(&opts.inactiveAgents, "inactive-agent", nil, "inactive agent harness whose skill roots should be scanned as cleanup candidates; may be repeated")
 }
@@ -468,7 +472,11 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	skills := attachUsageEvidence(report.Skills, usage, sources, lastSeen)
 	analysisOpts := analysis.Options{UsageEvidence: usage}
 	if cfg.LLMAssisted {
-		analysisOpts.LLMAnalyzer = llm.NewCachedAnalyzer(paths.LLMCacheDir, llm.DisabledAnalyzer{})
+		if analyzer, ok := llm.NewGeminiAnalyzerFromEnv(); ok {
+			analysisOpts.LLMAnalyzer = llm.NewCachedAnalyzer(paths.LLMCacheDir, analyzer)
+		} else {
+			opts.warnings = append(opts.warnings, "LLM analysis requested, but GEMINI_API_KEY/GOOGLE_API_KEY is not set; using deterministic analysis.")
+		}
 	}
 	ctx := loadOpts.Context
 	if ctx == nil {
@@ -476,7 +484,8 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	}
 	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
 	if err != nil {
-		return nil, nil, nil, err
+		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM analysis failed (%v); using deterministic analysis.", err))
+		findings = analysis.Analyze(report.Skills, analysis.Options{UsageEvidence: usage})
 	}
 	return skills, findings, skipped, nil
 }
@@ -705,6 +714,12 @@ func pathsFromOptions(opts *cliOptions) (state.Paths, error) {
 		paths.IndexPath = opts.indexPath
 	}
 	return paths, nil
+}
+
+func printWarnings(out io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(out, "warning: %s\n", warning)
+	}
 }
 
 func printAudit(out io.Writer, skills []inventory.Skill, findings []analysis.Finding, skipped []string) {
