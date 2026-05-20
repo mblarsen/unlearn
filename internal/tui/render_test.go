@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -89,14 +90,14 @@ func TestFindingDetailsOnlySurfaceHistoryEvidenceForUnseenFindings(t *testing.T)
 }
 
 func TestSkillDetailsSurfaceHistoryEvidence(t *testing.T) {
-	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "strong", HistorySources: []string{"/sessions/a.jsonl"}}}
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "strong", HistorySources: []string{"/sessions/a.jsonl"}, HistoryLastSeenAt: time.Now().Add(-48 * time.Hour)}}
 	m := New(skills, nil)
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 25})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	m = updated.(Model)
 	view := m.View()
-	if !strings.Contains(view, "history strong derived evidence") {
+	if !strings.Contains(view, "history strong derived evidence") || !strings.Contains(view, "last seen") {
 		t.Fatalf("history evidence should be surfaced in skill details:\n%s", view)
 	}
 }

@@ -34,6 +34,7 @@ type Skill struct {
 	Provenance            string
 	HistoryEvidence       string
 	HistorySources        []string
+	HistoryLastSeenAt     time.Time
 	RootKnown             bool
 	ActiveAgents          []string
 	InactiveAgents        []string

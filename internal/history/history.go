@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 )
 
 type EvidenceGrade string
@@ -23,6 +24,7 @@ type Evidence struct {
 	SkillName string
 	Grade     EvidenceGrade
 	Source    string
+	SeenAt    time.Time
 }
 
 type Adapter interface {
@@ -64,6 +66,8 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 		nameSet[strings.ToLower(name)] = true
 	}
 	best := map[string]EvidenceGrade{}
+	lastSeen := map[string]time.Time{}
+	fallbackSeenAt := fileModTime(path)
 	reader := bufio.NewReader(f)
 	lines := 0
 	for {
@@ -77,6 +81,10 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 				if opts.Progress != nil {
 					opts.Progress(ScanProgress{Path: path, Lines: lines, Matches: len(best)})
 				}
+			}
+			seenAt := extractSeenAt(line)
+			if seenAt.IsZero() {
+				seenAt = fallbackSeenAt
 			}
 			text := extractText(line)
 			lower := strings.ToLower(text)
@@ -92,6 +100,9 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 				}
 				if rank(grade) < rank(best[name]) || best[name] == "" {
 					best[name] = grade
+				}
+				if grade != EvidenceWeak && seenAt.After(lastSeen[name]) {
+					lastSeen[name] = seenAt
 				}
 			}
 		}
@@ -111,7 +122,7 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 	}
 	var evidence []Evidence
 	for name, grade := range best {
-		evidence = append(evidence, Evidence{SkillName: name, Grade: grade, Source: path})
+		evidence = append(evidence, Evidence{SkillName: name, Grade: grade, Source: path, SeenAt: lastSeen[name]})
 	}
 	return evidence, nil
 }
@@ -134,6 +145,60 @@ func readHistoryLine(reader *bufio.Reader) ([]byte, error) {
 			return line, nil
 		}
 	}
+}
+
+func fileModTime(path string) time.Time {
+	info, err := os.Stat(path)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
+}
+
+func extractSeenAt(line []byte) time.Time {
+	line = bytes.TrimSpace(line)
+	var value any
+	if err := json.Unmarshal(line, &value); err != nil {
+		return time.Time{}
+	}
+	return findTime(value)
+}
+
+func findTime(value any) time.Time {
+	switch v := value.(type) {
+	case map[string]any:
+		for _, key := range []string{"timestamp", "time", "created_at", "createdAt", "date"} {
+			if parsed := parseTimeValue(v[key]); !parsed.IsZero() {
+				return parsed
+			}
+		}
+		for _, item := range v {
+			if parsed := findTime(item); !parsed.IsZero() {
+				return parsed
+			}
+		}
+	case []any:
+		for _, item := range v {
+			if parsed := findTime(item); !parsed.IsZero() {
+				return parsed
+			}
+		}
+	}
+	return time.Time{}
+}
+
+func parseTimeValue(value any) time.Time {
+	text, ok := value.(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05"} {
+		parsed, err := time.Parse(layout, text)
+		if err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func extractText(line []byte) string {

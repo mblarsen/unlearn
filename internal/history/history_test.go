@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestJSONLAdapterReportsProgressAndSupportsCancellation(t *testing.T) {
@@ -56,8 +57,8 @@ func TestJSONLAdapterHandlesLongJSONLLines(t *testing.T) {
 
 func TestJSONLAdapterScansDerivedEvidence(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
-	content := `{"message":"read /tmp/skills/alpha/SKILL.md"}` + "\n" +
-		`{"message":"beta was mentioned only"}` + "\n"
+	content := `{"timestamp":"2026-01-02T03:04:05Z","message":"read /tmp/skills/alpha/SKILL.md"}` + "\n" +
+		`{"timestamp":"2026-01-03T03:04:05Z","message":"beta was mentioned only"}` + "\n"
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -66,13 +67,23 @@ func TestJSONLAdapterScansDerivedEvidence(t *testing.T) {
 		t.Fatal(err)
 	}
 	grades := map[string]EvidenceGrade{}
+	seen := map[string]string{}
 	for _, item := range evidence {
 		grades[item.SkillName] = item.Grade
+		if !item.SeenAt.IsZero() {
+			seen[item.SkillName] = item.SeenAt.Format(time.RFC3339)
+		}
 	}
 	if grades["alpha"] != EvidenceStrong {
 		t.Fatalf("alpha grade=%s", grades["alpha"])
 	}
 	if grades["beta"] != EvidenceWeak {
 		t.Fatalf("beta grade=%s", grades["beta"])
+	}
+	if seen["alpha"] != "2026-01-02T03:04:05Z" {
+		t.Fatalf("alpha seen=%s", seen["alpha"])
+	}
+	if seen["beta"] != "" {
+		t.Fatalf("weak beta mention should not get last-used timestamp: %s", seen["beta"])
 	}
 }

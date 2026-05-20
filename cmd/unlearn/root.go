@@ -2,6 +2,7 @@ package unlearn
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
@@ -26,19 +27,21 @@ import (
 )
 
 type cliOptions struct {
-	roots          []string
-	trustRoots     []string
-	writeRoots     []string
-	configPath     string
-	stateDir       string
-	indexPath      string
-	fix            bool
-	yes            bool
-	restoreRoot    string
-	historyJSONL   []string
-	withLLM        bool
-	activeAgents   []string
-	inactiveAgents []string
+	roots           []string
+	trustRoots      []string
+	writeRoots      []string
+	configPath      string
+	stateDir        string
+	indexPath       string
+	fix             bool
+	yes             bool
+	restoreRoot     string
+	historyJSONL    []string
+	historyCacheTTL time.Duration
+	rescanSources   bool
+	withLLM         bool
+	activeAgents    []string
+	inactiveAgents  []string
 }
 
 func Execute() error {
@@ -397,6 +400,8 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringVar(&opts.stateDir, "state-dir", "", "state directory for index, quarantine, and caches")
 	cmd.Flags().StringVar(&opts.indexPath, "index", "", "SQLite index path")
 	cmd.Flags().StringSliceVar(&opts.historyJSONL, "history-jsonl", nil, "opt-in JSONL history file to scan for derived invocation evidence; may be repeated")
+	cmd.Flags().DurationVar(&opts.historyCacheTTL, "history-cache-ttl", 24*time.Hour, "reuse cached history evidence until it is older than this duration")
+	cmd.Flags().BoolVar(&opts.rescanSources, "rescan-sources", false, "ignore cached source/history evidence and rescan local sources")
 	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to LLM-assisted analysis plumbing; current build uses deterministic analysis plus a disabled analyzer stub")
 	cmd.Flags().StringSliceVar(&opts.activeAgents, "active-agent", nil, "active agent harness whose global skill roots should be audited; may be repeated")
 	cmd.Flags().StringSliceVar(&opts.inactiveAgents, "inactive-agent", nil, "inactive agent harness whose skill roots should be scanned as cleanup candidates; may be repeated")
@@ -445,11 +450,11 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	usage, sources, err := loadUsageEvidence(opts, cfg, report.Skills, loadOpts)
+	usage, sources, lastSeen, err := loadUsageEvidence(opts, cfg, report.Skills, loadOpts)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	skills := attachUsageEvidence(report.Skills, usage, sources)
+	skills := attachUsageEvidence(report.Skills, usage, sources, lastSeen)
 	findings := analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
 	return skills, findings, skipped, nil
 }
@@ -464,13 +469,13 @@ func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
 	return inventory.CandidateAgentIDs()
 }
 
-func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill, loadOpts inventoryLoadOptions) (analysis.UsageEvidence, map[string][]string, error) {
+func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill, loadOpts inventoryLoadOptions) (analysis.UsageEvidence, map[string][]string, map[string]time.Time, error) {
 	historyPaths := opts.historyJSONL
 	if len(historyPaths) == 0 && cfg.HistoryScan {
 		historyPaths = cfg.HistoryJSONL
 	}
 	if len(historyPaths) == 0 {
-		return nil, nil, nil
+		return nil, nil, nil, nil
 	}
 	names := make([]string, 0, len(skills))
 	for _, skill := range skills {
@@ -478,11 +483,24 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 	}
 	usage := analysis.UsageEvidence{}
 	sources := map[string][]string{}
+	lastSeen := map[string]time.Time{}
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := paths.Ensure(); err != nil {
+		return nil, nil, nil, err
+	}
+	db, err := state.OpenIndex(paths.IndexPath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer db.Close()
 	adapter := history.JSONLAdapter{}
 	for _, path := range historyPaths {
-		evidence, err := adapter.ScanWithOptions(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
+		evidence, err := historyEvidenceForPath(db, adapter, path, names, opts, loadOpts)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, item := range evidence {
 			current := usage[item.SkillName]
@@ -490,12 +508,40 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 				usage[item.SkillName] = string(item.Grade)
 			}
 			sources[item.SkillName] = appendUnique(sources[item.SkillName], item.Source)
+			if item.SeenAt.After(lastSeen[item.SkillName]) {
+				lastSeen[item.SkillName] = item.SeenAt
+			}
 		}
 	}
-	return usage, sources, nil
+	return usage, sources, lastSeen, nil
 }
 
-func attachUsageEvidence(skills []inventory.Skill, usage analysis.UsageEvidence, sources map[string][]string) []inventory.Skill {
+func historyEvidenceForPath(db *sql.DB, adapter history.JSONLAdapter, path string, names []string, opts *cliOptions, loadOpts inventoryLoadOptions) ([]history.Evidence, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if !opts.rescanSources {
+		status, err := state.HistoryCacheStatusForSource(db, path, info.ModTime(), opts.historyCacheTTL, now)
+		if err != nil {
+			return nil, err
+		}
+		if status.Fresh {
+			return state.LoadHistoryEvidence(db, path)
+		}
+	}
+	evidence, err := adapter.ScanWithOptions(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
+	if err != nil {
+		return nil, err
+	}
+	if err := state.SaveHistoryEvidence(db, path, info.ModTime(), evidence); err != nil {
+		return nil, err
+	}
+	return evidence, nil
+}
+
+func attachUsageEvidence(skills []inventory.Skill, usage analysis.UsageEvidence, sources map[string][]string, lastSeen map[string]time.Time) []inventory.Skill {
 	if usage == nil {
 		return skills
 	}
@@ -504,6 +550,7 @@ func attachUsageEvidence(skills []inventory.Skill, usage analysis.UsageEvidence,
 		key := strings.ToLower(enriched[i].Name)
 		enriched[i].HistoryEvidence = usage[key]
 		enriched[i].HistorySources = append([]string(nil), sources[key]...)
+		enriched[i].HistoryLastSeenAt = lastSeen[key]
 	}
 	return enriched
 }

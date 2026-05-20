@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1315,10 +1316,46 @@ func historyEvidenceSummary(skills []inventory.Skill) string {
 	if best == "" {
 		return ""
 	}
-	if sources == 0 {
-		return best + " derived evidence"
+	lastSeen := latestHistorySeen(skills)
+	when := ""
+	if !lastSeen.IsZero() {
+		when = " · last seen " + relativeTime(lastSeen)
 	}
-	return fmt.Sprintf("%s derived evidence from %d source(s)", best, sources)
+	if sources == 0 {
+		return best + " derived evidence" + when
+	}
+	return fmt.Sprintf("%s derived evidence from %d source(s)%s", best, sources, when)
+}
+
+func latestHistorySeen(skills []inventory.Skill) time.Time {
+	var latest time.Time
+	for _, skill := range skills {
+		if skill.HistoryEvidence == "weak" {
+			continue
+		}
+		if skill.HistoryLastSeenAt.After(latest) {
+			latest = skill.HistoryLastSeenAt
+		}
+	}
+	return latest
+}
+
+func relativeTime(value time.Time) string {
+	duration := time.Since(value)
+	if duration < 0 {
+		return value.Format("2006-01-02")
+	}
+	switch {
+	case duration < time.Hour:
+		minutes := max(1, int(duration.Minutes()))
+		return fmt.Sprintf("%dm ago", minutes)
+	case duration < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(duration.Hours()))
+	case duration < 45*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(duration.Hours()/24))
+	default:
+		return value.Format("2006-01-02")
+	}
 }
 
 func evidenceRank(grade string) int {
@@ -1357,6 +1394,9 @@ func renderSelectedInstallDetails(theme ui.Theme, skill inventory.Skill, width i
 		label := fmt.Sprintf("    history %s evidence", skill.HistoryEvidence)
 		if sourceCount > 0 {
 			label += fmt.Sprintf(" from %d source(s)", sourceCount)
+		}
+		if !skill.HistoryLastSeenAt.IsZero() {
+			label += " · last seen " + relativeTime(skill.HistoryLastSeenAt)
 		}
 		lines = append(lines, theme.Muted.Render(ui.Truncate(label, width)))
 	}
