@@ -121,7 +121,7 @@ export GEMINI_API_KEY=...
 unlearn audit --with-llm
 ```
 
-`GOOGLE_API_KEY` is also accepted. The default model is `gemini-3-flash`; override it with `UNLEARN_LLM_MODEL`.
+`GOOGLE_API_KEY` is also accepted. The default model is `gemini-3-flash-preview`; override it with `UNLEARN_LLM_MODEL`.
 
 ## Commands
 

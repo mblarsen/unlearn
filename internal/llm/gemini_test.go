@@ -11,7 +11,7 @@ import (
 
 func TestGeminiAnalyzerSummarizeCallsGenerateContent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/models/gemini-3-flash:generateContent" {
+		if r.URL.Path != "/models/gemini-3-flash-preview:generateContent" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
 		if r.URL.Query().Get("key") != "test-key" {
