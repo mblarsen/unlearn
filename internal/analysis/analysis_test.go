@@ -22,8 +22,8 @@ func TestAnalyzeDetectsDuplicateConflictAndBroken(t *testing.T) {
 
 func TestAnalyzeDetectsOverlapHighTokenBroadActivationAndUnseen(t *testing.T) {
 	skills := []inventory.Skill{
-		{Name: "react-ui", ID: "a", Description: "React component frontend design accessible", Body: "dashboard layout responsive", ContentHash: "a", UpperTokens: 3000, LowerTokens: 100, ActivationRisk: "high"},
-		{Name: "vue-ui", ID: "b", Description: "Vue component frontend design accessible", Body: "dashboard layout responsive", ContentHash: "b", UpperTokens: 10, LowerTokens: 5, ActivationRisk: "low"},
+		{Name: "react-ui", ID: "a", Description: "React frontend interface accessible", Body: "dashboard layout responsive", ContentHash: "a", UpperTokens: 3000, LowerTokens: 100, ActivationRisk: "high"},
+		{Name: "vue-ui", ID: "b", Description: "Vue frontend interface accessible", Body: "dashboard layout responsive", ContentHash: "b", UpperTokens: 10, LowerTokens: 5, ActivationRisk: "low"},
 	}
 	findings := Analyze(skills, Options{UsageEvidence: UsageEvidence{"react-ui": "strong"}, HighTokenLimit: 2000})
 	assertHasType(t, findings, FindingOverlap)
@@ -72,6 +72,45 @@ func TestGenericActionWordsDoNotCreateOverlapSpam(t *testing.T) {
 	}
 }
 
+func TestKeywordsFilterCommonProseWords(t *testing.T) {
+	terms := keywords("Above text accepts configured support instructions, follows examples, uses optional input, validates configuration, and returns results.")
+	for _, word := range []string{"above", "accepts", "configured", "support", "follows", "optional", "uses", "validates", "returns", "results"} {
+		if terms[word] {
+			t.Fatalf("common prose word %q should not be a keyword: %#v", word, terms)
+		}
+	}
+}
+
+func TestCommonProseWordsDoNotCreateOverlapSpam(t *testing.T) {
+	var skills []inventory.Skill
+	names := []string{"calendar", "notes", "browser", "fastmail", "wrangler", "review", "launch", "social"}
+	for _, name := range names {
+		skills = append(skills, inventory.Skill{
+			Name:        name,
+			Description: "Accepts the request above and uses configured support instructions when available.",
+			Body:        "Follow the examples above. Accepts optional input, validates configuration, and returns the result.",
+			ContentHash: name,
+		})
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingOverlap) != 0 {
+		t.Fatalf("common prose words created broad overlap findings: %#v", findingsOfType(findings, FindingOverlap))
+	}
+}
+
+func TestOverlapIgnoresBoilerplateBodyForDescribedSkills(t *testing.T) {
+	boilerplate := "absolute abstraction acceptance access accessibility accessible active auth auto bash changes docs each next include data start existing update multiple show verify will"
+	skills := []inventory.Skill{
+		{Name: "agent-browser", Description: "Control a browser with Playwright automation", Body: boilerplate, ContentHash: "a"},
+		{Name: "app-store-review", Description: "Evaluate Apple App Store compliance for iOS releases", Body: boilerplate, ContentHash: "b"},
+		{Name: "fastmail", Description: "Read and send Fastmail email and calendar data", Body: boilerplate, ContentHash: "c"},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingOverlap) != 0 {
+		t.Fatalf("boilerplate body terms created false overlaps: %#v", findingsOfType(findings, FindingOverlap))
+	}
+}
+
 func TestOverlapUsesLogicalSkillNamesForClusters(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "a", Root: "/one"},
@@ -89,7 +128,7 @@ func TestOverlapUsesLogicalSkillNamesForClusters(t *testing.T) {
 	}
 }
 
-func TestOverlapClustersConnectedComponents(t *testing.T) {
+func TestOverlapClustersDenseConnectedComponents(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "a"},
 		{Name: "react-forms", Description: "React frontend accessibility aria keyboard", Body: "form semantic focus", ContentHash: "b"},
@@ -101,6 +140,23 @@ func TestOverlapClustersConnectedComponents(t *testing.T) {
 	}
 }
 
+func TestOverlapDoesNotCreateBroadTransitiveBridgeClusters(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "browser", Description: "Browser automation screenshots pages", ContentHash: "a"},
+		{Name: "ui-kit", Description: "Browser automation screenshots pages React native guidelines", ContentHash: "b"},
+		{Name: "app-review", Description: "React native guidelines compliance", ContentHash: "c"},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingOverlap) != 2 {
+		t.Fatalf("expected sparse bridge to split into pair findings, got %#v", findings)
+	}
+	for _, finding := range findingsOfType(findings, FindingOverlap) {
+		if len(finding.Skills) != 2 {
+			t.Fatalf("expected pair finding instead of broad transitive cluster: %#v", finding)
+		}
+	}
+}
+
 func countType(findings []Finding, typ FindingType) int {
 	count := 0
 	for _, finding := range findings {
@@ -109,6 +165,16 @@ func countType(findings []Finding, typ FindingType) int {
 		}
 	}
 	return count
+}
+
+func findingsOfType(findings []Finding, typ FindingType) []Finding {
+	var filtered []Finding
+	for _, finding := range findings {
+		if finding.Type == typ {
+			filtered = append(filtered, finding)
+		}
+	}
+	return filtered
 }
 
 func assertHasType(t *testing.T, findings []Finding, typ FindingType) {
