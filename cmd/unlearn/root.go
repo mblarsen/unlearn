@@ -492,7 +492,7 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	}
 	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
 	if err != nil {
-		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM analysis failed (%v); using deterministic analysis.", err))
+		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM semantic-overlap analysis did not complete; using deterministic analysis. Details: %v", err))
 		findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
 	}
 	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: fmt.Sprintf("%d finding(s)", len(findings)), Done: true})

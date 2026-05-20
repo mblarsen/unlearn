@@ -86,22 +86,22 @@ func (a GeminiAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedS
 		"Skills JSON:",
 		string(data),
 	}, "\n")
-	text, err := a.generateText(ctx, prompt, 4096, true)
-	if err != nil {
-		return nil, err
+	var decoded geminiOverlapResponse
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		text, err := a.generateText(ctx, prompt, 4096, true)
+		if err != nil {
+			return nil, err
+		}
+		decoded, err = parseGeminiOverlapResponse(text)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
 	}
-	jsonText := extractJSONObject(text)
-	if strings.TrimSpace(jsonText) == "" {
-		return nil, fmt.Errorf("gemini overlap response did not contain JSON: %q", truncateForError(text, 240))
-	}
-	var decoded struct {
-		Overlaps []struct {
-			SkillNames []string `json:"skill_names"`
-			Reason     string   `json:"reason"`
-		} `json:"overlaps"`
-	}
-	if err := json.Unmarshal([]byte(jsonText), &decoded); err != nil {
-		return nil, fmt.Errorf("parse gemini overlap JSON: %w; response: %q", err, truncateForError(text, 240))
+	if lastErr != nil {
+		return nil, fmt.Errorf("Gemini returned invalid semantic-overlap JSON after 3 attempts: %w", lastErr)
 	}
 	overlaps := make([]SemanticOverlap, 0, len(decoded.Overlaps))
 	for _, item := range decoded.Overlaps {
@@ -185,6 +185,25 @@ func (a GeminiAnalyzer) model() string {
 
 func summaryName(summary GeneratedSummary) string {
 	return strings.TrimSpace(summary.Name)
+}
+
+type geminiOverlapResponse struct {
+	Overlaps []struct {
+		SkillNames []string `json:"skill_names"`
+		Reason     string   `json:"reason"`
+	} `json:"overlaps"`
+}
+
+func parseGeminiOverlapResponse(text string) (geminiOverlapResponse, error) {
+	jsonText := extractJSONObject(text)
+	if strings.TrimSpace(jsonText) == "" {
+		return geminiOverlapResponse{}, fmt.Errorf("no JSON object in response preview %q", truncateForError(text, 240))
+	}
+	var decoded geminiOverlapResponse
+	if err := json.Unmarshal([]byte(jsonText), &decoded); err != nil {
+		return geminiOverlapResponse{}, fmt.Errorf("could not parse JSON (%w); response preview %q", err, truncateForError(text, 240))
+	}
+	return decoded, nil
 }
 
 type geminiGenerateRequest struct {

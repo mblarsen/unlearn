@@ -35,7 +35,7 @@ type auditProgressPrinter struct {
 }
 
 func newAuditProgressPrinter(out io.Writer) *auditProgressPrinter {
-	bar := progress.New(progress.WithWidth(28), progress.WithDefaultGradient())
+	bar := progress.New(progress.WithWidth(16), progress.WithDefaultGradient())
 	return &auditProgressPrinter{
 		out:     out,
 		live:    writerIsTerminal(out),
@@ -87,6 +87,9 @@ func (p *auditProgressPrinter) line(event inventoryProgress) string {
 		p.frame++
 	}
 	if event.Total > 0 {
+		if compactProgressStep(event.Step) {
+			return strings.TrimSpace(fmt.Sprintf("%s %s %s %s", p.spinner.Render(frame), p.label.Render(label), p.muted.Render(fmt.Sprintf("%d/%d", event.Current, event.Total)), p.detailText(event)))
+		}
 		percent := float64(event.Current) / float64(event.Total)
 		return strings.TrimSpace(fmt.Sprintf("%s %s %s %s %s", p.spinner.Render(frame), p.label.Render(label), p.bar.ViewAs(percent), p.muted.Render(fmt.Sprintf("%d/%d", event.Current, event.Total)), p.detailText(event)))
 	}
@@ -104,8 +107,16 @@ func writerIsTerminal(out io.Writer) bool {
 	return ok && isatty.IsTerminal(file.Fd())
 }
 
+func compactProgressStep(step string) bool {
+	return step == "history"
+}
+
 func (p *auditProgressPrinter) detailText(event inventoryProgress) string {
-	detail := truncateProgressDetail(strings.TrimSpace(event.Detail), 72)
+	limit := 72
+	if compactProgressStep(event.Step) {
+		limit = 36
+	}
+	detail := truncateProgressDetail(strings.TrimSpace(event.Detail), limit)
 	if detail == "" {
 		return ""
 	}

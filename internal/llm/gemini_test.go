@@ -64,6 +64,29 @@ func TestGeminiAnalyzerFindOverlapsParsesJSON(t *testing.T) {
 	}
 }
 
+func TestGeminiAnalyzerFindOverlapsRetriesTruncatedJSON(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.Header().Set("Content-Type", "application/json")
+		if attempts < 3 {
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"overlaps\":[{\"skill_names\":[\"a\",\"b\"]"}]}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"overlaps\":[{\"skill_names\":[\"a\",\"b\"],\"reason\":\"same purpose\"}]}"}]}}]}`))
+	}))
+	defer server.Close()
+
+	analyzer := GeminiAnalyzer{APIKey: "test-key", Model: "gemini-test", BaseURL: server.URL, Client: server.Client()}
+	overlaps, err := analyzer.FindOverlaps(context.Background(), []GeneratedSummary{{Name: "a", Summary: "first"}, {Name: "b", Summary: "second"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if attempts != 3 || len(overlaps) != 1 || overlaps[0].Reason != "same purpose" {
+		t.Fatalf("attempts=%d overlaps=%#v", attempts, overlaps)
+	}
+}
+
 func TestNewGeminiAnalyzerFromEnv(t *testing.T) {
 	t.Setenv("GEMINI_API_KEY", "")
 	t.Setenv("GOOGLE_API_KEY", "google-key")
