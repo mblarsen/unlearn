@@ -131,6 +131,27 @@ func TestDensityHintAppearsInFindingDetails(t *testing.T) {
 	if !strings.Contains(compact, "r rich shows") || !strings.Contains(rich, "r compact hides") || !strings.Contains(rich, "Alpha-specific") {
 		t.Fatalf("density hint should explain rich finding details:\ncompact:\n%s\nrich:\n%s", compact, rich)
 	}
+	if strings.Count(rich, "Alpha-specific") != 1 {
+		t.Fatalf("rich selected install should not repeat snippet above full description:\n%s", rich)
+	}
+}
+
+func TestOverlapFindingDetailsShowComparedSkillNames(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "openspec-apply", Description: "Apply OpenSpec changes", Root: "/one", LowerTokens: 100, UpperTokens: 200},
+		{Name: "openspec-archive", Description: "Archive OpenSpec changes", Root: "/two", LowerTokens: 300, UpperTokens: 400},
+	}
+	findings := []analysis.Finding{{ID: "overlap:openspec-apply:openspec-archive", Type: analysis.FindingOverlap, Title: "openspec-apply / openspec-archive", Skills: skills}}
+	m := New(skills, findings)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 110, Height: 25})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "• tokens") {
+		t.Fatalf("overlap summary should omit token fact:\n%s", view)
+	}
+	if !strings.Contains(view, "openspec-apply · /one") || !strings.Contains(view, "openspec-archive · /two") {
+		t.Fatalf("overlap compare rows should include each skill name:\n%s", view)
+	}
 }
 
 func TestSkillListOmitsKindLabel(t *testing.T) {
