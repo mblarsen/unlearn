@@ -1,11 +1,13 @@
 package history
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,6 +36,21 @@ func TestJSONLAdapterReportsProgressAndSupportsCancellation(t *testing.T) {
 	_, err = JSONLAdapter{}.ScanWithOptions(path, []string{"alpha"}, ScanOptions{Context: ctx})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected cancellation, got %v", err)
+	}
+}
+
+func TestJSONLAdapterHandlesLongJSONLLines(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := `{"message":"` + strings.Repeat("x", bufio.MaxScanTokenSize+1) + ` alpha skill.md"}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evidence, err := JSONLAdapter{}.Scan(path, []string{"alpha"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(evidence) != 1 || evidence[0].Grade != EvidenceStrong {
+		t.Fatalf("unexpected evidence: %#v", evidence)
 	}
 }
 

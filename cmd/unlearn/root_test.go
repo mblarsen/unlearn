@@ -6,7 +6,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mblarsen/unlearn/internal/history"
 )
+
+func TestLoadingModelShowsProgress(t *testing.T) {
+	updates := make(chan tea.Msg, 1)
+	m := newLoadingModel(updates)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(loadingModel)
+	updated, _ = m.Update(loadingProgressMsg{progress: history.ScanProgress{Path: "/sessions/a.jsonl", Lines: 500, Matches: 2}})
+	m = updated.(loadingModel)
+
+	view := m.View()
+	if !strings.Contains(view, "unlearn is loading") || !strings.Contains(view, "Scanning Pi history evidence") || !strings.Contains(view, "500 lines") {
+		t.Fatalf("loading view missing progress details:\n%s", view)
+	}
+}
 
 func TestAuditOutputWithFixtureRoot(t *testing.T) {
 	root := t.TempDir()

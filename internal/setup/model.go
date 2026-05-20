@@ -107,15 +107,20 @@ func (m Model) View() string {
 		"",
 		theme.Section.Render("Agent harnesses"),
 	}
+	itemLines := make([]int, m.itemCount())
 	for i, agent := range m.Agents {
+		itemLines[i] = len(lines)
 		lines = append(lines, m.agentLine(theme, i, agent, contentWidth))
 	}
 	lines = append(lines, "", theme.Section.Render("Skill roots"))
 	for i, root := range m.Roots {
-		lines = append(lines, m.rootLine(theme, len(m.Agents)+i, root, contentWidth))
+		itemIndex := len(m.Agents) + i
+		itemLines[itemIndex] = len(lines)
+		lines = append(lines, m.rootLine(theme, itemIndex, root, contentWidth))
 	}
 	optionStart := len(m.Agents) + len(m.Roots)
 	lines = append(lines, "", theme.Section.Render("Options"))
+	itemLines[optionStart] = len(lines)
 	lines = append(lines, m.optionLine(theme, optionStart, m.LLMEnabled, "LLM-assisted summaries and semantic overlap", contentWidth))
 	historyLabel := "Pi JSONL history evidence"
 	if len(m.HistoryJSONL) == 0 {
@@ -123,9 +128,10 @@ func (m Model) View() string {
 	} else {
 		historyLabel += fmt.Sprintf(" · %d paths discovered · read only after opt-in", len(m.HistoryJSONL))
 	}
+	itemLines[optionStart+1] = len(lines)
 	lines = append(lines, m.optionLine(theme, optionStart+1, m.HistoryScan, historyLabel, contentWidth))
-	lines = ui.FitLines(lines, bodyHeight-2)
-	panel := theme.Panel.Width(panelWidth - 2).Height(bodyHeight - 2).Render(strings.Join(ui.PadLines(lines, bodyHeight-2), "\n"))
+	visibleLines := setupVisibleLines(lines, itemLines, m.Cursor, bodyHeight-2)
+	panel := theme.Panel.Width(panelWidth - 2).Height(bodyHeight - 2).Render(strings.Join(ui.PadLines(visibleLines, bodyHeight-2), "\n"))
 	keybar := renderSetupKeybar(theme, width)
 	return lipgloss.JoinVertical(lipgloss.Left, panel, keybar)
 }
@@ -226,6 +232,38 @@ func defaultActiveAgent(id string) bool {
 	default:
 		return false
 	}
+}
+
+func setupVisibleLines(lines []string, itemLines []int, cursor int, height int) []string {
+	if height <= 0 {
+		return nil
+	}
+	if len(lines) <= height {
+		return lines
+	}
+	selectedLine := 0
+	if cursor >= 0 && cursor < len(itemLines) {
+		selectedLine = itemLines[cursor]
+	}
+	selectedOffset := height - 1
+	if selectedLine < len(lines)-1 {
+		selectedOffset = height - 2
+	}
+	start := selectedLine - selectedOffset
+	if start < 0 {
+		start = 0
+	}
+	if start > len(lines)-height {
+		start = len(lines) - height
+	}
+	out := append([]string(nil), lines[start:start+height]...)
+	if start > 0 {
+		out[0] = ui.Truncate("… above", lipgloss.Width(out[0]))
+	}
+	if start+height < len(lines) {
+		out[height-1] = ui.Truncate("… more", lipgloss.Width(out[height-1]))
+	}
+	return out
 }
 
 func padBetween(left, right string, width int) string {

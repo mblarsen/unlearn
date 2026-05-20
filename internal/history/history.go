@@ -2,8 +2,11 @@ package history
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"os"
 	"strings"
 )
@@ -35,6 +38,8 @@ type ScanProgress struct {
 	Done    bool
 }
 
+const maxHistoryLineBytes = 16 * 1024 * 1024
+
 type ScanOptions struct {
 	Context  context.Context
 	Progress func(ScanProgress)
@@ -59,41 +64,46 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 		nameSet[strings.ToLower(name)] = true
 	}
 	best := map[string]EvidenceGrade{}
-	scanner := bufio.NewScanner(f)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	reader := bufio.NewReader(f)
 	lines := 0
-	for scanner.Scan() {
-		lines++
-		if lines%500 == 0 {
-			if err := ctx.Err(); err != nil {
-				return nil, err
+	for {
+		line, err := readHistoryLine(reader)
+		if len(line) > 0 {
+			lines++
+			if lines%500 == 0 {
+				if err := ctx.Err(); err != nil {
+					return nil, err
+				}
+				if opts.Progress != nil {
+					opts.Progress(ScanProgress{Path: path, Lines: lines, Matches: len(best)})
+				}
 			}
-			if opts.Progress != nil {
-				opts.Progress(ScanProgress{Path: path, Lines: lines, Matches: len(best)})
+			text := extractText(line)
+			lower := strings.ToLower(text)
+			for name := range nameSet {
+				if !strings.Contains(lower, name) {
+					continue
+				}
+				grade := EvidenceWeak
+				if strings.Contains(lower, "skill.md") || strings.Contains(lower, "use the "+name+" skill") || strings.Contains(lower, "using "+name) {
+					grade = EvidenceStrong
+				} else if strings.Contains(lower, "skills/") && strings.Contains(lower, name) {
+					grade = EvidenceMedium
+				}
+				if rank(grade) < rank(best[name]) || best[name] == "" {
+					best[name] = grade
+				}
 			}
 		}
-		text := extractText(scanner.Bytes())
-		lower := strings.ToLower(text)
-		for name := range nameSet {
-			if !strings.Contains(lower, name) {
-				continue
-			}
-			grade := EvidenceWeak
-			if strings.Contains(lower, "skill.md") || strings.Contains(lower, "use the "+name+" skill") || strings.Contains(lower, "using "+name) {
-				grade = EvidenceStrong
-			} else if strings.Contains(lower, "skills/") && strings.Contains(lower, name) {
-				grade = EvidenceMedium
-			}
-			if rank(grade) < rank(best[name]) || best[name] == "" {
-				best[name] = grade
-			}
+		if err == nil {
+			continue
 		}
-	}
-	if err := ctx.Err(); err != nil {
+		if errors.Is(err, io.EOF) {
+			break
+		}
 		return nil, err
 	}
-	if err := scanner.Err(); err != nil {
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if opts.Progress != nil {
@@ -106,7 +116,28 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 	return evidence, nil
 }
 
+func readHistoryLine(reader *bufio.Reader) ([]byte, error) {
+	var line []byte
+	for {
+		part, prefix, err := reader.ReadLine()
+		if len(part) > 0 && len(line) < maxHistoryLineBytes {
+			remaining := maxHistoryLineBytes - len(line)
+			line = append(line, part[:min(len(part), remaining)]...)
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(line) > 0 {
+				return line, nil
+			}
+			return line, err
+		}
+		if !prefix {
+			return line, nil
+		}
+	}
+}
+
 func extractText(line []byte) string {
+	line = bytes.TrimSpace(line)
 	var value any
 	if err := json.Unmarshal(line, &value); err != nil {
 		return string(line)

@@ -9,8 +9,10 @@ import (
 	"sort"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/config"
@@ -19,6 +21,7 @@ import (
 	setupflow "github.com/mblarsen/unlearn/internal/setup"
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
+	"github.com/mblarsen/unlearn/internal/ui"
 	"github.com/spf13/cobra"
 )
 
@@ -51,7 +54,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err := runFirstLaunchSetup(out, opts); err != nil {
 				return err
 			}
-			skills, findings, _, err := loadInventory(opts)
+			skills, findings, err := runLoadingInventory(out, opts)
 			if err != nil {
 				return err
 			}
@@ -174,6 +177,144 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	root.AddCommand(setupCmd)
 
 	return root
+}
+
+type loadingResultMsg struct {
+	skills   []inventory.Skill
+	findings []analysis.Finding
+	err      error
+}
+
+type loadingProgressMsg struct {
+	progress history.ScanProgress
+}
+
+type loadingTickMsg time.Time
+
+type loadingModel struct {
+	width     int
+	height    int
+	frame     int
+	status    string
+	detail    string
+	updates   <-chan tea.Msg
+	result    loadingResultMsg
+	cancelled bool
+}
+
+func newLoadingModel(updates <-chan tea.Msg) loadingModel {
+	return loadingModel{status: "Scanning skill roots", detail: "Building inventory and derived evidence", updates: updates}
+}
+
+func (m loadingModel) Init() tea.Cmd {
+	return tea.Batch(loadingTickCmd(), waitForLoadingUpdate(m.updates))
+}
+
+func loadingTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return loadingTickMsg(t) })
+}
+
+func waitForLoadingUpdate(updates <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		return <-updates
+	}
+}
+
+func (m loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc", "q":
+			m.cancelled = true
+			return m, tea.Quit
+		}
+	case loadingProgressMsg:
+		m.status = "Scanning Pi history evidence"
+		m.detail = fmt.Sprintf("%s · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
+		if msg.progress.Done {
+			m.detail = fmt.Sprintf("%s · complete · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
+		}
+		return m, waitForLoadingUpdate(m.updates)
+	case loadingResultMsg:
+		m.result = msg
+		return m, tea.Quit
+	case loadingTickMsg:
+		m.frame++
+		return m, loadingTickCmd()
+	}
+	return m, nil
+}
+
+func (m loadingModel) View() string {
+	width := m.width
+	if width <= 0 {
+		width = 90
+	}
+	height := m.height
+	if height <= 0 {
+		height = 25
+	}
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	barWidth := min(36, max(12, width-24))
+	filled := (m.frame % (barWidth + 1))
+	bar := strings.Repeat("━", filled) + strings.Repeat("─", barWidth-filled)
+	theme := tuiThemeForLoading()
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Padding(1, 3).
+		Width(min(72, width-8)).
+		Render(strings.Join([]string{
+			theme.title.Render(spinner[m.frame%len(spinner)] + " unlearn is loading"),
+			theme.status.Render(m.status),
+			theme.bar.Render(bar),
+			theme.detail.Render(ui.Truncate(m.detail, min(64, width-16))),
+			theme.detail.Render("press q to cancel"),
+		}, "\n"))
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+}
+
+type loadingTheme struct{ title, status, bar, detail lipgloss.Style }
+
+func tuiThemeForLoading() loadingTheme {
+	return loadingTheme{
+		title:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")),
+		status: lipgloss.NewStyle().Foreground(lipgloss.Color("255")),
+		bar:    lipgloss.NewStyle().Foreground(lipgloss.Color("75")),
+		detail: lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
+	}
+}
+
+func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []analysis.Finding, error) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	updates := make(chan tea.Msg, 16)
+	go func() {
+		skills, findings, _, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Context: ctx, HistoryProgress: func(progress history.ScanProgress) {
+			select {
+			case updates <- loadingProgressMsg{progress: progress}:
+			default:
+			}
+		}})
+		updates <- loadingResultMsg{skills: skills, findings: findings, err: err}
+	}()
+	program := tea.NewProgram(newLoadingModel(updates), tea.WithOutput(out), tea.WithAltScreen())
+	finalModel, err := program.Run()
+	stop()
+	if err != nil {
+		return nil, nil, err
+	}
+	loading, ok := finalModel.(loadingModel)
+	if !ok {
+		return nil, nil, fmt.Errorf("loading returned unexpected model %T", finalModel)
+	}
+	if loading.cancelled {
+		return nil, nil, fmt.Errorf("loading cancelled")
+	}
+	return loading.result.skills, loading.result.findings, loading.result.err
 }
 
 func runFirstLaunchSetup(out io.Writer, opts *cliOptions) error {

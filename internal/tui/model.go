@@ -1003,7 +1003,7 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	lines = append(lines, "", theme.Section.Render("Summary"))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+installLabel(len(finding.Skills))+" across "+rootSummary(finding.Skills, 2), width)))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
-	if summary := historyEvidenceSummary(finding.Skills); summary != "" {
+	if summary := findingHistoryEvidenceSummary(finding); summary != "" {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• history "+summary, width)))
 	}
 	if len(finding.Skills) > 1 {
@@ -1289,10 +1289,24 @@ func renderDensityHint(theme ui.Theme, density Density, width int) string {
 	return theme.Muted.Render(ui.Truncate("r rich shows selected install description, path, provenance", width))
 }
 
+func findingHistoryEvidenceSummary(finding analysis.Finding) string {
+	if finding.Type != analysis.FindingUnseen {
+		return ""
+	}
+	summary := historyEvidenceSummary(finding.Skills)
+	if summary == "" {
+		return "no strong or medium invocation evidence"
+	}
+	return summary
+}
+
 func historyEvidenceSummary(skills []inventory.Skill) string {
 	best := ""
 	sources := 0
 	for _, skill := range skills {
+		if skill.HistoryEvidence == "weak" {
+			continue
+		}
 		if evidenceRank(skill.HistoryEvidence) < evidenceRank(best) {
 			best = skill.HistoryEvidence
 		}

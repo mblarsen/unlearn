@@ -64,6 +64,30 @@ func TestSkillDetailsSuppressesBroadGenericFixtureDescription(t *testing.T) {
 	}
 }
 
+func TestUnseenFindingDetailsDoNotDescribeWeakMentionsAsEvidence(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "weak", HistorySources: []string{"/sessions/a.jsonl"}}}
+	findings := []analysis.Finding{{ID: "unseen:alpha", Type: analysis.FindingUnseen, Title: "alpha", Skills: skills}}
+	m := New(skills, findings)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "weak derived evidence") || !strings.Contains(view, "no strong or medium") {
+		t.Fatalf("unseen finding should not describe weak mention as usage evidence:\n%s", view)
+	}
+}
+
+func TestFindingDetailsOnlySurfaceHistoryEvidenceForUnseenFindings(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "strong", HistorySources: []string{"/sessions/a.jsonl"}}}
+	findings := []analysis.Finding{{ID: "broken:alpha", Type: analysis.FindingBroken, Title: "alpha", Skills: skills}}
+	m := New(skills, findings)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "history strong derived evidence") {
+		t.Fatalf("broken finding details should not append generic history evidence:\n%s", view)
+	}
+}
+
 func TestSkillDetailsSurfaceHistoryEvidence(t *testing.T) {
 	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "strong", HistorySources: []string{"/sessions/a.jsonl"}}}
 	m := New(skills, nil)
