@@ -10,10 +10,12 @@ import (
 )
 
 type Config struct {
-	SetupComplete bool     `toml:"setup_complete"`
-	LLMAssisted   bool     `toml:"llm_assisted"`
-	HistoryScan   bool     `toml:"history_scan"`
-	HistoryJSONL  []string `toml:"history_jsonl"`
+	SetupComplete  bool     `toml:"setup_complete"`
+	LLMAssisted    bool     `toml:"llm_assisted"`
+	HistoryScan    bool     `toml:"history_scan"`
+	HistoryJSONL   []string `toml:"history_jsonl"`
+	ActiveAgents   []string `toml:"active_agents"`
+	InactiveAgents []string `toml:"inactive_agents"`
 
 	Roots          map[string]RootTrust `toml:"roots"`
 	WriteRoots     map[string]bool      `toml:"write_roots"`
@@ -123,6 +125,10 @@ func (c *Config) IgnoreFinding(id, reason string) {
 		c.IgnoreFindings = map[string]string{}
 	}
 	c.IgnoreFindings[id] = reason
+}
+
+func (c Config) HasAgentSelection() bool {
+	return len(c.ActiveAgents) > 0 || len(c.InactiveAgents) > 0
 }
 
 func appendUnique(items []string, item string) []string {

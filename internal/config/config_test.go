@@ -28,6 +28,8 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	cfg.SetupComplete = true
 	cfg.HistoryScan = true
 	cfg.HistoryJSONL = []string{"/tmp/session.jsonl"}
+	cfg.ActiveAgents = []string{"pi", "codex"}
+	cfg.InactiveAgents = []string{"claude-code"}
 	cfg.TrustRoot("/tmp/skills")
 	cfg.AllowWrite("/tmp/skills")
 	cfg.Keep.Skills = []string{"keep-me"}
@@ -41,6 +43,9 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	}
 	if !loaded.SetupComplete || !loaded.HistoryScan || len(loaded.HistoryJSONL) != 1 {
 		t.Fatalf("setup/history did not round-trip: %#v", loaded)
+	}
+	if len(loaded.ActiveAgents) != 2 || len(loaded.InactiveAgents) != 1 || !loaded.HasAgentSelection() {
+		t.Fatalf("agent selections did not round-trip: %#v", loaded)
 	}
 	if !loaded.IsTrusted("/tmp/skills") || !loaded.CanWrite("/tmp/skills") {
 		t.Fatalf("trust/write did not round-trip: %#v", loaded)

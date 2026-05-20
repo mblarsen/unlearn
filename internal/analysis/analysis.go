@@ -18,6 +18,7 @@ const (
 	FindingHighTokenCost   FindingType = "high-token-cost"
 	FindingBroadActivation FindingType = "broad-activation-risk"
 	FindingBroken          FindingType = "broken-symlink-reference"
+	FindingInactiveRoot    FindingType = "inactive-harness-root"
 )
 
 type Finding struct {
@@ -46,6 +47,7 @@ func Analyze(skills []inventory.Skill, opts Options) []Finding {
 	findings = append(findings, duplicatesAndConflicts(skills)...)
 	findings = append(findings, overlaps(skills)...)
 	findings = append(findings, brokenFindings(skills)...)
+	findings = append(findings, inactiveRootFindings(skills)...)
 	findings = append(findings, groupedSingleSkillFindings(skills, opts)...)
 	SortFindings(findings)
 	return findings
@@ -79,6 +81,27 @@ func brokenFindings(skills []inventory.Skill) []Finding {
 			reasons = append(reasons, "missing referenced support files: "+strings.Join(refs, ", "))
 		}
 		findings = append(findings, Finding{ID: "broken:" + name, Type: FindingBroken, Severity: 1, Title: displayName(group), Skills: group, Reasons: reasons})
+	}
+	return findings
+}
+
+func inactiveRootFindings(skills []inventory.Skill) []Finding {
+	groups := map[string][]inventory.Skill{}
+	for _, skill := range skills {
+		if skill.RootKnown && len(skill.ActiveAgents) == 0 && len(skill.InactiveAgents) > 0 {
+			groups[logicalName(skill)] = append(groups[logicalName(skill)], skill)
+		}
+	}
+	findings := make([]Finding, 0, len(groups))
+	for name, group := range groups {
+		findings = append(findings, Finding{
+			ID:       "inactive-root:" + name,
+			Type:     FindingInactiveRoot,
+			Severity: 2,
+			Title:    displayName(group),
+			Skills:   group,
+			Reasons:  []string{"installed only in skill roots owned by inactive harnesses: " + inactiveAgentsSummary(group)},
+		})
 	}
 	return findings
 }
@@ -127,7 +150,7 @@ func duplicatesAndConflicts(skills []inventory.Skill) []Finding {
 	}
 	var findings []Finding
 	for name, group := range byName {
-		if len(group) < 2 {
+		if len(group) < 2 || !groupHasSharedActiveReader(group) {
 			continue
 		}
 		byHash := map[string][]inventory.Skill{}
@@ -135,10 +158,10 @@ func duplicatesAndConflicts(skills []inventory.Skill) []Finding {
 			byHash[skill.ContentHash] = append(byHash[skill.ContentHash], skill)
 		}
 		if len(byHash) == 1 {
-			findings = append(findings, Finding{ID: "duplicate:" + name, Type: FindingDuplicate, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name and identical effective content"}})
+			findings = append(findings, Finding{ID: "duplicate:" + name, Type: FindingDuplicate, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name and identical effective content visible to at least one active harness"}})
 			continue
 		}
-		findings = append(findings, Finding{ID: "conflict:" + name, Type: FindingConflict, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name but different effective content"}})
+		findings = append(findings, Finding{ID: "conflict:" + name, Type: FindingConflict, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name but different effective content visible to at least one active harness"}})
 	}
 	return findings
 }
@@ -235,6 +258,47 @@ func overlapFinding(skills []inventory.Skill, sharedTerms []string) Finding {
 		sharedTerms = sharedTerms[:6]
 	}
 	return Finding{ID: "overlap:" + strings.Join(lowerNames(names), ":"), Type: FindingOverlap, Severity: 2, Title: summarizeNames(names), Skills: skills, Reasons: []string{"shared domain keywords: " + strings.Join(sharedTerms, ", ")}}
+}
+
+func groupHasSharedActiveReader(group []inventory.Skill) bool {
+	for i := 0; i < len(group); i++ {
+		for j := i + 1; j < len(group); j++ {
+			if group[i].Root == group[j].Root || intersects(group[i].ActiveAgents, group[j].ActiveAgents) {
+				return true
+			}
+			if len(group[i].ActiveAgents) == 0 && len(group[i].InactiveAgents) == 0 && len(group[j].ActiveAgents) == 0 && len(group[j].InactiveAgents) == 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func intersects(a, b []string) bool {
+	seen := map[string]bool{}
+	for _, value := range a {
+		seen[value] = true
+	}
+	for _, value := range b {
+		if seen[value] {
+			return true
+		}
+	}
+	return false
+}
+
+func inactiveAgentsSummary(skills []inventory.Skill) string {
+	agents := map[string]bool{}
+	for _, skill := range skills {
+		for _, agent := range skill.InactiveAgents {
+			agents[agent] = true
+		}
+	}
+	values := sortedKeys(agents)
+	if len(values) == 0 {
+		return "unknown"
+	}
+	return strings.Join(values, ", ")
 }
 
 func representativeSkills(skills []inventory.Skill) []inventory.Skill {
@@ -383,10 +447,11 @@ func SortFindings(findings []Finding) {
 		FindingDuplicate:       1,
 		FindingConflict:        2,
 		FindingBroken:          3,
-		FindingOverlap:         4,
-		FindingHighTokenCost:   5,
-		FindingBroadActivation: 6,
-		FindingUnseen:          7,
+		FindingInactiveRoot:    4,
+		FindingOverlap:         5,
+		FindingHighTokenCost:   6,
+		FindingBroadActivation: 7,
+		FindingUnseen:          8,
 	}
 	sort.Slice(findings, func(i, j int) bool {
 		if order[findings[i].Type] != order[findings[j].Type] {

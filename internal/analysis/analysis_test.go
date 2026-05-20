@@ -8,10 +8,10 @@ import (
 
 func TestAnalyzeDetectsDuplicateConflictAndBroken(t *testing.T) {
 	skills := []inventory.Skill{
-		{Name: "same", ID: "a", ContentHash: "h1"},
-		{Name: "same", ID: "b", ContentHash: "h1"},
-		{Name: "conflict", ID: "c", ContentHash: "h1"},
-		{Name: "conflict", ID: "d", ContentHash: "h2"},
+		{Name: "same", ID: "a", ContentHash: "h1", ActiveAgents: []string{"pi"}},
+		{Name: "same", ID: "b", ContentHash: "h1", ActiveAgents: []string{"pi"}},
+		{Name: "conflict", ID: "c", ContentHash: "h1", ActiveAgents: []string{"pi"}},
+		{Name: "conflict", ID: "d", ContentHash: "h2", ActiveAgents: []string{"pi"}},
 		{Name: "broken", ID: "e", BrokenRefs: []string{"references/missing.md"}},
 	}
 	findings := Analyze(skills, Options{})
@@ -126,6 +126,28 @@ func TestOverlapUsesLogicalSkillNamesForClusters(t *testing.T) {
 			t.Fatalf("expected logical skills only in overlap, got %#v", finding)
 		}
 	}
+}
+
+func TestDuplicateRequiresSharedActiveHarness(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "shared", ID: "a", ContentHash: "h1", Root: "/pi", ActiveAgents: []string{"pi"}},
+		{Name: "shared", ID: "b", ContentHash: "h1", Root: "/codex", ActiveAgents: []string{"codex"}},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingDuplicate) != 0 {
+		t.Fatalf("separate harness roots should not be actionable duplicates: %#v", findings)
+	}
+	skills[1].ActiveAgents = []string{"pi", "codex"}
+	findings = Analyze(skills, Options{})
+	if countType(findings, FindingDuplicate) != 1 {
+		t.Fatalf("shared active harness should create duplicate: %#v", findings)
+	}
+}
+
+func TestAnalyzeDetectsInactiveRootFindings(t *testing.T) {
+	skills := []inventory.Skill{{Name: "claude-only", ID: "a", ContentHash: "h1", RootKnown: true, InactiveAgents: []string{"claude-code"}}}
+	findings := Analyze(skills, Options{})
+	assertHasType(t, findings, FindingInactiveRoot)
 }
 
 func TestOverlapClustersDenseConnectedComponents(t *testing.T) {

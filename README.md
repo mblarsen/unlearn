@@ -31,14 +31,7 @@ Early v1. The core scanner, dashboard, safety gates, duplicate cleanup flows, an
 - History scanning is opt-in and stores derived evidence, not raw session excerpts.
 - LLM-assisted analysis is opt-in.
 
-Known default global roots:
-
-```text
-~/.agents/skills
-~/.pi/agent/skills
-~/.codex/skills
-~/.config/opencode/skills
-```
+Known default global roots are derived from the active agent harnesses selected in setup. The agent/root catalog is adapted from `vercel-labs/skills/src/agents.ts` and includes Pi, Codex, OpenCode, Claude Code, Cursor, Goose, Gemini CLI, and other supported Skills-compatible agents. Manual `--root` paths remain supported.
 
 ## Features
 
