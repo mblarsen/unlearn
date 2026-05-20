@@ -37,6 +37,8 @@ type Options struct {
 	HighTokenLimit int
 }
 
+const minOverlapSharedKeywords = 3
+
 func Analyze(skills []inventory.Skill, opts Options) []Finding {
 	if opts.HighTokenLimit == 0 {
 		opts.HighTokenLimit = 2000
@@ -166,6 +168,12 @@ func duplicatesAndConflicts(skills []inventory.Skill) []Finding {
 
 func overlaps(skills []inventory.Skill) []Finding {
 	logicalSkills := representativeSkills(skills)
+	keywordSets := make([]map[string]bool, len(logicalSkills))
+	for i, skill := range logicalSkills {
+		keywordSets[i] = overlapKeywords(skill)
+	}
+	dropCorpusGenericKeywords(keywordSets)
+
 	graph := map[int]map[int][]string{}
 	for i := 0; i < len(logicalSkills); i++ {
 		for j := i + 1; j < len(logicalSkills); j++ {
@@ -173,8 +181,8 @@ func overlaps(skills []inventory.Skill) []Finding {
 			if strings.EqualFold(a.Name, b.Name) {
 				continue
 			}
-			shared := sharedKeywords(a, b)
-			if len(shared) >= 2 {
+			shared := sharedKeywordSets(keywordSets[i], keywordSets[j])
+			if len(shared) >= minOverlapSharedKeywords {
 				if graph[i] == nil {
 					graph[i] = map[int][]string{}
 				}
@@ -196,6 +204,19 @@ func overlaps(skills []inventory.Skill) []Finding {
 		if len(component) < 2 {
 			continue
 		}
+		if !denseOverlapComponent(component, graph) {
+			for pos, idx := range component {
+				for _, next := range component[pos+1:] {
+					shared, ok := graph[idx][next]
+					if !ok {
+						continue
+					}
+					findings = append(findings, overlapFinding([]inventory.Skill{logicalSkills[idx], logicalSkills[next]}, shared))
+				}
+			}
+			continue
+		}
+
 		componentSkills := make([]inventory.Skill, 0, len(component))
 		terms := map[string]bool{}
 		for _, idx := range component {
@@ -206,18 +227,37 @@ func overlaps(skills []inventory.Skill) []Finding {
 				}
 			}
 		}
-		sort.Slice(componentSkills, func(i, j int) bool { return componentSkills[i].Name < componentSkills[j].Name })
-		names := make([]string, 0, len(componentSkills))
-		for _, skill := range componentSkills {
-			names = append(names, skill.Name)
-		}
-		sharedTerms := sortedKeys(terms)
-		if len(sharedTerms) > 6 {
-			sharedTerms = sharedTerms[:6]
-		}
-		findings = append(findings, Finding{ID: "overlap:" + strings.Join(lowerNames(names), ":"), Type: FindingOverlap, Severity: 2, Title: summarizeNames(names), Skills: componentSkills, Reasons: []string{"shared domain keywords: " + strings.Join(sharedTerms, ", ")}})
+		findings = append(findings, overlapFinding(componentSkills, sortedKeys(terms)))
 	}
 	return findings
+}
+
+func denseOverlapComponent(component []int, graph map[int]map[int][]string) bool {
+	if len(component) <= 2 {
+		return true
+	}
+	edges := 0
+	possible := len(component) * (len(component) - 1) / 2
+	for pos, idx := range component {
+		for _, next := range component[pos+1:] {
+			if _, ok := graph[idx][next]; ok {
+				edges++
+			}
+		}
+	}
+	return edges*4 >= possible*3
+}
+
+func overlapFinding(skills []inventory.Skill, sharedTerms []string) Finding {
+	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+	names := make([]string, 0, len(skills))
+	for _, skill := range skills {
+		names = append(names, skill.Name)
+	}
+	if len(sharedTerms) > 6 {
+		sharedTerms = sharedTerms[:6]
+	}
+	return Finding{ID: "overlap:" + strings.Join(lowerNames(names), ":"), Type: FindingOverlap, Severity: 2, Title: summarizeNames(names), Skills: skills, Reasons: []string{"shared domain keywords: " + strings.Join(sharedTerms, ", ")}}
 }
 
 func groupHasSharedActiveReader(group []inventory.Skill) bool {
@@ -297,8 +337,26 @@ func collectComponent(start int, graph map[int]map[int][]string, visited map[int
 }
 
 func sharedKeywords(a, b inventory.Skill) []string {
-	ak := keywords(a.Name + " " + a.Description + " " + a.Body)
-	bk := keywords(b.Name + " " + b.Description + " " + b.Body)
+	return sharedKeywordSets(overlapKeywords(a), overlapKeywords(b))
+}
+
+func overlapKeywords(skill inventory.Skill) map[string]bool {
+	text := skill.Name + " " + skill.Description
+	if strings.TrimSpace(skill.Description) == "" {
+		text += " " + firstWords(skill.Body, 80)
+	}
+	return keywords(text)
+}
+
+func firstWords(text string, limit int) string {
+	fields := strings.Fields(text)
+	if len(fields) <= limit {
+		return text
+	}
+	return strings.Join(fields[:limit], " ")
+}
+
+func sharedKeywordSets(ak, bk map[string]bool) []string {
 	var shared []string
 	for word := range ak {
 		if bk[word] {
@@ -310,6 +368,25 @@ func sharedKeywords(a, b inventory.Skill) []string {
 		return shared[:5]
 	}
 	return shared
+}
+
+func dropCorpusGenericKeywords(sets []map[string]bool) {
+	if len(sets) < 6 {
+		return
+	}
+	counts := map[string]int{}
+	for _, set := range sets {
+		for word := range set {
+			counts[word]++
+		}
+	}
+	for word, count := range counts {
+		if count >= 6 && count*2 >= len(sets) {
+			for _, set := range sets {
+				delete(set, word)
+			}
+		}
+	}
 }
 
 func keywords(text string) map[string]bool {
@@ -324,11 +401,45 @@ func keywords(text string) map[string]bool {
 	return out
 }
 
+var keywordStopWords = map[string]bool{
+	"about": true, "above": true, "accept": true, "accepted": true, "accepting": true, "accepts": true,
+	"across": true, "action": true, "actions": true, "additional": true, "agent": true, "agents": true,
+	"allow": true, "allowed": true, "allows": true, "also": true, "always": true, "anything": true,
+	"area": true, "areas": true, "around": true, "ask": true, "asking": true, "asks": true,
+	"assist": true, "assisted": true, "available": true, "based": true,
+	"because": true, "before": true, "below": true, "body": true, "broad": true, "budget": true,
+	"budgets": true, "build": true, "called": true, "calling": true, "case": true, "cases": true,
+	"check": true, "cleanup": true, "code": true, "coding": true, "command": true, "commands": true,
+	"common": true, "component": true, "components": true, "config": true, "configuration": true, "configured": true,
+	"content": true, "context": true, "create": true, "creating": true, "current": true, "debug": true,
+	"default": true, "describe": true,
+	"description": true, "design": true, "develop": true, "development": true, "directory": true, "does": true,
+	"domain": true, "edit": true, "enable": true, "enhance": true, "enough": true, "example": true,
+	"examples": true, "every": true, "exceed": true, "feature": true, "file": true, "files": true,
+	"find": true, "fix": true, "follow": true, "following": true, "follows": true, "from": true, "generate": true, "generated": true,
+	"generic": true, "given": true, "handle": true, "handles": true, "help": true, "implement": true,
+	"improve": true, "include": true, "includes": true, "including": true, "input": true, "inputs": true,
+	"instance": true, "instances": true, "instruction": true, "instructions": true, "involving": true,
+	"language": true, "local": true, "long": true, "manage": true, "management": true,
+	"many": true, "material": true, "mention": true, "mentions": true, "modify": true, "must": true,
+	"need": true, "needed": true, "needs": true, "option": true,
+	"optional": true, "options": true, "optimize": true, "output": true, "outputs": true, "path": true,
+	"paths": true, "plan": true, "plus": true, "product": true, "project": true, "read": true,
+	"reference": true, "references": true, "refactor": true, "request": true, "requests": true, "result": true,
+	"results": true, "return": true, "returns": true, "review": true, "said": true, "says": true,
+	"scan": true, "section": true, "setting": true, "settings": true, "should": true, "skill": true,
+	"skills": true, "someone": true, "specific": true,
+	"summary": true, "summaries": true, "support": true, "task": true, "tasks": true, "term": true,
+	"terms": true, "that": true, "their": true, "then": true, "thing": true, "things": true, "this": true,
+	"text": true, "threshold": true, "token": true, "tokens": true, "tool": true, "tools": true,
+	"trigger": true, "triggers": true, "uses": true, "using": true, "used": true, "user": true, "validate": true,
+	"validated": true, "validates": true, "validation": true, "want": true, "wants": true,
+	"when": true, "where": true,
+	"with": true, "word": true, "words": true, "work": true, "workflow": true, "your": true,
+}
+
 func genericKeyword(word string) bool {
-	stop := map[string]bool{
-		"about": true, "across": true, "action": true, "actions": true, "agent": true, "agents": true, "allow": true, "always": true, "area": true, "areas": true, "around": true, "assist": true, "assisted": true, "before": true, "body": true, "broad": true, "budget": true, "budgets": true, "build": true, "check": true, "cleanup": true, "code": true, "coding": true, "common": true, "component": true, "content": true, "create": true, "debug": true, "describe": true, "description": true, "design": true, "develop": true, "development": true, "does": true, "domain": true, "edit": true, "enable": true, "enhance": true, "enough": true, "every": true, "exceed": true, "feature": true, "find": true, "fix": true, "from": true, "generate": true, "generated": true, "generic": true, "help": true, "implement": true, "improve": true, "instance": true, "instances": true, "language": true, "local": true, "long": true, "manage": true, "management": true, "many": true, "material": true, "modify": true, "must": true, "optimize": true, "plan": true, "plus": true, "product": true, "project": true, "read": true, "refactor": true, "request": true, "requests": true, "review": true, "scan": true, "skill": true, "skills": true, "specific": true, "summary": true, "summaries": true, "support": true, "task": true, "tasks": true, "that": true, "things": true, "this": true, "token": true, "tokens": true, "tool": true, "tools": true, "trigger": true, "use": true, "used": true, "user": true, "when": true, "with": true, "words": true, "work": true, "workflow": true, "your": true,
-	}
-	return stop[word]
+	return keywordStopWords[word]
 }
 
 func SortFindings(findings []Finding) {
