@@ -39,3 +39,29 @@ func TestActivationRisk(t *testing.T) {
 		t.Fatalf("risk unexpectedly high")
 	}
 }
+
+func TestActivationRiskGenericActionVerbsAloneAreNotHigh(t *testing.T) {
+	description := "Plan, build, implement, review, fix, debug, optimize, and refactor focused Cloudflare KV migrations."
+	if got := ActivationRisk(description, ""); got == "high" {
+		t.Fatalf("generic action verbs alone should not be high risk")
+	}
+}
+
+func TestActivationRiskExplicitUniversalWordingIsHigh(t *testing.T) {
+	assessment := AssessActivationRisk("MUST use this before any creative work.", "Use it for planning and reviewing changes.")
+	if assessment.Risk != "high" {
+		t.Fatalf("risk=%s signals=%v", assessment.Risk, assessment.Signals)
+	}
+	assertContains(t, assessment.Signals, `universal "must use"`)
+	assertContains(t, assessment.Signals, `universal "before any"`)
+}
+
+func assertContains(t *testing.T, values []string, want string) {
+	t.Helper()
+	for _, value := range values {
+		if value == want {
+			return
+		}
+	}
+	t.Fatalf("missing %q in %v", want, values)
+}

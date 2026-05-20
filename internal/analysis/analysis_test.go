@@ -1,6 +1,7 @@
 package analysis
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/mblarsen/unlearn/internal/inventory"
@@ -42,8 +43,8 @@ func TestAnalyzeUsageEvidenceMatchesSkillNamesCaseInsensitively(t *testing.T) {
 
 func TestAnalyzeConsolidatesSameNameSingleSkillFindings(t *testing.T) {
 	skills := []inventory.Skill{
-		{Name: "macos-calendar", ID: "a", ContentHash: "a", UpperTokens: 5000, LowerTokens: 2000, ActivationRisk: "high", Root: "/one"},
-		{Name: "macos-calendar", ID: "b", ContentHash: "b", UpperTokens: 7800, LowerTokens: 4100, ActivationRisk: "high", Root: "/two"},
+		{Name: "macos-calendar", ID: "a", ContentHash: "a", UpperTokens: 5000, LowerTokens: 2000, ActivationRisk: "high", ActivationRiskSignals: []string{`universal "must use"`}, Root: "/one"},
+		{Name: "macos-calendar", ID: "b", ContentHash: "b", UpperTokens: 7800, LowerTokens: 4100, ActivationRisk: "high", ActivationRiskSignals: []string{`universal "before any"`}, Root: "/two"},
 	}
 	findings := Analyze(skills, Options{HighTokenLimit: 2000})
 	if countType(findings, FindingHighTokenCost) != 1 {
@@ -55,6 +56,27 @@ func TestAnalyzeConsolidatesSameNameSingleSkillFindings(t *testing.T) {
 	for _, finding := range findings {
 		if finding.Type == FindingHighTokenCost && len(finding.Skills) != 2 {
 			t.Fatalf("expected both installs in finding: %#v", finding)
+		}
+	}
+}
+
+func TestBroadActivationReasonsIncludeMatchedSignals(t *testing.T) {
+	skills := []inventory.Skill{{
+		Name:                  "brainstorming",
+		ID:                    "a",
+		ContentHash:           "a",
+		ActivationRisk:        "high",
+		ActivationRiskSignals: []string{`universal "must use"`, `universal "before any"`, `action "plan"`},
+	}}
+	findings := Analyze(skills, Options{})
+	activationFindings := findingsOfType(findings, FindingBroadActivation)
+	if len(activationFindings) != 1 {
+		t.Fatalf("expected one activation finding, got %#v", findings)
+	}
+	reason := strings.Join(activationFindings[0].Reasons, "\n")
+	for _, want := range []string{`universal "must use"`, `universal "before any"`, `action "plan"`} {
+		if !strings.Contains(reason, want) {
+			t.Fatalf("reason %q missing %q", reason, want)
 		}
 	}
 }

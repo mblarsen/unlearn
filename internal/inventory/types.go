@@ -11,30 +11,31 @@ const (
 )
 
 type Skill struct {
-	ID              string
-	Name            string
-	Description     string
-	Kind            SkillKind
-	Root            string
-	EncounteredPath string
-	ResolvedPath    string
-	IsSymlink       bool
-	Broken          bool
-	ReadOnly        bool
-	Frontmatter     map[string]string
-	Body            string
-	PrimaryPath     string
-	SupportRefs     []SupportRef
-	BrokenRefs      []string
-	LowerTokens     int
-	UpperTokens     int
-	ContentHash     string
-	ActivationRisk  string
-	Provenance      string
-	RootKnown       bool
-	ActiveAgents    []string
-	InactiveAgents  []string
-	ScannedAt       time.Time
+	ID                    string
+	Name                  string
+	Description           string
+	Kind                  SkillKind
+	Root                  string
+	EncounteredPath       string
+	ResolvedPath          string
+	IsSymlink             bool
+	Broken                bool
+	ReadOnly              bool
+	Frontmatter           map[string]string
+	Body                  string
+	PrimaryPath           string
+	SupportRefs           []SupportRef
+	BrokenRefs            []string
+	LowerTokens           int
+	UpperTokens           int
+	ContentHash           string
+	ActivationRisk        string
+	ActivationRiskSignals []string
+	Provenance            string
+	RootKnown             bool
+	ActiveAgents          []string
+	InactiveAgents        []string
+	ScannedAt             time.Time
 }
 
 type SupportRef struct {
