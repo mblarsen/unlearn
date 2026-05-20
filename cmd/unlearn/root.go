@@ -479,9 +479,11 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	analysisOpts := analysis.Options{UsageEvidence: usage, Progress: func(event analysis.ProgressEvent) {
 		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
 	}}
+	var recorder *recordingAnalyzer
 	if cfg.LLMAssisted {
 		if analyzer, ok := llm.NewGeminiAnalyzerFromEnv(); ok {
-			analysisOpts.LLMAnalyzer = llm.NewCachedAnalyzer(paths.LLMCacheDir, analyzer)
+			recorder = newRecordingAnalyzer(llm.NewCachedAnalyzer(paths.LLMCacheDir, analyzer))
+			analysisOpts.LLMAnalyzer = recorder
 		} else {
 			opts.warnings = append(opts.warnings, "LLM analysis requested, but GEMINI_API_KEY/GOOGLE_API_KEY is not set; using deterministic analysis.")
 		}
@@ -495,8 +497,53 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM semantic-overlap analysis did not complete; using deterministic analysis. Details: %v", err))
 		findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
 	}
+	if recorder != nil {
+		skills = attachLLMSummaries(skills, recorder.Summaries())
+	}
 	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: fmt.Sprintf("%d finding(s)", len(findings)), Done: true})
 	return skills, findings, skipped, nil
+}
+
+type recordingAnalyzer struct {
+	next      llm.Analyzer
+	summaries map[string]llm.GeneratedSummary
+}
+
+func newRecordingAnalyzer(next llm.Analyzer) *recordingAnalyzer {
+	return &recordingAnalyzer{next: next, summaries: map[string]llm.GeneratedSummary{}}
+}
+
+func (a *recordingAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (llm.GeneratedSummary, error) {
+	summary, err := a.next.Summarize(ctx, name, deterministicSummary, contentHash)
+	if err == nil && strings.TrimSpace(contentHash) != "" {
+		a.summaries[contentHash] = summary
+	}
+	return summary, err
+}
+
+func (a *recordingAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.GeneratedSummary) ([]llm.SemanticOverlap, error) {
+	return a.next.FindOverlaps(ctx, summaries)
+}
+
+func (a *recordingAnalyzer) Summaries() map[string]llm.GeneratedSummary {
+	return a.summaries
+}
+
+func attachLLMSummaries(skills []inventory.Skill, summaries map[string]llm.GeneratedSummary) []inventory.Skill {
+	if len(summaries) == 0 {
+		return skills
+	}
+	enriched := append([]inventory.Skill(nil), skills...)
+	for i := range enriched {
+		summary, ok := summaries[enriched[i].ContentHash]
+		if !ok || strings.TrimSpace(summary.Summary) == "" {
+			continue
+		}
+		enriched[i].LLMSummary = summary.Summary
+		enriched[i].LLMProvider = summary.Provider
+		enriched[i].LLMModel = summary.Model
+	}
+	return enriched
 }
 
 func reportInventoryProgress(progress func(inventoryProgress), event inventoryProgress) {
@@ -608,12 +655,10 @@ func historyEvidenceForPath(db *sql.DB, path string, names []string, opts *cliOp
 			return state.LoadHistoryEvidence(db, path)
 		}
 	}
-	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Detail: path})
 	historyProgress := func(progress history.ScanProgress) {
 		if loadOpts.HistoryProgress != nil {
 			loadOpts.HistoryProgress(progress)
 		}
-		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Detail: fmt.Sprintf("%s · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches), Done: progress.Done})
 	}
 	evidence, err := scan(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: historyProgress})
 	if err != nil {

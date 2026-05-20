@@ -71,7 +71,7 @@ func AnalyzeWithLLM(ctx context.Context, skills []inventory.Skill, opts Options)
 			SortFindings(findings)
 			return findings, err
 		}
-		findings = append(findings, llmFindings...)
+		findings = mergeLLMOverlapFindings(findings, llmFindings)
 	}
 	findings = append(findings, brokenFindings(skills)...)
 	findings = append(findings, inactiveRootFindings(skills)...)
@@ -310,6 +310,68 @@ func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Ana
 		findings = append(findings, llmOverlapFinding(group, overlap))
 	}
 	return findings, nil
+}
+
+func mergeLLMOverlapFindings(findings, llmFindings []Finding) []Finding {
+	emittedLLM := map[string]bool{}
+	for _, llmFinding := range llmFindings {
+		key := findingSkillSetKey(llmFinding)
+		if emittedLLM[key] {
+			continue
+		}
+		merged := false
+		for i := range findings {
+			if findings[i].Type != FindingOverlap {
+				continue
+			}
+			if findingContainsAllSkills(findings[i], llmFinding) {
+				findings[i].Reasons = appendUniqueStrings(findings[i].Reasons, llmFinding.Reasons...)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			findings = append(findings, llmFinding)
+		}
+		emittedLLM[key] = true
+	}
+	return findings
+}
+
+func findingContainsAllSkills(container, candidate Finding) bool {
+	containerNames := map[string]bool{}
+	for _, skill := range container.Skills {
+		containerNames[logicalName(skill)] = true
+	}
+	for _, skill := range candidate.Skills {
+		if !containerNames[logicalName(skill)] {
+			return false
+		}
+	}
+	return true
+}
+
+func findingSkillSetKey(finding Finding) string {
+	names := make([]string, 0, len(finding.Skills))
+	for _, skill := range finding.Skills {
+		names = append(names, logicalName(skill))
+	}
+	sort.Strings(names)
+	return string(finding.Type) + ":" + strings.Join(names, ":")
+}
+
+func appendUniqueStrings(values []string, additions ...string) []string {
+	seen := map[string]bool{}
+	for _, value := range values {
+		seen[value] = true
+	}
+	for _, value := range additions {
+		if !seen[value] {
+			values = append(values, value)
+			seen[value] = true
+		}
+	}
+	return values
 }
 
 func reportProgress(progress ProgressFunc, event ProgressEvent) {

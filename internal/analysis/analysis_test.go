@@ -191,6 +191,24 @@ func TestAnalyzeWithLLMAddsSemanticOverlapFindings(t *testing.T) {
 	}
 }
 
+func TestAnalyzeWithLLMMergesDuplicateOverlapPairs(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "agent-browser", Description: "browser automation screenshots navigation", ContentHash: "a"},
+		{Name: "playwriter", Description: "browser automation screenshots navigation", ContentHash: "b"},
+	}
+	findings, err := AnalyzeWithLLM(context.Background(), skills, Options{LLMAnalyzer: fakeAnalyzer{overlaps: []llm.SemanticOverlap{{SkillNames: []string{"agent-browser", "playwriter"}, Reason: "both automate browsers", Provider: "test", Model: "fake"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	overlaps := findingsOfType(findings, FindingOverlap)
+	if len(overlaps) != 1 {
+		t.Fatalf("expected merged overlap finding, got %#v", overlaps)
+	}
+	if len(overlaps[0].Reasons) != 2 || !strings.Contains(overlaps[0].Reasons[1], "LLM-assisted semantic overlap") {
+		t.Fatalf("expected deterministic and LLM reasons to merge: %#v", overlaps[0].Reasons)
+	}
+}
+
 func TestOverlapClustersDenseConnectedComponents(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "a"},
