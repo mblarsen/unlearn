@@ -134,13 +134,30 @@ func groupedSingleSkillFindings(skills []inventory.Skill, opts Options) []Findin
 			case FindingHighTokenCost:
 				findings = append(findings, Finding{ID: "tokens:" + name, Type: typ, Severity: 3, Title: displayName(group), Skills: group, Reasons: []string{fmt.Sprintf("estimated token range %s exceeds %d", tokenRange(group), opts.HighTokenLimit)}})
 			case FindingBroadActivation:
-				findings = append(findings, Finding{ID: "activation:" + name, Type: typ, Severity: 3, Title: displayName(group), Skills: group, Reasons: []string{"description/body contains broad trigger language"}})
+				findings = append(findings, Finding{ID: "activation:" + name, Type: typ, Severity: 3, Title: displayName(group), Skills: group, Reasons: activationReasons(group)})
 			case FindingUnseen:
 				findings = append(findings, Finding{ID: "unseen:" + name, Type: typ, Severity: 4, Title: displayName(group), Skills: group, Reasons: []string{"no strong or medium invocation evidence found in opted-in history"}})
 			}
 		}
 	}
 	return findings
+}
+
+func activationReasons(skills []inventory.Skill) []string {
+	signals := map[string]bool{}
+	for _, skill := range skills {
+		matches := append([]string(nil), skill.ActivationRiskSignals...)
+		if len(matches) == 0 {
+			matches = inventory.AssessActivationRisk(skill.Description, skill.Body).Signals
+		}
+		for _, signal := range matches {
+			signals[signal] = true
+		}
+	}
+	if len(signals) == 0 {
+		return []string{"activation risk marked high"}
+	}
+	return []string{"matched broad activation signals: " + strings.Join(sortedKeys(signals), ", ")}
 }
 
 func duplicatesAndConflicts(skills []inventory.Skill) []Finding {
