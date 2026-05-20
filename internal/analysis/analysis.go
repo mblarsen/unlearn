@@ -1,11 +1,13 @@
 package analysis
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 )
 
 type FindingType string
@@ -35,22 +37,36 @@ type UsageEvidence map[string]string
 type Options struct {
 	UsageEvidence  UsageEvidence
 	HighTokenLimit int
+	LLMAnalyzer    llm.Analyzer
 }
 
 const minOverlapSharedKeywords = 3
 
 func Analyze(skills []inventory.Skill, opts Options) []Finding {
+	findings, _ := AnalyzeWithLLM(context.Background(), skills, opts)
+	return findings
+}
+
+func AnalyzeWithLLM(ctx context.Context, skills []inventory.Skill, opts Options) ([]Finding, error) {
 	if opts.HighTokenLimit == 0 {
 		opts.HighTokenLimit = 2000
 	}
 	var findings []Finding
 	findings = append(findings, duplicatesAndConflicts(skills)...)
 	findings = append(findings, overlaps(skills)...)
+	if opts.LLMAnalyzer != nil {
+		llmFindings, err := llmOverlaps(ctx, skills, opts.LLMAnalyzer)
+		if err != nil {
+			SortFindings(findings)
+			return findings, err
+		}
+		findings = append(findings, llmFindings...)
+	}
 	findings = append(findings, brokenFindings(skills)...)
 	findings = append(findings, inactiveRootFindings(skills)...)
 	findings = append(findings, groupedSingleSkillFindings(skills, opts)...)
 	SortFindings(findings)
-	return findings
+	return findings, nil
 }
 
 func brokenFindings(skills []inventory.Skill) []Finding {
@@ -247,6 +263,65 @@ func overlaps(skills []inventory.Skill) []Finding {
 		findings = append(findings, overlapFinding(componentSkills, sortedKeys(terms)))
 	}
 	return findings
+}
+
+func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Analyzer) ([]Finding, error) {
+	logicalSkills := representativeSkills(skills)
+	summaries := make([]llm.GeneratedSummary, 0, len(logicalSkills))
+	byName := map[string]inventory.Skill{}
+	for _, skill := range logicalSkills {
+		summary, err := analyzer.Summarize(ctx, skill.Name, deterministicSummary(skill), skill.ContentHash)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+		byName[logicalName(skill)] = skill
+	}
+	overlaps, err := analyzer.FindOverlaps(ctx, summaries)
+	if err != nil {
+		return nil, err
+	}
+	findings := make([]Finding, 0, len(overlaps))
+	for _, overlap := range overlaps {
+		group := make([]inventory.Skill, 0, len(overlap.SkillNames))
+		for _, name := range overlap.SkillNames {
+			if skill, ok := byName[strings.ToLower(strings.TrimSpace(name))]; ok {
+				group = append(group, skill)
+			}
+		}
+		if len(group) < 2 {
+			continue
+		}
+		findings = append(findings, llmOverlapFinding(group, overlap))
+	}
+	return findings, nil
+}
+
+func deterministicSummary(skill inventory.Skill) string {
+	if strings.TrimSpace(skill.Description) != "" {
+		return skill.Description
+	}
+	return firstWords(skill.Body, 80)
+}
+
+func llmOverlapFinding(skills []inventory.Skill, overlap llm.SemanticOverlap) Finding {
+	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+	names := make([]string, 0, len(skills))
+	for _, skill := range skills {
+		names = append(names, skill.Name)
+	}
+	reason := "LLM-assisted semantic overlap: " + overlap.Reason
+	if overlap.Provider != "" || overlap.Model != "" {
+		reason += fmt.Sprintf(" (%s/%s)", emptyLabel(overlap.Provider), emptyLabel(overlap.Model))
+	}
+	return Finding{ID: "llm-overlap:" + strings.Join(lowerNames(names), ":"), Type: FindingOverlap, Severity: 2, Title: summarizeNames(names), Skills: skills, Reasons: []string{reason}}
+}
+
+func emptyLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func denseOverlapComponent(component []int, graph map[int]map[int][]string) bool {

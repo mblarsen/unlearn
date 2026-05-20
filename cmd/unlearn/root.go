@@ -19,6 +19,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 	setupflow "github.com/mblarsen/unlearn/internal/setup"
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
@@ -465,7 +466,18 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 		return nil, nil, nil, err
 	}
 	skills := attachUsageEvidence(report.Skills, usage, sources, lastSeen)
-	findings := analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
+	analysisOpts := analysis.Options{UsageEvidence: usage}
+	if cfg.LLMAssisted {
+		analysisOpts.LLMAnalyzer = llm.NewCachedAnalyzer(paths.LLMCacheDir, llm.DisabledAnalyzer{})
+	}
+	ctx := loadOpts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	return skills, findings, skipped, nil
 }
 

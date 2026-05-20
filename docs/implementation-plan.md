@@ -133,7 +133,7 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
-Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, SQLite history scanning covers explicit database paths plus bounded discovery under configured scan roots, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
+Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis has cache-backed summary/semantic-overlap plumbing but still uses the disabled analyzer by default, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, SQLite history scanning covers explicit database paths plus bounded discovery under configured scan roots, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
 
 ## Issue #2 — Pi history scan flow
 

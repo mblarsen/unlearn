@@ -1,10 +1,12 @@
 package analysis
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 )
 
 func TestAnalyzeDetectsDuplicateConflictAndBroken(t *testing.T) {
@@ -172,6 +174,23 @@ func TestAnalyzeDetectsInactiveRootFindings(t *testing.T) {
 	assertHasType(t, findings, FindingInactiveRoot)
 }
 
+func TestAnalyzeWithLLMAddsSemanticOverlapFindings(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "ios-review", Description: "review App Store policy compliance", ContentHash: "a"},
+		{Name: "app-submission", Description: "prepare app submission metadata", ContentHash: "b"},
+	}
+	findings, err := AnalyzeWithLLM(context.Background(), skills, Options{LLMAnalyzer: fakeAnalyzer{overlaps: []llm.SemanticOverlap{{SkillNames: []string{"ios-review", "app-submission"}, Reason: "both support App Store release readiness", Provider: "test", Model: "fake"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertHasType(t, findings, FindingOverlap)
+	for _, finding := range findingsOfType(findings, FindingOverlap) {
+		if finding.ID == "llm-overlap:app-submission:ios-review" && finding.Reasons[0] != "LLM-assisted semantic overlap: both support App Store release readiness (test/fake)" {
+			t.Fatalf("unexpected LLM overlap reason: %#v", finding.Reasons)
+		}
+	}
+}
+
 func TestOverlapClustersDenseConnectedComponents(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "a"},
@@ -199,6 +218,18 @@ func TestOverlapDoesNotCreateBroadTransitiveBridgeClusters(t *testing.T) {
 			t.Fatalf("expected pair finding instead of broad transitive cluster: %#v", finding)
 		}
 	}
+}
+
+type fakeAnalyzer struct {
+	overlaps []llm.SemanticOverlap
+}
+
+func (a fakeAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (llm.GeneratedSummary, error) {
+	return llm.GeneratedSummary{Summary: deterministicSummary, Provider: "test", Model: "fake", ContentHash: contentHash}, nil
+}
+
+func (a fakeAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.GeneratedSummary) ([]llm.SemanticOverlap, error) {
+	return a.overlaps, nil
 }
 
 func countType(findings []Finding, typ FindingType) int {
