@@ -41,6 +41,8 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - [x] Order cleanup candidates by severity and reasons without numeric scores.
 - [x] Define LLM-assisted analysis interface/stub with explicit limitations.
 - [x] Define history adapter interface and JSONL adapter for derived usage evidence.
+- [x] Add generic SQLite history adapter with table discovery, text-column scanning, row limits, and derived evidence only.
+- [x] Cache JSONL and SQLite history scan evidence through the same source-fingerprint cache.
 
 ## 5. Actions and safety
 
@@ -131,7 +133,7 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
-Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
+Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, SQLite history scanning covers explicit database paths plus bounded discovery under configured scan roots, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
 
 ## Issue #2 — Pi history scan flow
 

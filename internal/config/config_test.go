@@ -28,6 +28,7 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	cfg.SetupComplete = true
 	cfg.HistoryScan = true
 	cfg.HistoryJSONL = []string{"/tmp/session.jsonl"}
+	cfg.HistorySQLite = []string{"/tmp/session.db"}
 	cfg.ActiveAgents = []string{"pi", "codex"}
 	cfg.InactiveAgents = []string{"claude-code"}
 	cfg.TrustRoot("/tmp/skills")
@@ -41,7 +42,7 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !loaded.SetupComplete || !loaded.HistoryScan || len(loaded.HistoryJSONL) != 1 {
+	if !loaded.SetupComplete || !loaded.HistoryScan || len(loaded.HistoryJSONL) != 1 || len(loaded.HistorySQLite) != 1 {
 		t.Fatalf("setup/history did not round-trip: %#v", loaded)
 	}
 	if len(loaded.ActiveAgents) != 2 || len(loaded.InactiveAgents) != 1 || !loaded.HasAgentSelection() {

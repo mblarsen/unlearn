@@ -14,6 +14,7 @@ type Config struct {
 	LLMAssisted    bool     `toml:"llm_assisted"`
 	HistoryScan    bool     `toml:"history_scan"`
 	HistoryJSONL   []string `toml:"history_jsonl"`
+	HistorySQLite  []string `toml:"history_sqlite"`
 	ActiveAgents   []string `toml:"active_agents"`
 	InactiveAgents []string `toml:"inactive_agents"`
 

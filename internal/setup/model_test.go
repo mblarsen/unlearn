@@ -10,7 +10,7 @@ import (
 )
 
 func TestSetupModelTogglesAndPersistsConfig(t *testing.T) {
-	m := New([]RootChoice{{Path: "/skills", Exists: true}}, []string{"/sessions/a.jsonl"}, config.Default(), []inventory.AgentStatus{{AgentDefinition: inventory.AgentDefinition{ID: "pi", DisplayName: "Pi", ShowInSetup: true}, Installed: true}})
+	m := New([]RootChoice{{Path: "/skills", Exists: true}}, []string{"/sessions/a.jsonl"}, []string{"/sessions/history.db"}, config.Default(), []inventory.AgentStatus{{AgentDefinition: inventory.AgentDefinition{ID: "pi", DisplayName: "Pi", ShowInSetup: true}, Installed: true}})
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j'}})
 	m = updated.(Model)
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeySpace})
@@ -28,7 +28,10 @@ func TestSetupModelTogglesAndPersistsConfig(t *testing.T) {
 		t.Fatalf("config not persisted from setup: %#v", cfg)
 	}
 	if len(cfg.HistoryJSONL) != 1 || cfg.HistoryJSONL[0] != "/sessions/a.jsonl" {
-		t.Fatalf("history paths=%v", cfg.HistoryJSONL)
+		t.Fatalf("history JSONL paths=%v", cfg.HistoryJSONL)
+	}
+	if len(cfg.HistorySQLite) != 1 || cfg.HistorySQLite[0] != "/sessions/history.db" {
+		t.Fatalf("history SQLite paths=%v", cfg.HistorySQLite)
 	}
 	if len(cfg.ActiveAgents) != 1 || cfg.ActiveAgents[0] != "pi" {
 		t.Fatalf("active agents=%v", cfg.ActiveAgents)
@@ -36,7 +39,7 @@ func TestSetupModelTogglesAndPersistsConfig(t *testing.T) {
 }
 
 func TestSetupViewDocumentsBoundedHistoryDiscovery(t *testing.T) {
-	m := New([]RootChoice{{Path: "/skills", Exists: false}}, nil, config.Default(), []inventory.AgentStatus{{AgentDefinition: inventory.AgentDefinition{ID: "pi", DisplayName: "Pi", ShowInSetup: true}, Installed: true}})
+	m := New([]RootChoice{{Path: "/skills", Exists: false}}, nil, nil, config.Default(), []inventory.AgentStatus{{AgentDefinition: inventory.AgentDefinition{ID: "pi", DisplayName: "Pi", ShowInSetup: true}, Installed: true}})
 	view := m.View()
 	if !strings.Contains(view, "none discovered") || !strings.Contains(view, "miss") {
 		t.Fatalf("view missing setup details:\n%s", view)
@@ -50,7 +53,7 @@ func TestSetupViewScrollsToSelectedHarness(t *testing.T) {
 		statuses[i].ID = "agent-" + string(rune('a'+i))
 		statuses[i].DisplayName = "Agent " + string(rune('A'+i))
 	}
-	m := New(nil, nil, config.Default(), statuses)
+	m := New(nil, nil, nil, config.Default(), statuses)
 	m.Width = 90
 	m.Height = 18
 	m.Cursor = 15

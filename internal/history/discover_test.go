@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestDiscoverSQLiteScansConfiguredRootsOnly(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "history", "session.sqlite3")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("private"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(t.TempDir(), "outside.db")
+	if err := os.WriteFile(outside, []byte("private"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths, err := DiscoverSQLite([]string{root}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != path {
+		t.Fatalf("paths=%v", paths)
+	}
+}
+
 func TestDiscoverPiJSONLIsBoundedAndReadOnly(t *testing.T) {
 	home := t.TempDir()
 	root := filepath.Join(home, ".pi", "agent", "sessions", "run")
