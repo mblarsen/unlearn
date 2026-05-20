@@ -1,11 +1,14 @@
 package unlearn
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mblarsen/unlearn/internal/actions"
@@ -92,7 +95,13 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		Use:   "scan",
 		Short: "Refresh the local inventory index",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			skills, findings, skipped, err := loadInventory(opts)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			skills, findings, skipped, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Context: ctx, HistoryProgress: func(progress history.ScanProgress) {
+				if progress.Done {
+					fmt.Fprintf(out, "History scanned: %s (%d lines, %d skills with derived evidence)\n", progress.Path, progress.Lines, progress.Matches)
+				}
+			}})
 			if err != nil {
 				return err
 			}
@@ -252,7 +261,16 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringSliceVar(&opts.inactiveAgents, "inactive-agent", nil, "inactive agent harness whose skill roots should be scanned as cleanup candidates; may be repeated")
 }
 
+type inventoryLoadOptions struct {
+	Context         context.Context
+	HistoryProgress func(history.ScanProgress)
+}
+
 func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
+	return loadInventoryWithOptions(opts, inventoryLoadOptions{})
+}
+
+func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
 	paths, err := pathsFromOptions(opts)
 	if err != nil {
 		return nil, nil, nil, err
@@ -286,12 +304,13 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	usage, err := loadUsageEvidence(opts, cfg, report.Skills)
+	usage, sources, err := loadUsageEvidence(opts, cfg, report.Skills, loadOpts)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	findings := analysis.Analyze(report.Skills, analysis.Options{UsageEvidence: usage})
-	return report.Skills, findings, skipped, nil
+	skills := attachUsageEvidence(report.Skills, usage, sources)
+	findings := analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
+	return skills, findings, skipped, nil
 }
 
 func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
@@ -304,33 +323,55 @@ func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
 	return inventory.CandidateAgentIDs()
 }
 
-func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill) (analysis.UsageEvidence, error) {
+func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill, loadOpts inventoryLoadOptions) (analysis.UsageEvidence, map[string][]string, error) {
 	historyPaths := opts.historyJSONL
 	if len(historyPaths) == 0 && cfg.HistoryScan {
 		historyPaths = cfg.HistoryJSONL
 	}
 	if len(historyPaths) == 0 {
-		return nil, nil
+		return nil, nil, nil
 	}
 	names := make([]string, 0, len(skills))
 	for _, skill := range skills {
 		names = append(names, skill.Name)
 	}
 	usage := analysis.UsageEvidence{}
+	sources := map[string][]string{}
 	adapter := history.JSONLAdapter{}
 	for _, path := range historyPaths {
-		evidence, err := adapter.Scan(path, names)
+		evidence, err := adapter.ScanWithOptions(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		for _, item := range evidence {
 			current := usage[item.SkillName]
 			if current == "" || evidenceRank(item.Grade) < evidenceRank(history.EvidenceGrade(current)) {
 				usage[item.SkillName] = string(item.Grade)
 			}
+			sources[item.SkillName] = appendUnique(sources[item.SkillName], item.Source)
 		}
 	}
-	return usage, nil
+	return usage, sources, nil
+}
+
+func attachUsageEvidence(skills []inventory.Skill, usage analysis.UsageEvidence, sources map[string][]string) []inventory.Skill {
+	if usage == nil {
+		return skills
+	}
+	enriched := append([]inventory.Skill(nil), skills...)
+	for i := range enriched {
+		key := strings.ToLower(enriched[i].Name)
+		enriched[i].HistoryEvidence = usage[key]
+		enriched[i].HistorySources = append([]string(nil), sources[key]...)
+	}
+	return enriched
+}
+
+func appendUnique(values []string, value string) []string {
+	if containsString(values, value) {
+		return values
+	}
+	return append(values, value)
 }
 
 func evidenceRank(grade history.EvidenceGrade) int {

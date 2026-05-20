@@ -1003,6 +1003,9 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	lines = append(lines, "", theme.Section.Render("Summary"))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+installLabel(len(finding.Skills))+" across "+rootSummary(finding.Skills, 2), width)))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
+	if summary := historyEvidenceSummary(finding.Skills); summary != "" {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• history "+summary, width)))
+	}
 	if len(finding.Skills) > 1 {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• tab cycles install focus for actions", width)))
 	}
@@ -1047,6 +1050,9 @@ func (m Model) renderSkillGroupDetails(theme ui.Theme, width, height int, group 
 		"activation " + riskLabel(skill.ActivationRisk),
 		"kind " + kindLabel(skill.Kind),
 		"roots " + rootSummary(group.Skills, 2),
+	}
+	if summary := historyEvidenceSummary(group.Skills); summary != "" {
+		facts = append(facts, "history "+summary)
 	}
 	for _, fact := range facts {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• "+fact, width)))
@@ -1283,6 +1289,37 @@ func renderDensityHint(theme ui.Theme, density Density, width int) string {
 	return theme.Muted.Render(ui.Truncate("r rich shows selected install description, path, provenance", width))
 }
 
+func historyEvidenceSummary(skills []inventory.Skill) string {
+	best := ""
+	sources := 0
+	for _, skill := range skills {
+		if evidenceRank(skill.HistoryEvidence) < evidenceRank(best) {
+			best = skill.HistoryEvidence
+		}
+		sources += len(skill.HistorySources)
+	}
+	if best == "" {
+		return ""
+	}
+	if sources == 0 {
+		return best + " derived evidence"
+	}
+	return fmt.Sprintf("%s derived evidence from %d source(s)", best, sources)
+}
+
+func evidenceRank(grade string) int {
+	switch grade {
+	case "strong":
+		return 1
+	case "medium":
+		return 2
+	case "weak":
+		return 3
+	default:
+		return 99
+	}
+}
+
 func renderSelectedInstallDetails(theme ui.Theme, skill inventory.Skill, width int) []string {
 	var lines []string
 	description := skill.Description
@@ -1300,6 +1337,14 @@ func renderSelectedInstallDetails(theme ui.Theme, skill inventory.Skill, width i
 	}
 	if skill.Provenance != "" {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("    provenance "+skill.Provenance, width)))
+	}
+	if skill.HistoryEvidence != "" {
+		sourceCount := len(skill.HistorySources)
+		label := fmt.Sprintf("    history %s evidence", skill.HistoryEvidence)
+		if sourceCount > 0 {
+			label += fmt.Sprintf(" from %d source(s)", sourceCount)
+		}
+		lines = append(lines, theme.Muted.Render(ui.Truncate(label, width)))
 	}
 	return lines
 }

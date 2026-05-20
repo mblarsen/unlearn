@@ -104,6 +104,27 @@ func TestAuditHistoryJSONLAddsUnseenFindings(t *testing.T) {
 	}
 }
 
+func TestScanPrintsHistoryProgressAndIndexesEvidence(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+	historyPath := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(historyPath, []byte(`{"message":"read skills/alpha/SKILL.md"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"scan", "--root", root, "--trust-root", root, "--history-jsonl", historyPath, "--state-dir", t.TempDir(), "--config", filepath.Join(t.TempDir(), "config.toml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"History scanned:", "1 lines", "1 skills with derived evidence", "Indexed 1 skills"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("scan output missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestAuditWithLLMPersistsOptIn(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")

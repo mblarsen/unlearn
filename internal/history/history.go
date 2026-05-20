@@ -2,6 +2,7 @@ package history
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -27,7 +28,27 @@ type Adapter interface {
 
 type JSONLAdapter struct{}
 
-func (JSONLAdapter) Scan(path string, skillNames []string) ([]Evidence, error) {
+type ScanProgress struct {
+	Path    string
+	Lines   int
+	Matches int
+	Done    bool
+}
+
+type ScanOptions struct {
+	Context  context.Context
+	Progress func(ScanProgress)
+}
+
+func (adapter JSONLAdapter) Scan(path string, skillNames []string) ([]Evidence, error) {
+	return adapter.ScanWithOptions(path, skillNames, ScanOptions{})
+}
+
+func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanOptions) ([]Evidence, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -41,7 +62,17 @@ func (JSONLAdapter) Scan(path string, skillNames []string) ([]Evidence, error) {
 	scanner := bufio.NewScanner(f)
 	buf := make([]byte, 0, 64*1024)
 	scanner.Buffer(buf, 1024*1024)
+	lines := 0
 	for scanner.Scan() {
+		lines++
+		if lines%500 == 0 {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if opts.Progress != nil {
+				opts.Progress(ScanProgress{Path: path, Lines: lines, Matches: len(best)})
+			}
+		}
 		text := extractText(scanner.Bytes())
 		lower := strings.ToLower(text)
 		for name := range nameSet {
@@ -59,8 +90,14 @@ func (JSONLAdapter) Scan(path string, skillNames []string) ([]Evidence, error) {
 			}
 		}
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
+	}
+	if opts.Progress != nil {
+		opts.Progress(ScanProgress{Path: path, Lines: lines, Matches: len(best), Done: true})
 	}
 	var evidence []Evidence
 	for name, grade := range best {

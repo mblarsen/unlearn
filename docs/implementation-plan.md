@@ -133,6 +133,15 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis is an opt-in stub, SQLite history adapters are not implemented, Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
 
+## Issue #2 — Pi history scan flow
+
+- [x] Keep Pi JSONL discovery bounded and read-only until explicit opt-in.
+- [x] Add cancellation-aware JSONL scanning with progress callbacks.
+- [x] Print per-file history scan progress from `unlearn scan` without persisting raw excerpts.
+- [x] Carry derived history evidence and source counts onto inventory skills.
+- [x] Surface derived history evidence in dashboard finding and skill details.
+- [x] Cover progress, cancellation, CLI scan output, and dashboard history surfacing with tests.
+
 ## Issue #1 — harness-aware roots
 
 - [x] Use `vercel-labs/skills/src/agents.ts` as the source reference for supported agent skill roots.

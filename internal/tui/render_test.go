@@ -64,6 +64,19 @@ func TestSkillDetailsSuppressesBroadGenericFixtureDescription(t *testing.T) {
 	}
 }
 
+func TestSkillDetailsSurfaceHistoryEvidence(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "strong", HistorySources: []string{"/sessions/a.jsonl"}}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "history strong derived evidence") {
+		t.Fatalf("history evidence should be surfaced in skill details:\n%s", view)
+	}
+}
+
 func TestTokenRangeCollapsesEqualBounds(t *testing.T) {
 	skills := []inventory.Skill{{Name: "caveman", Kind: inventory.KindDirectory, LowerTokens: 2600, UpperTokens: 2600}}
 	m := New(skills, nil)
