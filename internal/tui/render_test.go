@@ -115,7 +115,7 @@ func TestTokenRangeCollapsesEqualBounds(t *testing.T) {
 	}
 }
 
-func TestDensityHintAppearsInFindingDetails(t *testing.T) {
+func TestDetailsPaneListsDensityAndInstallShortcuts(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "alpha", Description: "Alpha-specific browser automation helper", Root: "/one", LowerTokens: 100, UpperTokens: 200},
 		{Name: "alpha", Description: "Second alpha helper", Root: "/two", LowerTokens: 100, UpperTokens: 200},
@@ -128,8 +128,8 @@ func TestDensityHintAppearsInFindingDetails(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	m = updated.(Model)
 	rich := m.View()
-	if !strings.Contains(compact, "r rich shows") || !strings.Contains(rich, "r compact hides") || !strings.Contains(rich, "Alpha-specific") {
-		t.Fatalf("density hint should explain rich finding details:\ncompact:\n%s\nrich:\n%s", compact, rich)
+	if !strings.Contains(compact, "Shortcuts") || !strings.Contains(compact, "r density") || !strings.Contains(compact, "tab cycle install") || !strings.Contains(rich, "switch to compact") || !strings.Contains(rich, "Alpha-specific") {
+		t.Fatalf("details pane should list density and install shortcuts:\ncompact:\n%s\nrich:\n%s", compact, rich)
 	}
 }
 
