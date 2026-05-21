@@ -12,10 +12,10 @@ import (
 type ActionService interface {
 	KeepSkill(skill inventory.Skill) error
 	IgnoreFinding(finding analysis.Finding) error
-	CanWrite(root string) bool
+	FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool)
 	AllowWrite(root string) error
-	Quarantine(skill inventory.Skill) (string, error)
-	Delete(skill inventory.Skill, typedName string) error
+	QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error)
+	DeleteSelected(skills []inventory.Skill) (fsactions.Result, error)
 	PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview
 	Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error)
 	QuarantinedSkills() ([]string, error)
@@ -24,12 +24,18 @@ type ActionService interface {
 
 type NoopActionService struct{}
 
-func (NoopActionService) KeepSkill(skill inventory.Skill) error                { return nil }
-func (NoopActionService) IgnoreFinding(finding analysis.Finding) error         { return nil }
-func (NoopActionService) CanWrite(root string) bool                            { return false }
-func (NoopActionService) AllowWrite(root string) error                         { return nil }
-func (NoopActionService) Quarantine(skill inventory.Skill) (string, error)     { return "", nil }
-func (NoopActionService) Delete(skill inventory.Skill, typedName string) error { return nil }
+func (NoopActionService) KeepSkill(skill inventory.Skill) error        { return nil }
+func (NoopActionService) IgnoreFinding(finding analysis.Finding) error { return nil }
+func (NoopActionService) FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool) {
+	return inventory.Skill{}, false
+}
+func (NoopActionService) AllowWrite(root string) error { return nil }
+func (NoopActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
+	return fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}, nil
+}
+func (NoopActionService) DeleteSelected(skills []inventory.Skill) (fsactions.Result, error) {
+	return fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}, nil
+}
 func (NoopActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
 	return fsactions.PreviewRename(skill, newName)
 }
@@ -55,8 +61,8 @@ func (s *ConfigActionService) IgnoreFinding(finding analysis.Finding) error {
 	return s.save()
 }
 
-func (s *ConfigActionService) CanWrite(root string) bool {
-	return s.Config.CanWrite(root)
+func (s *ConfigActionService) FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool) {
+	return fsactions.FirstMissingWrite(s.Config, skills)
 }
 
 func (s *ConfigActionService) AllowWrite(root string) error {
@@ -65,13 +71,14 @@ func (s *ConfigActionService) AllowWrite(root string) error {
 	return s.save()
 }
 
-func (s *ConfigActionService) Quarantine(skill inventory.Skill) (string, error) {
+func (s *ConfigActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
 	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
-	return mgr.Quarantine(skill, true)
+	return mgr.QuarantineSelected(skills, true)
 }
 
-func (s *ConfigActionService) Delete(skill inventory.Skill, typedName string) error {
-	return fsactions.DeleteActive(skill, s.Config, typedName)
+func (s *ConfigActionService) DeleteSelected(skills []inventory.Skill) (fsactions.Result, error) {
+	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
+	return mgr.DeleteSelected(skills, true)
 }
 
 func (s *ConfigActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {

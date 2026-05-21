@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/inventory"
 )
@@ -49,6 +50,54 @@ func TestQuarantineSameNameInstallsDoNotCollide(t *testing.T) {
 	}
 }
 
+func TestQuarantineSelectedRequiresConfirmationAndWriteForAllInstalls(t *testing.T) {
+	root := t.TempDir()
+	skillPath := filepath.Join(root, "demo")
+	if err := os.Mkdir(skillPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	mgr := Manager{Config: cfg, QuarantineDir: filepath.Join(t.TempDir(), "quarantine")}
+	_, err := mgr.QuarantineSelected([]inventory.Skill{{Name: "demo", Root: root, EncounteredPath: skillPath}}, false)
+	if !errors.Is(err, ErrConfirmationRequired) {
+		t.Fatalf("expected confirmation error, got %v", err)
+	}
+	_, err = mgr.QuarantineSelected([]inventory.Skill{{Name: "demo", Root: root, EncounteredPath: skillPath}}, true)
+	if !errors.Is(err, ErrWritePermissionRequired) {
+		t.Fatalf("expected write permission error, got %v", err)
+	}
+}
+
+func TestQuarantineSelectedMovesEverySelectedInstall(t *testing.T) {
+	root := t.TempDir()
+	one := filepath.Join(root, "one")
+	two := filepath.Join(root, "two")
+	if err := os.Mkdir(one, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(two, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{Config: cfg, QuarantineDir: filepath.Join(t.TempDir(), "quarantine")}
+	result, err := mgr.QuarantineSelected([]inventory.Skill{
+		{Name: "demo", Root: root, EncounteredPath: one},
+		{Name: "demo", Root: root, EncounteredPath: two},
+	}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Paths) != 2 || result.Paths[0] == result.Paths[1] {
+		t.Fatalf("unexpected result paths=%v", result.Paths)
+	}
+	for _, path := range result.Paths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("missing quarantined path %s: %v", path, err)
+		}
+	}
+}
+
 func TestQuarantineAndRestoreFixture(t *testing.T) {
 	root := t.TempDir()
 	skillPath := filepath.Join(root, "demo")
@@ -85,6 +134,69 @@ func TestRestoreRequiresWritePermission(t *testing.T) {
 	_, err := mgr.Restore("demo", root)
 	if !errors.Is(err, ErrWritePermissionRequired) {
 		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestResolveSelectionPrefersMarkedThenAllThenCursor(t *testing.T) {
+	skills := []inventory.Skill{{Name: "one"}, {Name: "two"}, {Name: "three"}}
+	selected, err := ResolveSelection(SelectionInput{Kind: DestructiveDelete, Choices: skills, Cursor: 2, Marked: map[int]bool{1: true}, AllowAll: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 1 || selected[0].Name != "two" {
+		t.Fatalf("selected=%v", selected)
+	}
+	selected, err = ResolveSelection(SelectionInput{Kind: DestructiveQuarantine, Choices: skills, Cursor: len(skills), AllowAll: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != len(skills) {
+		t.Fatalf("expected all installs, got %v", selected)
+	}
+	selected, err = ResolveSelection(SelectionInput{Kind: DestructiveRename, Choices: skills, Cursor: 99, AllowAll: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(selected) != 1 || selected[0].Name != "three" {
+		t.Fatalf("expected clamped cursor selection, got %v", selected)
+	}
+}
+
+func TestDuplicateRootChoicesOnlyUsesDuplicateFindings(t *testing.T) {
+	findings := []analysis.Finding{
+		{ID: "duplicate:alpha", Type: analysis.FindingDuplicate, Skills: []inventory.Skill{{Name: "alpha", Root: "/keep"}, {Name: "alpha", Root: "/drop"}}},
+		{ID: "conflict:beta", Type: analysis.FindingConflict, Skills: []inventory.Skill{{Name: "beta", Root: "/drop"}, {Name: "beta", Root: "/other"}}},
+		{ID: "duplicate:gamma", Type: analysis.FindingDuplicate, Skills: []inventory.Skill{{Name: "gamma", Root: "/keep"}, {Name: "gamma", Root: "/drop"}}},
+	}
+	choices := DuplicateRootChoices(findings)
+	if len(choices) != 2 {
+		t.Fatalf("choices=%v", choices)
+	}
+	if choices[0].Root != "/drop" || len(choices[0].Skills) != 2 {
+		t.Fatalf("expected /drop to cover two duplicate findings, got %#v", choices[0])
+	}
+	for _, skill := range choices[0].Skills {
+		if skill.Name == "beta" {
+			t.Fatalf("conflict finding leaked into batch duplicate cleanup: %#v", choices[0])
+		}
+	}
+}
+
+func TestRenamePreviewTrimsInputAndRenameRejectsBlankName(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "old")
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	preview := PreviewRename(inventory.Skill{Name: "old", Root: root, EncounteredPath: skillDir}, "  new  ")
+	if preview.NewName != "new" || preview.NewPath != filepath.Join(root, "new") {
+		t.Fatalf("preview=%#v", preview)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	_, err := Rename(inventory.Skill{Name: "old", Root: root, EncounteredPath: skillDir}, "   ", cfg, true)
+	if !errors.Is(err, ErrRenameNameRequired) {
+		t.Fatalf("expected blank rename error, got %v", err)
 	}
 }
 

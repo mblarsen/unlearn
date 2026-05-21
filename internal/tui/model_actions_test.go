@@ -32,7 +32,14 @@ func (f *fakeActionService) IgnoreFinding(finding analysis.Finding) error {
 	f.ignored = append(f.ignored, finding.ID)
 	return nil
 }
-func (f *fakeActionService) CanWrite(root string) bool { return f.writeRoots[root] }
+func (f *fakeActionService) FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool) {
+	for _, skill := range skills {
+		if !f.writeRoots[skill.Root] {
+			return skill, true
+		}
+	}
+	return inventory.Skill{}, false
+}
 func (f *fakeActionService) AllowWrite(root string) error {
 	if f.writeRoots == nil {
 		f.writeRoots = map[string]bool{}
@@ -40,16 +47,24 @@ func (f *fakeActionService) AllowWrite(root string) error {
 	f.writeRoots[root] = true
 	return nil
 }
-func (f *fakeActionService) Quarantine(skill inventory.Skill) (string, error) {
-	f.quarantined = append(f.quarantined, skill.Name)
-	f.quarantinedRoot = append(f.quarantinedRoot, skill.Root)
-	return "/quarantine/" + skill.Name, nil
+func (f *fakeActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
+	result := fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}
+	for _, skill := range skills {
+		f.quarantined = append(f.quarantined, skill.Name)
+		f.quarantinedRoot = append(f.quarantinedRoot, skill.Root)
+		result.Paths = append(result.Paths, "/quarantine/"+skill.Name)
+	}
+	return result, nil
 }
-func (f *fakeActionService) Delete(skill inventory.Skill, typedName string) error {
-	f.deleteTypedName = typedName
-	f.deleted = append(f.deleted, skill.Name)
-	f.deletedRoot = append(f.deletedRoot, skill.Root)
-	return nil
+func (f *fakeActionService) DeleteSelected(skills []inventory.Skill) (fsactions.Result, error) {
+	result := fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}
+	for _, skill := range skills {
+		f.deleteTypedName = skill.Name
+		f.deleted = append(f.deleted, skill.Name)
+		f.deletedRoot = append(f.deletedRoot, skill.Root)
+		result.Paths = append(result.Paths, skill.EncounteredPath)
+	}
+	return result, nil
 }
 func (f *fakeActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
 	return fsactions.PreviewRename(skill, newName)

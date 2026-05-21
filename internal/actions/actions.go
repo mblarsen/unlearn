@@ -14,10 +14,51 @@ import (
 
 var ErrWritePermissionRequired = errors.New("write permission required for skill root")
 var ErrConfirmationRequired = errors.New("confirmation required")
+var ErrRenameNameRequired = errors.New("rename requires a new name")
 
 type Manager struct {
 	Config        config.Config
 	QuarantineDir string
+}
+
+type Result struct {
+	Skills []inventory.Skill
+	Paths  []string
+}
+
+func (m Manager) QuarantineSelected(skills []inventory.Skill, confirm bool) (Result, error) {
+	if !confirm {
+		return Result{}, ErrConfirmationRequired
+	}
+	if missing, ok := FirstMissingWrite(m.Config, skills); ok {
+		return Result{}, fmt.Errorf("%w: %s", ErrWritePermissionRequired, missing.Root)
+	}
+	result := Result{Skills: append([]inventory.Skill(nil), skills...)}
+	for _, skill := range skills {
+		dest, err := m.Quarantine(skill, true)
+		if err != nil {
+			return result, err
+		}
+		result.Paths = append(result.Paths, dest)
+	}
+	return result, nil
+}
+
+func (m Manager) DeleteSelected(skills []inventory.Skill, confirm bool) (Result, error) {
+	if !confirm {
+		return Result{}, ErrConfirmationRequired
+	}
+	if missing, ok := FirstMissingWrite(m.Config, skills); ok {
+		return Result{}, fmt.Errorf("%w: %s", ErrWritePermissionRequired, missing.Root)
+	}
+	result := Result{Skills: append([]inventory.Skill(nil), skills...)}
+	for _, skill := range skills {
+		if err := DeleteActive(skill, m.Config, skill.Name); err != nil {
+			return result, err
+		}
+		result.Paths = append(result.Paths, skill.EncounteredPath)
+	}
+	return result, nil
 }
 
 func (m Manager) Quarantine(skill inventory.Skill, confirm bool) (string, error) {
@@ -88,6 +129,7 @@ type RenamePreview struct {
 }
 
 func PreviewRename(skill inventory.Skill, newName string) RenamePreview {
+	newName = strings.TrimSpace(newName)
 	preview := RenamePreview{OldPath: skill.EncounteredPath, OldName: skill.Name, NewName: newName}
 	preview.NewPath = filepath.Join(filepath.Dir(skill.EncounteredPath), newName)
 	if skill.IsSymlink || strings.Contains(skill.Provenance, "package") {
@@ -102,6 +144,9 @@ func PreviewRename(skill inventory.Skill, newName string) RenamePreview {
 
 func Rename(skill inventory.Skill, newName string, cfg config.Config, confirm bool) (RenamePreview, error) {
 	preview := PreviewRename(skill, newName)
+	if preview.NewName == "" {
+		return preview, ErrRenameNameRequired
+	}
 	if !cfg.CanWrite(skill.Root) {
 		return preview, ErrWritePermissionRequired
 	}
