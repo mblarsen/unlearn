@@ -39,4 +39,9 @@ func TestFindingViewKeyBarIncludesIgnoreFinding(t *testing.T) {
 	if !strings.Contains(view, "ctrl+g ignore") || !strings.Contains(view, "s skills") {
 		t.Fatalf("finding key bar missing actions: %s", view)
 	}
+	lines := strings.Split(view, "\n")
+	keybar := lines[len(lines)-1]
+	if strings.Contains(keybar, "r density") || strings.Contains(keybar, "tab install") {
+		t.Fatalf("density and install-cycle shortcuts should live in details, not keybar: %s", keybar)
+	}
 }

@@ -1009,9 +1009,6 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	if summary := findingHistoryEvidenceSummary(finding); summary != "" {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• history "+summary, width)))
 	}
-	if len(finding.Skills) > 1 {
-		lines = append(lines, theme.Muted.Render(ui.Truncate("• tab cycles install focus for actions", width)))
-	}
 	lines = append(lines, "", theme.Section.Render("Compare installs"))
 	for i, skill := range finding.Skills {
 		prefix := "  "
@@ -1035,7 +1032,8 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 			lines = append(lines, renderSelectedInstallDetails(theme, skill, width)...)
 		}
 	}
-	lines = append(lines, "", renderDensityHint(theme, m.Density, width))
+	lines = append(lines, "")
+	lines = append(lines, renderDetailShortcuts(theme, m.Density, len(finding.Skills) > 1, width)...)
 	return lines
 }
 
@@ -1149,9 +1147,9 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		}
 	}
-	parts := []keyPart{{"↑↓/jk", "move"}, {"r", "density"}}
+	parts := []keyPart{{"↑↓/jk", "move"}}
 	if m.Mode == ViewFindings {
-		parts = append(parts, keyPart{"s", "skills"}, keyPart{"tab", "install"}, keyPart{"ctrl+g", "ignore"})
+		parts = append(parts, keyPart{"s", "skills"}, keyPart{"ctrl+g", "ignore"})
 	} else {
 		parts = append(parts, keyPart{"f", "findings"})
 	}
@@ -1289,11 +1287,17 @@ func optionLineForState(theme ui.Theme, state InteractionState) string {
 	}
 }
 
-func renderDensityHint(theme ui.Theme, density Density, width int) string {
+func renderDetailShortcuts(theme ui.Theme, density Density, hasMultipleInstalls bool, width int) []string {
+	lines := []string{theme.Section.Render("Shortcuts")}
+	densityHint := "r density: switch to rich details"
 	if density == DensityRich {
-		return theme.Muted.Render(ui.Truncate("r compact hides install description details", width))
+		densityHint = "r density: switch to compact details"
 	}
-	return theme.Muted.Render(ui.Truncate("r rich shows selected install description, path, provenance", width))
+	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+densityHint, width)))
+	if hasMultipleInstalls {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• tab cycle install", width)))
+	}
+	return lines
 }
 
 func findingHistoryEvidenceSummary(finding analysis.Finding) string {
