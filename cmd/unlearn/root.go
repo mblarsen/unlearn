@@ -187,6 +187,18 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	}
 	addSharedFlags(reset, opts)
 	reset.Flags().BoolVarP(&opts.yes, "yes", "y", false, "confirm reset without prompting")
+
+	resetLLMSummary := &cobra.Command{
+		Use:   "llm-summary <content-hash-or-skill-name>",
+		Short: "Remove one cached LLM summary",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runResetLLMSummary(out, cmd.InOrStdin(), opts, args[0])
+		},
+	}
+	addSharedFlags(resetLLMSummary, opts)
+	resetLLMSummary.Flags().BoolVarP(&opts.yes, "yes", "y", false, "confirm reset without prompting")
+	reset.AddCommand(resetLLMSummary)
 	root.AddCommand(reset)
 
 	setupCmd := &cobra.Command{
@@ -610,7 +622,7 @@ func attachLLMSummaries(skills []inventory.Skill, summaries map[string]llm.Gener
 	enriched := append([]inventory.Skill(nil), skills...)
 	for i := range enriched {
 		summary, ok := summaries[enriched[i].ContentHash]
-		if !ok || strings.TrimSpace(summary.Summary) == "" {
+		if !ok || strings.TrimSpace(summary.Summary) == "" || isDisabledLLMSummary(summary.Provider, summary.Model) {
 			continue
 		}
 		enriched[i].LLMSummary = summary.Summary
@@ -618,6 +630,10 @@ func attachLLMSummaries(skills []inventory.Skill, summaries map[string]llm.Gener
 		enriched[i].LLMModel = summary.Model
 	}
 	return enriched
+}
+
+func isDisabledLLMSummary(provider, model string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "disabled") && strings.EqualFold(strings.TrimSpace(model), "disabled")
 }
 
 func reportInventoryProgress(progress func(inventoryProgress), event inventoryProgress) {
@@ -744,6 +760,123 @@ func runReset(out io.Writer, in io.Reader, opts *cliOptions) error {
 	}
 	fmt.Fprintf(out, "Reset complete. Removed %d local unlearn item(s).\n", removed)
 	return nil
+}
+
+func runResetLLMSummary(out io.Writer, in io.Reader, opts *cliOptions, target string) error {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return fmt.Errorf("LLM summary target is required")
+	}
+	matches, err := llmSummaryResetTargets(opts, paths, target)
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		fmt.Fprintf(out, "No cached LLM summary found for %q.\n", target)
+		return nil
+	}
+	fmt.Fprintf(out, "unlearn reset llm-summary will remove %d cached summary file(s):\n", len(matches))
+	for _, match := range matches {
+		fmt.Fprintf(out, "  %s (%s)\n", match.ContentHash, match.Path)
+	}
+	fmt.Fprintf(out, "  refresh overlap cache: %s\n", llm.OverlapCacheDir(paths.LLMCacheDir))
+	if !opts.yes {
+		fmt.Fprint(out, "Type yes to continue: ")
+		answer, err := readResetConfirmation(in)
+		if err != nil {
+			return err
+		}
+		if answer != "yes" && answer != "y" {
+			fmt.Fprintln(out, "LLM summary reset cancelled.")
+			return nil
+		}
+	}
+	removed := 0
+	removedHashes := make([]string, 0, len(matches))
+	for _, match := range matches {
+		ok, err := removeResetTarget(match.Path)
+		if err != nil {
+			return err
+		}
+		if ok {
+			removed++
+			removedHashes = append(removedHashes, match.ContentHash)
+		}
+	}
+	overlapRemoved, err := removeResetTarget(llm.OverlapCacheDir(paths.LLMCacheDir))
+	if err != nil {
+		return err
+	}
+	if removed == 0 {
+		fmt.Fprintln(out, "No cached LLM summary files were present by the time reset ran.")
+		return nil
+	}
+	sort.Strings(removedHashes)
+	fmt.Fprintf(out, "Removed %d cached LLM summary file(s) for content hash(es): %s.\n", removed, strings.Join(removedHashes, ", "))
+	if overlapRemoved {
+		fmt.Fprintln(out, "Removed overlap cache so the next LLM-assisted scan recomputes semantic overlaps with refreshed summaries.")
+	} else {
+		fmt.Fprintln(out, "No overlap cache found; future overlap cache keys include summary/content inputs and will refresh as those inputs change.")
+	}
+	return nil
+}
+
+type llmSummaryResetTarget struct {
+	ContentHash string
+	Path        string
+}
+
+func llmSummaryResetTargets(opts *cliOptions, paths state.Paths, target string) ([]llmSummaryResetTarget, error) {
+	byHash := map[string]llmSummaryResetTarget{}
+	addExistingHash := func(hash string) {
+		path := llm.SummaryCachePath(paths.LLMCacheDir, hash)
+		if _, err := os.Stat(path); err == nil {
+			byHash[hash] = llmSummaryResetTarget{ContentHash: hash, Path: path}
+		}
+	}
+	addExistingHash(target)
+
+	cfg, err := loadConfig(opts, paths)
+	if err != nil {
+		return nil, err
+	}
+	activeAgents, inactiveAgents := agentSelection(opts, cfg)
+	roots := opts.roots
+	if len(roots) == 0 {
+		roots = inventory.RootsForAgents(append(activeAgents, inactiveAgents...))
+		if len(roots) == 0 {
+			roots = inventory.KnownGlobalRoots()
+		}
+	}
+	scanRoots := cfg.TrustedRoots(roots)
+	if len(scanRoots) == 0 {
+		return sortedLLMSummaryResetTargets(byHash), nil
+	}
+	owners := inventory.RootOwnershipForAgents(activeAgents, inactiveAgents)
+	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots, RootOwnerships: owners})
+	if err != nil {
+		return nil, err
+	}
+	for _, skill := range report.Skills {
+		if !strings.EqualFold(strings.TrimSpace(skill.Name), target) {
+			continue
+		}
+		addExistingHash(skill.ContentHash)
+	}
+	return sortedLLMSummaryResetTargets(byHash), nil
+}
+
+func sortedLLMSummaryResetTargets(values map[string]llmSummaryResetTarget) []llmSummaryResetTarget {
+	out := make([]llmSummaryResetTarget, 0, len(values))
+	for _, value := range values {
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ContentHash < out[j].ContentHash })
+	return out
 }
 
 func readResetConfirmation(in io.Reader) (string, error) {

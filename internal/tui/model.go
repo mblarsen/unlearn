@@ -1047,10 +1047,7 @@ func (m Model) renderSkillGroupDetails(theme ui.Theme, width, height int, group 
 		lines = append(lines, "")
 	}
 	if summary, provider, model := llmSummaryForGroup(group); summary != "" {
-		label := "Gemini summary"
-		if provider != "" || model != "" {
-			label += fmt.Sprintf(" (%s/%s)", emptyDetailLabel(provider), emptyDetailLabel(model))
-		}
+		label := llmSummaryDetailLabel(provider, model)
 		lines = append(lines, theme.Section.Render(label))
 		for _, line := range ui.Wrap(summary, width) {
 			lines = append(lines, theme.Row.Render(line))
@@ -1102,11 +1099,23 @@ func hasLLMReason(finding analysis.Finding) bool {
 
 func llmSummaryForGroup(group skillGroup) (string, string, string) {
 	for _, skill := range append([]inventory.Skill{group.Representative}, group.Skills...) {
-		if strings.TrimSpace(skill.LLMSummary) != "" {
+		if strings.TrimSpace(skill.LLMSummary) != "" && !disabledLLMSummary(skill.LLMProvider, skill.LLMModel) {
 			return skill.LLMSummary, skill.LLMProvider, skill.LLMModel
 		}
 	}
 	return "", "", ""
+}
+
+func llmSummaryDetailLabel(provider, model string) string {
+	label := "Agent summary"
+	if provider != "" || model != "" {
+		label += fmt.Sprintf(" (%s/%s)", emptyDetailLabel(provider), emptyDetailLabel(model))
+	}
+	return label
+}
+
+func disabledLLMSummary(provider, model string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "disabled") && strings.EqualFold(strings.TrimSpace(model), "disabled")
 }
 
 func emptyDetailLabel(value string) string {

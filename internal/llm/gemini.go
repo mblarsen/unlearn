@@ -46,18 +46,23 @@ func NewGeminiAnalyzerFromEnv() (GeminiAnalyzer, bool) {
 
 func (a GeminiAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (GeneratedSummary, error) {
 	prompt := strings.Join([]string{
-		"Summarize this AI agent skill for cleanup analysis.",
-		"Return one concise sentence. Do not use markdown.",
+		"Create a short cleanup label for this AI agent skill.",
+		"Return at most 12 words as one short phrase; no full sentence is required.",
+		"Focus on the user task the skill helps with.",
+		"Do not restate the description verbatim. Do not use markdown.",
+		"Return only the phrase.",
 		"Skill name: " + name,
 		"Deterministic summary: " + deterministicSummary,
 	}, "\n")
-	text, err := a.generateText(ctx, prompt, 160, false)
+	text, err := a.generateText(ctx, prompt, 48, false)
 	if err != nil {
 		return GeneratedSummary{}, err
 	}
 	text = firstLine(strings.TrimSpace(text))
 	if text == "" {
 		text = deterministicSummary
+	} else if summaryTooLong(text) && !summaryTooLong(deterministicSummary) && strings.TrimSpace(deterministicSummary) != "" {
+		text = firstLine(strings.TrimSpace(deterministicSummary))
 	}
 	return GeneratedSummary{Name: name, Summary: text, Provider: "gemini", Model: a.model(), ContentHash: contentHash}, nil
 }
@@ -239,6 +244,11 @@ func firstLine(value string) string {
 		return strings.TrimSpace(value[:idx])
 	}
 	return value
+}
+
+func summaryTooLong(value string) bool {
+	value = strings.TrimSpace(value)
+	return len([]rune(value)) > 96 || len(strings.Fields(value)) > 16
 }
 
 func truncateForError(value string, limit int) string {

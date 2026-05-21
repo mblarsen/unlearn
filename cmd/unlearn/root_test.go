@@ -16,6 +16,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 	"github.com/mblarsen/unlearn/internal/state"
 )
 
@@ -129,6 +130,73 @@ func TestResetRequiresConfirmation(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "Type yes to continue") || !strings.Contains(got, "Reset cancelled") {
 		t.Fatalf("unexpected reset prompt output:\n%s", got)
+	}
+}
+
+func TestResetLLMSummaryByContentHashRemovesSummaryAndOverlapCache(t *testing.T) {
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cacheDir := filepath.Join(stateDir, "llm-cache")
+	writeFile(t, llm.SummaryCachePath(cacheDir, "hash/one"), `{"summary":"cached"}`)
+	writeFile(t, filepath.Join(llm.OverlapCacheDir(cacheDir), "overlap.json"), `{"overlaps":[]}`)
+
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"reset", "llm-summary", "hash/one", "--yes", "--state-dir", stateDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(llm.SummaryCachePath(cacheDir, "hash/one")); !os.IsNotExist(err) {
+		t.Fatalf("expected summary cache to be removed, err=%v", err)
+	}
+	if _, err := os.Stat(llm.OverlapCacheDir(cacheDir)); !os.IsNotExist(err) {
+		t.Fatalf("expected overlap cache to be removed, err=%v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"hash/one", "Removed 1 cached LLM summary", "Removed overlap cache"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reset llm-summary output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestResetLLMSummaryBySkillNameScansTrustedRoots(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "alpha"), "alpha", "same")
+	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: []string{root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Skills) != 1 || report.Skills[0].ContentHash == "" {
+		t.Fatalf("unexpected scan report: %#v", report.Skills)
+	}
+	contentHash := report.Skills[0].ContentHash
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cacheDir := filepath.Join(stateDir, "llm-cache")
+	writeFile(t, llm.SummaryCachePath(cacheDir, contentHash), `{"summary":"cached"}`)
+
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"reset", "llm-summary", "alpha", "--yes", "--root", root, "--trust-root", root, "--state-dir", stateDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(llm.SummaryCachePath(cacheDir, contentHash)); !os.IsNotExist(err) {
+		t.Fatalf("expected skill summary cache to be removed, err=%v", err)
+	}
+	if got := out.String(); !strings.Contains(got, contentHash) || !strings.Contains(got, "Removed 1 cached LLM summary") {
+		t.Fatalf("unexpected reset llm-summary output:\n%s", got)
+	}
+}
+
+func TestAttachLLMSummariesSkipsDisabledAnalyzerOutput(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", ContentHash: "hash-a"}}
+	enriched := attachLLMSummaries(skills, map[string]llm.GeneratedSummary{
+		"hash-a": {Name: "alpha", Summary: "deterministic description", Provider: "disabled", Model: "disabled", ContentHash: "hash-a"},
+	})
+	if enriched[0].LLMSummary != "" || enriched[0].LLMProvider != "" || enriched[0].LLMModel != "" {
+		t.Fatalf("disabled summaries should not be attached as LLM output: %#v", enriched[0])
 	}
 }
 
@@ -519,6 +587,16 @@ func writeSkill(t *testing.T, dir, name, body string) {
 	}
 	content := "---\nname: " + name + "\ndescription: fixture skill\n---\n" + body
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

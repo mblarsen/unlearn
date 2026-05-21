@@ -21,8 +21,12 @@ func TestGeminiAnalyzerSummarizeCallsGenerateContent(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Fatal(err)
 		}
-		if !strings.Contains(req.Contents[0].Parts[0].Text, "Skill name: alpha") {
-			t.Fatalf("prompt missing skill name: %#v", req)
+		prompt := req.Contents[0].Parts[0].Text
+		if !strings.Contains(prompt, "Skill name: alpha") || !strings.Contains(prompt, "at most 12 words") || !strings.Contains(prompt, "Do not restate the description verbatim") {
+			t.Fatalf("prompt missing short-summary constraints: %#v", req)
+		}
+		if req.GenerationConfig.MaxOutputTokens > 64 {
+			t.Fatalf("summary token budget should stay short, got %d", req.GenerationConfig.MaxOutputTokens)
 		}
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Handles alpha workflows."}]}}]}`))
 	}))
@@ -35,6 +39,22 @@ func TestGeminiAnalyzerSummarizeCallsGenerateContent(t *testing.T) {
 	}
 	if summary.Name != "alpha" || summary.Summary != "Handles alpha workflows." || summary.Provider != "gemini" || summary.Model != DefaultGeminiModel {
 		t.Fatalf("unexpected summary: %#v", summary)
+	}
+}
+
+func TestGeminiAnalyzerSummarizeFallsBackFromVeryLongResponse(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"This response is much too long and keeps explaining the entire skill description instead of returning a compact label for cleanup analysis."}]}}]}`))
+	}))
+	defer server.Close()
+
+	analyzer := GeminiAnalyzer{APIKey: "test-key", Model: DefaultGeminiModel, BaseURL: server.URL, Client: server.Client()}
+	summary, err := analyzer.Summarize(context.Background(), "alpha", "release readiness", "hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Summary != "release readiness" {
+		t.Fatalf("expected short deterministic fallback, got %#v", summary)
 	}
 }
 
