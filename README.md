@@ -161,6 +161,12 @@ unlearn restore <skill> --to-root <root>
 
 Restore a quarantined skill into a write-enabled root.
 
+```bash
+unlearn reset [--yes]
+```
+
+Remove local `unlearn` config and cache state so the next launch behaves like a first run. This deletes the config TOML, SQLite index, and LLM cache. It keeps quarantined skills and never removes skill roots or agent files. Use `--yes` to skip the confirmation prompt.
+
 ## Dashboard shortcuts
 
 Navigation:

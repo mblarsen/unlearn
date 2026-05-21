@@ -1,6 +1,7 @@
 package unlearn
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
 	"fmt"
@@ -176,6 +177,17 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	addSharedFlags(restore, opts)
 	restore.Flags().StringVar(&opts.restoreRoot, "to-root", "", "trusted/write-enabled root to restore into")
 	root.AddCommand(restore)
+
+	reset := &cobra.Command{
+		Use:   "reset",
+		Short: "Remove local unlearn config and cache state",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runReset(out, cmd.InOrStdin(), opts)
+		},
+	}
+	addSharedFlags(reset, opts)
+	reset.Flags().BoolVarP(&opts.yes, "yes", "y", false, "confirm reset without prompting")
+	root.AddCommand(reset)
 
 	setupCmd := &cobra.Command{
 		Use:   "setup",
@@ -851,6 +863,115 @@ func pathsFromOptions(opts *cliOptions) (state.Paths, error) {
 		paths.IndexPath = opts.indexPath
 	}
 	return paths, nil
+}
+
+func runReset(out io.Writer, in io.Reader, opts *cliOptions) error {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(out, "unlearn reset will remove local unlearn config and cache state.")
+	fmt.Fprintf(out, "  remove config: %s\n", paths.ConfigPath)
+	fmt.Fprintf(out, "  remove SQLite index: %s\n", paths.IndexPath)
+	fmt.Fprintf(out, "  remove LLM cache: %s\n", paths.LLMCacheDir)
+	fmt.Fprintf(out, "  keep quarantine: %s\n", paths.QuarantineDir)
+	fmt.Fprintln(out, "Skill roots and quarantined skills will not be removed.")
+	if !opts.yes {
+		fmt.Fprint(out, "Type yes to continue: ")
+		answer, err := readResetConfirmation(in)
+		if err != nil {
+			return err
+		}
+		if answer != "yes" && answer != "y" {
+			fmt.Fprintln(out, "Reset cancelled.")
+			return nil
+		}
+	}
+	removed, err := removeResetTargets(paths)
+	if err != nil {
+		return err
+	}
+	if removed == 0 {
+		fmt.Fprintln(out, "No local unlearn config or cache state found.")
+		return nil
+	}
+	fmt.Fprintf(out, "Reset complete. Removed %d local unlearn item(s).\n", removed)
+	return nil
+}
+
+func readResetConfirmation(in io.Reader) (string, error) {
+	scanner := bufio.NewScanner(in)
+	if !scanner.Scan() {
+		if err := scanner.Err(); err != nil {
+			return "", err
+		}
+		return "", nil
+	}
+	return strings.ToLower(strings.TrimSpace(scanner.Text())), nil
+}
+
+func removeResetTargets(paths state.Paths) (int, error) {
+	removed := 0
+	for _, path := range resetTargetPaths(paths) {
+		ok, err := removeResetTarget(path)
+		if err != nil {
+			return removed, err
+		}
+		if ok {
+			removed++
+		}
+	}
+	_ = removeEmptyDir(paths.BaseDir)
+	_ = removeEmptyDir(filepath.Dir(paths.ConfigPath))
+	return removed, nil
+}
+
+func resetTargetPaths(paths state.Paths) []string {
+	return uniquePaths([]string{
+		paths.ConfigPath,
+		paths.IndexPath,
+		paths.IndexPath + "-wal",
+		paths.IndexPath + "-shm",
+		paths.LLMCacheDir,
+	})
+}
+
+func uniquePaths(paths []string) []string {
+	seen := map[string]bool{}
+	unique := make([]string, 0, len(paths))
+	for _, path := range paths {
+		clean := filepath.Clean(path)
+		if clean == "." || seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		unique = append(unique, clean)
+	}
+	return unique
+}
+
+func removeResetTarget(path string) (bool, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, os.RemoveAll(path)
+}
+
+func removeEmptyDir(path string) error {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(entries) > 0 {
+		return nil
+	}
+	return os.Remove(path)
 }
 
 func printWarnings(out io.Writer, warnings []string) {

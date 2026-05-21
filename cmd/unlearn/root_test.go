@@ -61,6 +61,77 @@ func TestDashboardInventoryUsesCachedIndex(t *testing.T) {
 	}
 }
 
+func TestResetYesRemovesLocalStateButKeepsQuarantine(t *testing.T) {
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	indexPath := filepath.Join(stateDir, "index.db")
+	llmCachePath := filepath.Join(stateDir, "llm-cache", "summary.txt")
+	quarantinePath := filepath.Join(stateDir, "quarantine", "2026-05-22", "demo", "SKILL.md")
+	for _, path := range []string{llmCachePath, quarantinePath} {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Default()
+	cfg.SetupComplete = true
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+	if db, err := state.OpenIndex(indexPath); err != nil {
+		t.Fatal(err)
+	} else if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"reset", "--yes", "--state-dir", stateDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{configPath, indexPath, filepath.Join(stateDir, "llm-cache")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be removed, err=%v", path, err)
+		}
+	}
+	if _, err := os.Stat(quarantinePath); err != nil {
+		t.Fatalf("quarantine should be kept: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{"remove SQLite index", "keep quarantine", "Reset complete"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("reset output missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestResetRequiresConfirmation(t *testing.T) {
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := config.Default()
+	cfg.SetupComplete = true
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetIn(strings.NewReader("no\n"))
+	cmd.SetArgs([]string{"reset", "--state-dir", stateDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("config should remain after cancelled reset: %v", err)
+	}
+	if got := out.String(); !strings.Contains(got, "Type yes to continue") || !strings.Contains(got, "Reset cancelled") {
+		t.Fatalf("unexpected reset prompt output:\n%s", got)
+	}
+}
+
 func TestAuditOutputWithFixtureRoot(t *testing.T) {
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "a"), "demo", "same")
