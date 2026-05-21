@@ -846,6 +846,9 @@ func findingRowText(finding analysis.Finding, width int) string {
 	if finding.Type == analysis.FindingOverlap {
 		meta += " · cluster"
 	}
+	if hasLLMReason(finding) {
+		meta += " · LLM"
+	}
 	return padBetween(ui.Truncate(finding.Title, nameWidth), meta, width)
 }
 
@@ -997,7 +1000,11 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 		return []string{"", theme.Muted.Render("Nothing selected")}
 	}
 	selected := m.clampedDetailCursor(finding)
-	lines := []string{"", findingBadge(theme, finding.Type) + " " + theme.Accent.Render(ui.Truncate(finding.Title, width-12)), ""}
+	header := findingBadge(theme, finding.Type)
+	if hasLLMReason(finding) {
+		header += " " + theme.Badge.Render("LLM")
+	}
+	lines := []string{"", header + " " + theme.Accent.Render(ui.Truncate(finding.Title, width-12)), ""}
 	for _, reason := range finding.Reasons {
 		lines = appendBullet(lines, theme, reason, width)
 	}
@@ -1050,6 +1057,17 @@ func (m Model) renderSkillGroupDetails(theme ui.Theme, width, height int, group 
 		}
 		lines = append(lines, "")
 	}
+	if summary, provider, model := llmSummaryForGroup(group); summary != "" {
+		label := "Gemini summary"
+		if provider != "" || model != "" {
+			label += fmt.Sprintf(" (%s/%s)", emptyDetailLabel(provider), emptyDetailLabel(model))
+		}
+		lines = append(lines, theme.Section.Render(label))
+		for _, line := range ui.Wrap(summary, width) {
+			lines = append(lines, theme.Row.Render(line))
+		}
+		lines = append(lines, "")
+	}
 	facts := []string{
 		"tokens " + tokenRange(group.Skills),
 		"activation " + riskLabel(skill.ActivationRisk),
@@ -1082,6 +1100,31 @@ func (m Model) renderSkillGroupDetails(theme ui.Theme, width, height int, group 
 		}
 	}
 	return lines
+}
+
+func hasLLMReason(finding analysis.Finding) bool {
+	for _, reason := range finding.Reasons {
+		if strings.Contains(strings.ToLower(reason), "llm-assisted") || strings.Contains(strings.ToLower(reason), "gemini/") {
+			return true
+		}
+	}
+	return false
+}
+
+func llmSummaryForGroup(group skillGroup) (string, string, string) {
+	for _, skill := range append([]inventory.Skill{group.Representative}, group.Skills...) {
+		if strings.TrimSpace(skill.LLMSummary) != "" {
+			return skill.LLMSummary, skill.LLMProvider, skill.LLMModel
+		}
+	}
+	return "", "", ""
+}
+
+func emptyDetailLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func findingBadge(theme ui.Theme, typ analysis.FindingType) string {

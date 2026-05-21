@@ -144,7 +144,7 @@ An optional LLM-produced explanation of what a skill does, used to make descript
 
 ### LLM-assisted analysis
 
-Optional analysis that uses an LLM to generate clearer skill summaries and semantic overlap groups. On first start, `unlearn` asks the user whether to enable LLM-assisted analysis. If the user declines, LLM-assisted analysis remains disabled until explicitly requested with a flag such as `--with-llm`. Generated results should be cached by skill content hash and labeled with the provider/model used.
+Optional analysis that uses an LLM to generate clearer skill summaries and semantic overlap groups. On first start, `unlearn` asks the user whether to enable LLM-assisted analysis. If the user declines, LLM-assisted analysis remains disabled until explicitly requested with a flag such as `--with-llm`. The minimal v1 backend uses Gemini REST with `GEMINI_API_KEY` or `GOOGLE_API_KEY` and defaults to `gemini-3-flash-preview`, with generated results cached by skill content hash and labeled with the provider/model used.
 
 ### Local unlearn state
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -19,6 +20,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 	setupflow "github.com/mblarsen/unlearn/internal/setup"
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
@@ -43,6 +45,7 @@ type cliOptions struct {
 	withLLM         bool
 	activeAgents    []string
 	inactiveAgents  []string
+	warnings        []string
 }
 
 func Execute() error {
@@ -82,13 +85,16 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		Use:   "audit",
 		Short: "Print a concise read-only skill cleanup overview",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			skills, findings, skipped, err := loadInventory(opts)
+			progress := newAuditProgressPrinter(cmd.ErrOrStderr())
+			skills, findings, skipped, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Progress: progress.Update})
 			if err != nil {
 				return err
 			}
 			if opts.fix {
+				printWarnings(out, opts.warnings)
 				return runFix(out, opts, findings)
 			}
+			printWarnings(out, opts.warnings)
 			printAudit(out, skills, findings, skipped)
 			return nil
 		},
@@ -127,6 +133,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err := state.ReplaceIndex(db, skills, findings); err != nil {
 				return err
 			}
+			printWarnings(out, opts.warnings)
 			fmt.Fprintf(out, "Indexed %d skills and %d findings.\n", len(skills), len(findings))
 			if len(skipped) > 0 {
 				fmt.Fprintf(out, "Skipped untrusted roots: %s\n", strings.Join(skipped, ", "))
@@ -412,7 +419,7 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringSliceVar(&opts.historySQLite, "history-sqlite", nil, "opt-in SQLite history database to scan text columns for derived invocation evidence; may be repeated")
 	cmd.Flags().DurationVar(&opts.historyCacheTTL, "history-cache-ttl", 24*time.Hour, "reuse cached history evidence until it is older than this duration")
 	cmd.Flags().BoolVar(&opts.rescanSources, "rescan-sources", false, "ignore cached source/history evidence and rescan local sources")
-	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to LLM-assisted analysis plumbing; current build uses deterministic analysis plus a disabled analyzer stub")
+	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to Gemini-assisted semantic overlap analysis; uses GEMINI_API_KEY or GOOGLE_API_KEY")
 	cmd.Flags().StringSliceVar(&opts.activeAgents, "active-agent", nil, "active agent harness whose global skill roots should be audited; may be repeated")
 	cmd.Flags().StringSliceVar(&opts.inactiveAgents, "inactive-agent", nil, "inactive agent harness whose skill roots should be scanned as cleanup candidates; may be repeated")
 }
@@ -420,6 +427,7 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 type inventoryLoadOptions struct {
 	Context         context.Context
 	HistoryProgress func(history.ScanProgress)
+	Progress        func(inventoryProgress)
 }
 
 func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
@@ -455,18 +463,93 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 			skipped = append(skipped, root)
 		}
 	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "scan-roots", Detail: fmt.Sprintf("%d trusted root(s), %d skipped", len(scanRoots), len(skipped))})
 	owners := inventory.RootOwnershipForAgents(activeAgents, inactiveAgents)
 	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots, RootOwnerships: owners})
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "scan-roots", Detail: fmt.Sprintf("%d skill install(s)", len(report.Skills)), Done: true})
 	usage, sources, lastSeen, err := loadUsageEvidence(opts, cfg, report.Skills, scanRoots, loadOpts)
 	if err != nil {
 		return nil, nil, nil, err
 	}
 	skills := attachUsageEvidence(report.Skills, usage, sources, lastSeen)
-	findings := analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: "duplicates, conflicts, keywords, safety findings"})
+	analysisOpts := analysis.Options{UsageEvidence: usage, Progress: func(event analysis.ProgressEvent) {
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
+	}}
+	var recorder *recordingAnalyzer
+	if cfg.LLMAssisted {
+		if analyzer, ok := llm.NewGeminiAnalyzerFromEnv(); ok {
+			recorder = newRecordingAnalyzer(llm.NewCachedAnalyzer(paths.LLMCacheDir, analyzer))
+			analysisOpts.LLMAnalyzer = recorder
+		} else {
+			opts.warnings = append(opts.warnings, "LLM analysis requested, but GEMINI_API_KEY/GOOGLE_API_KEY is not set; using deterministic analysis.")
+		}
+	}
+	ctx := loadOpts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
+	if err != nil {
+		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM semantic-overlap analysis did not complete; using deterministic analysis. Details: %v", err))
+		findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
+	}
+	if recorder != nil {
+		skills = attachLLMSummaries(skills, recorder.Summaries())
+	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: fmt.Sprintf("%d finding(s)", len(findings)), Done: true})
 	return skills, findings, skipped, nil
+}
+
+type recordingAnalyzer struct {
+	next      llm.Analyzer
+	summaries map[string]llm.GeneratedSummary
+}
+
+func newRecordingAnalyzer(next llm.Analyzer) *recordingAnalyzer {
+	return &recordingAnalyzer{next: next, summaries: map[string]llm.GeneratedSummary{}}
+}
+
+func (a *recordingAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (llm.GeneratedSummary, error) {
+	summary, err := a.next.Summarize(ctx, name, deterministicSummary, contentHash)
+	if err == nil && strings.TrimSpace(contentHash) != "" {
+		a.summaries[contentHash] = summary
+	}
+	return summary, err
+}
+
+func (a *recordingAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.GeneratedSummary) ([]llm.SemanticOverlap, error) {
+	return a.next.FindOverlaps(ctx, summaries)
+}
+
+func (a *recordingAnalyzer) Summaries() map[string]llm.GeneratedSummary {
+	return a.summaries
+}
+
+func attachLLMSummaries(skills []inventory.Skill, summaries map[string]llm.GeneratedSummary) []inventory.Skill {
+	if len(summaries) == 0 {
+		return skills
+	}
+	enriched := append([]inventory.Skill(nil), skills...)
+	for i := range enriched {
+		summary, ok := summaries[enriched[i].ContentHash]
+		if !ok || strings.TrimSpace(summary.Summary) == "" {
+			continue
+		}
+		enriched[i].LLMSummary = summary.Summary
+		enriched[i].LLMProvider = summary.Provider
+		enriched[i].LLMModel = summary.Model
+	}
+	return enriched
+}
+
+func reportInventoryProgress(progress func(inventoryProgress), event inventoryProgress) {
+	if progress != nil {
+		progress(event)
+	}
 }
 
 func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
@@ -530,7 +613,8 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 		}
 	}
 	jsonlAdapter := history.JSONLAdapter{}
-	for _, path := range jsonlPaths {
+	for index, path := range jsonlPaths {
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Current: index + 1, Total: len(jsonlPaths) + len(sqlitePaths), Detail: filepath.Base(path)})
 		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return jsonlAdapter.ScanWithOptions(path, names, scanOpts)
 		})
@@ -540,7 +624,8 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 		merge(evidence)
 	}
 	sqliteAdapter := history.SQLiteAdapter{}
-	for _, path := range sqlitePaths {
+	for index, path := range sqlitePaths {
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Current: len(jsonlPaths) + index + 1, Total: len(jsonlPaths) + len(sqlitePaths), Detail: filepath.Base(path)})
 		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return sqliteAdapter.ScanWithOptions(path, names, scanOpts)
 		})
@@ -549,6 +634,7 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 		}
 		merge(evidence)
 	}
+	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Detail: fmt.Sprintf("%d file(s), %d matching skills", len(jsonlPaths)+len(sqlitePaths), len(usage)), Done: true})
 	return usage, sources, lastSeen, nil
 }
 
@@ -569,7 +655,12 @@ func historyEvidenceForPath(db *sql.DB, path string, names []string, opts *cliOp
 			return state.LoadHistoryEvidence(db, path)
 		}
 	}
-	evidence, err := scan(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
+	historyProgress := func(progress history.ScanProgress) {
+		if loadOpts.HistoryProgress != nil {
+			loadOpts.HistoryProgress(progress)
+		}
+	}
+	evidence, err := scan(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: historyProgress})
 	if err != nil {
 		return nil, err
 	}
@@ -693,6 +784,12 @@ func pathsFromOptions(opts *cliOptions) (state.Paths, error) {
 		paths.IndexPath = opts.indexPath
 	}
 	return paths, nil
+}
+
+func printWarnings(out io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintf(out, "warning: %s\n", warning)
+	}
 }
 
 func printAudit(out io.Writer, skills []inventory.Skill, findings []analysis.Finding, skipped []string) {

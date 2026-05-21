@@ -35,6 +35,9 @@ type Skill struct {
 	HistoryEvidence       string
 	HistorySources        []string
 	HistoryLastSeenAt     time.Time
+	LLMSummary            string
+	LLMProvider           string
+	LLMModel              string
 	RootKnown             bool
 	ActiveAgents          []string
 	InactiveAgents        []string

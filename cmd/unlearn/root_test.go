@@ -3,6 +3,9 @@ package unlearn
 import (
 	"bytes"
 	"database/sql"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -314,10 +317,13 @@ func TestSQLiteHistoryProgressIsForwardedDuringLoad(t *testing.T) {
 }
 
 func TestAuditWithLLMPersistsOptIn(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
 	root := t.TempDir()
 	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
 	configPath := filepath.Join(t.TempDir(), "config.toml")
-	cmd := newRootCmd(&bytes.Buffer{})
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
 	cmd.SetArgs([]string{"audit", "--root", root, "--trust-root", root, "--with-llm", "--state-dir", t.TempDir(), "--config", configPath})
 	if err := cmd.Execute(); err != nil {
 		t.Fatal(err)
@@ -328,6 +334,47 @@ func TestAuditWithLLMPersistsOptIn(t *testing.T) {
 	}
 	if !strings.Contains(string(cfg), "llm_assisted = true") {
 		t.Fatalf("LLM opt-in not persisted:\n%s", cfg)
+	}
+	if !strings.Contains(out.String(), "GEMINI_API_KEY/GOOGLE_API_KEY is not set") {
+		t.Fatalf("missing deterministic fallback warning:\n%s", out.String())
+	}
+}
+
+func TestAuditWithLLMPrintsProgressToErr(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+	writeSkill(t, filepath.Join(root, "b"), "beta", "same")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), "Find semantic overlap") {
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"overlaps\":[]}"}]}}]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Short summary."}]}}]}`))
+	}))
+	defer server.Close()
+	t.Setenv("GEMINI_API_KEY", "test-key")
+	t.Setenv("UNLEARN_GEMINI_BASE_URL", server.URL)
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetErr(&errOut)
+	cmd.SetArgs([]string{"audit", "--root", root, "--trust-root", root, "--with-llm", "--state-dir", t.TempDir(), "--config", filepath.Join(t.TempDir(), "config.toml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	progress := errOut.String()
+	for _, want := range []string{"Scan skill roots", "Run deterministic checks", "Generate Gemini summaries", "Find semantic overlaps"} {
+		if !strings.Contains(progress, want) {
+			t.Fatalf("progress output missing %q:\n%s", want, progress)
+		}
+	}
+	if strings.Contains(out.String(), "Generate Gemini summaries") {
+		t.Fatalf("progress leaked to stdout:\n%s", out.String())
 	}
 }
 

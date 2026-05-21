@@ -102,6 +102,30 @@ func TestSkillDetailsSurfaceHistoryEvidence(t *testing.T) {
 	}
 }
 
+func TestLLMOverlapFindingShowsBadge(t *testing.T) {
+	findings := []analysis.Finding{{ID: "llm-overlap:a:b", Type: analysis.FindingOverlap, Title: "a / b", Skills: []inventory.Skill{{Name: "a"}, {Name: "b"}}, Reasons: []string{"LLM-assisted semantic overlap: same purpose (gemini/gemini-3-flash-preview)"}}}
+	m := New(nil, findings)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "LLM") || !strings.Contains(view, "LLM-assisted semantic overlap") {
+		t.Fatalf("LLM finding should show badge and reason:\n%s", view)
+	}
+}
+
+func TestSkillDetailsSurfaceLLMSummary(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Description: "deterministic description", LLMSummary: "Gemini says alpha automates release readiness.", LLMProvider: "gemini", LLMModel: "gemini-3-flash-preview"}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "Gemini summary") || !strings.Contains(view, "automates release") {
+		t.Fatalf("skill details should show LLM summary:\n%s", view)
+	}
+}
+
 func TestTokenRangeCollapsesEqualBounds(t *testing.T) {
 	skills := []inventory.Skill{{Name: "caveman", Kind: inventory.KindDirectory, LowerTokens: 2600, UpperTokens: 2600}}
 	m := New(skills, nil)

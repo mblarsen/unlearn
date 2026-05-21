@@ -15,7 +15,7 @@ The default experience is a full-screen Charmbracelet dashboard. Quick commands 
 
 ## Status
 
-Early v1. The core scanner, dashboard, safety gates, duplicate cleanup flows, and fixture-tested mutations are implemented. LLM-assisted analysis remains an opt-in stub; history evidence supports opt-in JSONL files, explicitly provided SQLite databases, and SQLite databases discovered under configured roots.
+Early v1. The core scanner, dashboard, safety gates, duplicate cleanup flows, fixture-tested mutations, opt-in history evidence, and minimal Gemini-backed LLM overlap analysis are implemented. History evidence supports opt-in JSONL files, explicitly provided SQLite databases, and SQLite databases discovered under configured roots.
 
 ## Safety model
 
@@ -29,7 +29,7 @@ Early v1. The core scanner, dashboard, safety gates, duplicate cleanup flows, an
 - Duplicate installs require choosing the exact install, selecting multiple installs, or explicitly choosing `All N installs`.
 - Restore uses a navigable quarantine list.
 - History scanning is opt-in and stores derived evidence plus cache metadata, not raw session excerpts.
-- LLM-assisted analysis is opt-in.
+- LLM-assisted analysis is opt-in and falls back to deterministic analysis if no Gemini API key is configured.
 
 Known default global roots are derived from the active agent harnesses selected in setup. The agent/root catalog is adapted from `vercel-labs/skills/src/agents.ts` and includes Pi, Codex, OpenCode, Claude Code, Cursor, Goose, Gemini CLI, and other supported Skills-compatible agents. Manual `--root` paths remain supported.
 
@@ -55,6 +55,7 @@ Known default global roots are derived from the active agent harnesses selected 
 - Batch duplicate cleanup by root.
 - Opt-in history evidence from JSONL sessions, explicit SQLite databases, and SQLite databases discovered under configured roots.
 - Shared history-scan cache for JSONL and SQLite sources keyed by source fingerprint, skill set, and scanner version.
+- Optional Gemini-assisted summaries and semantic overlap detection with cache-backed results.
 
 ## Install
 
@@ -113,6 +114,15 @@ For fixture or automation work, trust roots explicitly:
 unlearn audit --root /tmp/test-skills --trust-root /tmp/test-skills
 ```
 
+To enable minimal LLM-assisted analysis, set a Gemini API key and pass `--with-llm` or enable it in setup:
+
+```bash
+export GEMINI_API_KEY=...
+unlearn audit --with-llm
+```
+
+`GOOGLE_API_KEY` is also accepted. The default model is `gemini-3-flash-preview`; override it with `UNLEARN_LLM_MODEL`.
+
 ## Commands
 
 ```bash
@@ -125,7 +135,13 @@ Open the dashboard.
 unlearn audit
 ```
 
-Print a concise read-only overview with skill count, finding counts, and top cleanup candidates. Add `--history-jsonl <path>` or `--history-sqlite <path>` to opt in local history evidence for unseen-skill findings. If history scanning is enabled, `unlearn` also discovers `.db`, `.sqlite`, and `.sqlite3` files under configured/trusted scan roots.
+Print a concise read-only overview with skill count, finding counts, and top cleanup candidates. Add `--history-jsonl <path>` or `--history-sqlite <path>` to opt in local history evidence for unseen-skill findings. If history scanning is enabled, `unlearn` also discovers `.db`, `.sqlite`, and `.sqlite3` files under configured/trusted scan roots. Longer-running scan and LLM steps report Charm-styled progress on stderr so stdout remains pipe-friendly.
+
+```bash
+unlearn audit --with-llm
+```
+
+Opt in to Gemini-assisted summaries and semantic overlap detection. Requires `GEMINI_API_KEY` or `GOOGLE_API_KEY`; otherwise `unlearn` prints a warning and uses deterministic analysis.
 
 ```bash
 unlearn audit --fix
@@ -220,7 +236,7 @@ CONTEXT.md
 
 - Expand opt-in history scanning to additional agent history stores beyond Pi JSONL and configured-root SQLite discovery.
 - Polish dashboard controls for history progress/cancellation.
-- Add real LLM-assisted summaries and semantic overlap detection behind the existing opt-in/cache interface.
+- Expand LLM-assisted analysis beyond the minimal Gemini backend with richer provider selection and more surfaced generated summaries.
 - Extend batch cleanup beyond duplicate-by-root once the interaction model is proven safe.
 - Improve quarantine management with filtering, previewing, restoring, and deleting old quarantined items.
 - Polish release/install paths with packaged binaries and upgrade documentation.

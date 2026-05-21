@@ -1,11 +1,13 @@
 package analysis
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"strings"
 
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 )
 
 type FindingType string
@@ -32,25 +34,50 @@ type Finding struct {
 
 type UsageEvidence map[string]string
 
+type ProgressEvent struct {
+	Step    string
+	Current int
+	Total   int
+	Detail  string
+	Done    bool
+}
+
+type ProgressFunc func(ProgressEvent)
+
 type Options struct {
 	UsageEvidence  UsageEvidence
 	HighTokenLimit int
+	LLMAnalyzer    llm.Analyzer
+	Progress       ProgressFunc
 }
 
 const minOverlapSharedKeywords = 3
 
 func Analyze(skills []inventory.Skill, opts Options) []Finding {
+	findings, _ := AnalyzeWithLLM(context.Background(), skills, opts)
+	return findings
+}
+
+func AnalyzeWithLLM(ctx context.Context, skills []inventory.Skill, opts Options) ([]Finding, error) {
 	if opts.HighTokenLimit == 0 {
 		opts.HighTokenLimit = 2000
 	}
 	var findings []Finding
 	findings = append(findings, duplicatesAndConflicts(skills)...)
 	findings = append(findings, overlaps(skills)...)
+	if opts.LLMAnalyzer != nil {
+		llmFindings, err := llmOverlaps(ctx, skills, opts.LLMAnalyzer, opts.Progress)
+		if err != nil {
+			SortFindings(findings)
+			return findings, err
+		}
+		findings = mergeLLMOverlapFindings(findings, llmFindings)
+	}
 	findings = append(findings, brokenFindings(skills)...)
 	findings = append(findings, inactiveRootFindings(skills)...)
 	findings = append(findings, groupedSingleSkillFindings(skills, opts)...)
 	SortFindings(findings)
-	return findings
+	return findings, nil
 }
 
 func brokenFindings(skills []inventory.Skill) []Finding {
@@ -247,6 +274,137 @@ func overlaps(skills []inventory.Skill) []Finding {
 		findings = append(findings, overlapFinding(componentSkills, sortedKeys(terms)))
 	}
 	return findings
+}
+
+func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Analyzer, progress ProgressFunc) ([]Finding, error) {
+	logicalSkills := representativeSkills(skills)
+	summaries := make([]llm.GeneratedSummary, 0, len(logicalSkills))
+	byName := map[string]inventory.Skill{}
+	for index, skill := range logicalSkills {
+		reportProgress(progress, ProgressEvent{Step: "llm-summary", Current: index + 1, Total: len(logicalSkills), Detail: skill.Name})
+		summary, err := analyzer.Summarize(ctx, skill.Name, deterministicSummary(skill), skill.ContentHash)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+		byName[logicalName(skill)] = skill
+	}
+	reportProgress(progress, ProgressEvent{Step: "llm-summary", Current: len(logicalSkills), Total: len(logicalSkills), Detail: fmt.Sprintf("%d skill summaries ready", len(summaries)), Done: true})
+	reportProgress(progress, ProgressEvent{Step: "llm-overlap", Detail: "asking Gemini to group semantic overlaps"})
+	overlaps, err := analyzer.FindOverlaps(ctx, summaries)
+	if err != nil {
+		return nil, err
+	}
+	reportProgress(progress, ProgressEvent{Step: "llm-overlap", Current: len(overlaps), Detail: fmt.Sprintf("%d LLM overlap group(s)", len(overlaps)), Done: true})
+	findings := make([]Finding, 0, len(overlaps))
+	for _, overlap := range overlaps {
+		group := make([]inventory.Skill, 0, len(overlap.SkillNames))
+		for _, name := range overlap.SkillNames {
+			if skill, ok := byName[strings.ToLower(strings.TrimSpace(name))]; ok {
+				group = append(group, skill)
+			}
+		}
+		if len(group) < 2 {
+			continue
+		}
+		findings = append(findings, llmOverlapFinding(group, overlap))
+	}
+	return findings, nil
+}
+
+func mergeLLMOverlapFindings(findings, llmFindings []Finding) []Finding {
+	emittedLLM := map[string]bool{}
+	for _, llmFinding := range llmFindings {
+		key := findingSkillSetKey(llmFinding)
+		if emittedLLM[key] {
+			continue
+		}
+		merged := false
+		for i := range findings {
+			if findings[i].Type != FindingOverlap {
+				continue
+			}
+			if findingContainsAllSkills(findings[i], llmFinding) {
+				findings[i].Reasons = appendUniqueStrings(findings[i].Reasons, llmFinding.Reasons...)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			findings = append(findings, llmFinding)
+		}
+		emittedLLM[key] = true
+	}
+	return findings
+}
+
+func findingContainsAllSkills(container, candidate Finding) bool {
+	containerNames := map[string]bool{}
+	for _, skill := range container.Skills {
+		containerNames[logicalName(skill)] = true
+	}
+	for _, skill := range candidate.Skills {
+		if !containerNames[logicalName(skill)] {
+			return false
+		}
+	}
+	return true
+}
+
+func findingSkillSetKey(finding Finding) string {
+	names := make([]string, 0, len(finding.Skills))
+	for _, skill := range finding.Skills {
+		names = append(names, logicalName(skill))
+	}
+	sort.Strings(names)
+	return string(finding.Type) + ":" + strings.Join(names, ":")
+}
+
+func appendUniqueStrings(values []string, additions ...string) []string {
+	seen := map[string]bool{}
+	for _, value := range values {
+		seen[value] = true
+	}
+	for _, value := range additions {
+		if !seen[value] {
+			values = append(values, value)
+			seen[value] = true
+		}
+	}
+	return values
+}
+
+func reportProgress(progress ProgressFunc, event ProgressEvent) {
+	if progress != nil {
+		progress(event)
+	}
+}
+
+func deterministicSummary(skill inventory.Skill) string {
+	if strings.TrimSpace(skill.Description) != "" {
+		return skill.Description
+	}
+	return firstWords(skill.Body, 80)
+}
+
+func llmOverlapFinding(skills []inventory.Skill, overlap llm.SemanticOverlap) Finding {
+	sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
+	names := make([]string, 0, len(skills))
+	for _, skill := range skills {
+		names = append(names, skill.Name)
+	}
+	reason := "LLM-assisted semantic overlap: " + overlap.Reason
+	if overlap.Provider != "" || overlap.Model != "" {
+		reason += fmt.Sprintf(" (%s/%s)", emptyLabel(overlap.Provider), emptyLabel(overlap.Model))
+	}
+	return Finding{ID: "llm-overlap:" + strings.Join(lowerNames(names), ":"), Type: FindingOverlap, Severity: 2, Title: summarizeNames(names), Skills: skills, Reasons: []string{reason}}
+}
+
+func emptyLabel(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "unknown"
+	}
+	return value
 }
 
 func denseOverlapComponent(component []int, graph map[int]map[int][]string) bool {
