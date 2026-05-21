@@ -437,19 +437,9 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 	if cfg.SetupComplete && !force {
 		return nil
 	}
-	activeAgents, inactiveAgents := agentSelection(opts, cfg)
-	roots := opts.roots
-	if len(roots) == 0 {
-		roots = inventory.RootsForAgents(append(activeAgents, inactiveAgents...))
-		if len(roots) == 0 {
-			roots = inventory.KnownGlobalRoots()
-		}
-	}
-	choices := make([]setupflow.RootChoice, 0, len(roots))
-	for _, root := range roots {
-		_, err := os.Stat(root)
-		choices = append(choices, setupflow.RootChoice{Path: root, Exists: err == nil})
-	}
+	statuses := inventory.AgentStatuses()
+	roots := setupflow.CandidateRoots(opts.roots, opts.activeAgents, opts.inactiveAgents, cfg, statuses)
+	choices := setupflow.RootChoices(roots)
 	historyJSONL, err := usage.DiscoverPiJSONL()
 	if err != nil {
 		return err
@@ -458,7 +448,7 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 	if err != nil {
 		return err
 	}
-	model := setupflow.New(choices, historyJSONL, historySQLite, cfg, inventory.AgentStatuses())
+	model := setupflow.New(choices, historyJSONL, historySQLite, cfg, statuses)
 	program := tea.NewProgram(model, tea.WithOutput(out), tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err != nil {
@@ -637,13 +627,7 @@ func reportInventoryProgress(progress func(inventoryProgress), event inventoryPr
 }
 
 func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
-	if len(opts.activeAgents) > 0 || len(opts.inactiveAgents) > 0 {
-		return append([]string(nil), opts.activeAgents...), append([]string(nil), opts.inactiveAgents...)
-	}
-	if cfg.HasAgentSelection() {
-		return append([]string(nil), cfg.ActiveAgents...), append([]string(nil), cfg.InactiveAgents...)
-	}
-	return inventory.CandidateAgentIDs()
+	return setupflow.SelectAgentIDs(opts.activeAgents, opts.inactiveAgents, cfg, inventory.AgentStatuses())
 }
 
 func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
