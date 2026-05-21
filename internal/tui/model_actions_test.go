@@ -11,17 +11,18 @@ import (
 )
 
 type fakeActionService struct {
-	writeRoots      map[string]bool
-	kept            []string
-	ignored         []string
-	quarantined     []string
-	quarantinedRoot []string
-	deleted         []string
-	deletedRoot     []string
-	renamed         []string
-	restored        []string
-	quarantinedList []string
-	deleteTypedName string
+	writeRoots       map[string]bool
+	kept             []string
+	ignored          []string
+	quarantined      []string
+	quarantinedRoot  []string
+	deleted          []string
+	deletedRoot      []string
+	renamed          []string
+	restored         []string
+	quarantinedList  []string
+	deleteTypedName  string
+	deleteBatchToken string
 }
 
 func (f *fakeActionService) KeepSkill(skill inventory.Skill) error {
@@ -32,7 +33,14 @@ func (f *fakeActionService) IgnoreFinding(finding analysis.Finding) error {
 	f.ignored = append(f.ignored, finding.ID)
 	return nil
 }
-func (f *fakeActionService) CanWrite(root string) bool { return f.writeRoots[root] }
+func (f *fakeActionService) FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool) {
+	for _, skill := range skills {
+		if !f.writeRoots[skill.Root] {
+			return skill, true
+		}
+	}
+	return inventory.Skill{}, false
+}
 func (f *fakeActionService) AllowWrite(root string) error {
 	if f.writeRoots == nil {
 		f.writeRoots = map[string]bool{}
@@ -40,16 +48,25 @@ func (f *fakeActionService) AllowWrite(root string) error {
 	f.writeRoots[root] = true
 	return nil
 }
-func (f *fakeActionService) Quarantine(skill inventory.Skill) (string, error) {
-	f.quarantined = append(f.quarantined, skill.Name)
-	f.quarantinedRoot = append(f.quarantinedRoot, skill.Root)
-	return "/quarantine/" + skill.Name, nil
+func (f *fakeActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
+	result := fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}
+	for _, skill := range skills {
+		f.quarantined = append(f.quarantined, skill.Name)
+		f.quarantinedRoot = append(f.quarantinedRoot, skill.Root)
+		result.Paths = append(result.Paths, "/quarantine/"+skill.Name)
+	}
+	return result, nil
 }
-func (f *fakeActionService) Delete(skill inventory.Skill, typedName string) error {
-	f.deleteTypedName = typedName
-	f.deleted = append(f.deleted, skill.Name)
-	f.deletedRoot = append(f.deletedRoot, skill.Root)
-	return nil
+func (f *fakeActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
+	f.deleteTypedName = confirmation.TypedName
+	f.deleteBatchToken = confirmation.BatchToken
+	result := fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}
+	for _, skill := range skills {
+		f.deleted = append(f.deleted, skill.Name)
+		f.deletedRoot = append(f.deletedRoot, skill.Root)
+		result.Paths = append(result.Paths, skill.EncounteredPath)
+	}
+	return result, nil
 }
 func (f *fakeActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
 	return fsactions.PreviewRename(skill, newName)
@@ -129,6 +146,9 @@ func TestDashboardCanMarkMultipleDuplicateInstalls(t *testing.T) {
 	m = updated.(Model)
 	if len(service.deletedRoot) != 2 || service.deletedRoot[0] != "/two" || service.deletedRoot[1] != "/three" {
 		t.Fatalf("deleted roots=%v", service.deletedRoot)
+	}
+	if service.deleteBatchToken != fsactions.BatchDeleteConfirmation(servicePendingDeletedSkills(service)) {
+		t.Fatalf("batch token=%q", service.deleteBatchToken)
 	}
 }
 
@@ -338,6 +358,14 @@ func TestDashboardRestoreUsesPopupSelection(t *testing.T) {
 	if len(service.restored) != 1 || service.restored[0] != "older:/root" {
 		t.Fatalf("restored=%v", service.restored)
 	}
+}
+
+func servicePendingDeletedSkills(service *fakeActionService) []inventory.Skill {
+	skills := make([]inventory.Skill, 0, len(service.deletedRoot))
+	for i, root := range service.deletedRoot {
+		skills = append(skills, inventory.Skill{Name: service.deleted[i], Root: root})
+	}
+	return skills
 }
 
 func testModel(service *fakeActionService) Model {
