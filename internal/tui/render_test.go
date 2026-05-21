@@ -144,8 +144,8 @@ func TestSkillDetailsSurfaceLLMSummary(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	m = updated.(Model)
 	view := m.View()
-	if !strings.Contains(view, "Gemini summary") || !strings.Contains(view, "automates release") {
-		t.Fatalf("skill details should show LLM summary:\n%s", view)
+	if !strings.Contains(view, "Agent summary") || strings.Contains(view, "Gemini summary") || !strings.Contains(view, "automates release") {
+		t.Fatalf("skill details should show neutral agent summary label:\n%s", view)
 	}
 }
 
@@ -157,8 +157,8 @@ func TestSkillDetailsHidesDisabledLLMSummary(t *testing.T) {
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	m = updated.(Model)
 	view := m.View()
-	if strings.Contains(view, "Gemini summary (disabled/disabled)") || strings.Contains(view, "disabled/disabled") {
-		t.Fatalf("disabled analyzer output should not render as a Gemini summary:\n%s", view)
+	if strings.Contains(view, "Agent summary") || strings.Contains(view, "Gemini summary") || strings.Contains(view, "disabled/disabled") {
+		t.Fatalf("disabled analyzer output should not render a summary section:\n%s", view)
 	}
 }
 

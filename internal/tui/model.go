@@ -1107,10 +1107,7 @@ func llmSummaryForGroup(group skillGroup) (string, string, string) {
 }
 
 func llmSummaryDetailLabel(provider, model string) string {
-	label := "LLM summary"
-	if strings.EqualFold(strings.TrimSpace(provider), "gemini") || (strings.TrimSpace(provider) == "" && strings.TrimSpace(model) != "") {
-		label = "Gemini summary"
-	}
+	label := "Agent summary"
 	if provider != "" || model != "" {
 		label += fmt.Sprintf(" (%s/%s)", emptyDetailLabel(provider), emptyDetailLabel(model))
 	}
