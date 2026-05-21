@@ -227,6 +227,69 @@ func TestDeleteActiveRequiresTypedName(t *testing.T) {
 	}
 }
 
+func TestDeleteSelectedRequiresTypedNameForSingleInstall(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "demo")
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{Config: cfg}
+	_, err := mgr.DeleteSelected([]inventory.Skill{{Name: "demo", Root: root, EncounteredPath: skillDir}}, DeleteConfirmation{TypedName: "wrong"})
+	if err == nil {
+		t.Fatal("expected typed-name error")
+	}
+	if _, err := os.Stat(skillDir); err != nil {
+		t.Fatalf("single install should not be deleted after wrong typed name: %v", err)
+	}
+	result, err := mgr.DeleteSelected([]inventory.Skill{{Name: "demo", Root: root, EncounteredPath: skillDir}}, DeleteConfirmation{TypedName: "demo"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Skills) != 1 || result.Paths[0] != skillDir {
+		t.Fatalf("result=%#v", result)
+	}
+	if _, err := os.Stat(skillDir); !os.IsNotExist(err) {
+		t.Fatalf("skill dir still exists, err=%v", err)
+	}
+}
+
+func TestDeleteSelectedRequiresBatchConfirmationForMultipleInstalls(t *testing.T) {
+	root := t.TempDir()
+	one := filepath.Join(root, "one")
+	two := filepath.Join(root, "two")
+	if err := os.Mkdir(one, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(two, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{Config: cfg}
+	skills := []inventory.Skill{{Name: "one", Root: root, EncounteredPath: one}, {Name: "two", Root: root, EncounteredPath: two}}
+	_, err := mgr.DeleteSelected(skills, DeleteConfirmation{BatchToken: "wrong"})
+	if !errors.Is(err, ErrConfirmationRequired) {
+		t.Fatalf("expected confirmation error, got %v", err)
+	}
+	if _, err := os.Stat(one); err != nil {
+		t.Fatalf("first install should not be deleted after wrong token: %v", err)
+	}
+	result, err := mgr.DeleteSelected(skills, DeleteConfirmation{BatchToken: BatchDeleteConfirmation(skills)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Skills) != 2 || len(result.Paths) != 2 {
+		t.Fatalf("result=%#v", result)
+	}
+	for _, path := range []string{one, two} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("install still exists at %s, err=%v", path, err)
+		}
+	}
+}
+
 func TestDeleteQuarantinedRequiresConfirmation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "demo")
 	if err := os.Mkdir(path, 0o755); err != nil {
@@ -273,6 +336,34 @@ func TestRenameDoesNotReplacePartialFrontmatterName(t *testing.T) {
 	updated, changed := updateSkillNameFrontmatter(content, "old", "new")
 	if changed || updated != content {
 		t.Fatalf("partial name should not change: changed=%v content=%s", changed, updated)
+	}
+}
+
+func TestRenameUsesTrimmedNameForDirectoryAndFrontmatter(t *testing.T) {
+	root := t.TempDir()
+	skillDir := filepath.Join(root, "old")
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	skillFile := filepath.Join(skillDir, "SKILL.md")
+	if err := os.WriteFile(skillFile, []byte("---\nname: old\ndescription: demo\n---\nBody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	preview, err := Rename(inventory.Skill{Name: "old", Root: root, EncounteredPath: skillDir, PrimaryPath: skillFile}, "  new  ", cfg, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if preview.NewPath != filepath.Join(root, "new") {
+		t.Fatalf("new path=%s", preview.NewPath)
+	}
+	data, err := os.ReadFile(filepath.Join(preview.NewPath, "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "---\nname: new\ndescription: demo\n---\nBody" {
+		t.Fatalf("frontmatter not trimmed: %s", data)
 	}
 }
 

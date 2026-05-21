@@ -225,7 +225,8 @@ func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		result, err := m.Actions.DeleteSelected(m.selectedPendingSkills())
+		selected := m.selectedPendingSkills()
+		result, err := m.Actions.DeleteSelected(selected, deleteConfirmationFor(selected))
 		if err != nil {
 			m.fail(err)
 			return m, nil
@@ -1259,6 +1260,13 @@ func (m Model) pendingTargetText() string {
 
 func (m Model) canActOnAllInstalls() bool {
 	return fsactions.AllowsAllInstalls(destructiveKind(m.PendingAction), m.pendingInstallChoices())
+}
+
+func deleteConfirmationFor(skills []inventory.Skill) fsactions.DeleteConfirmation {
+	if len(skills) == 1 {
+		return fsactions.DeleteConfirmation{TypedName: skills[0].Name}
+	}
+	return fsactions.DeleteConfirmation{BatchToken: fsactions.BatchDeleteConfirmation(skills)}
 }
 
 func destructiveKind(action PendingAction) fsactions.DestructiveKind {

@@ -26,6 +26,15 @@ type Result struct {
 	Paths  []string
 }
 
+type DeleteConfirmation struct {
+	TypedName  string
+	BatchToken string
+}
+
+func BatchDeleteConfirmation(skills []inventory.Skill) string {
+	return fmt.Sprintf("delete %d selected installs", len(skills))
+}
+
 func (m Manager) QuarantineSelected(skills []inventory.Skill, confirm bool) (Result, error) {
 	if !confirm {
 		return Result{}, ErrConfirmationRequired
@@ -44,21 +53,34 @@ func (m Manager) QuarantineSelected(skills []inventory.Skill, confirm bool) (Res
 	return result, nil
 }
 
-func (m Manager) DeleteSelected(skills []inventory.Skill, confirm bool) (Result, error) {
-	if !confirm {
-		return Result{}, ErrConfirmationRequired
+func (m Manager) DeleteSelected(skills []inventory.Skill, confirmation DeleteConfirmation) (Result, error) {
+	if len(skills) == 0 {
+		return Result{}, ErrNoInstallSelected
 	}
 	if missing, ok := FirstMissingWrite(m.Config, skills); ok {
 		return Result{}, fmt.Errorf("%w: %s", ErrWritePermissionRequired, missing.Root)
 	}
+	if len(skills) == 1 {
+		return m.deleteSingleSelected(skills[0], confirmation.TypedName)
+	}
+	if confirmation.BatchToken != BatchDeleteConfirmation(skills) {
+		return Result{}, ErrConfirmationRequired
+	}
 	result := Result{Skills: append([]inventory.Skill(nil), skills...)}
 	for _, skill := range skills {
-		if err := DeleteActive(skill, m.Config, skill.Name); err != nil {
+		if err := removeSkillPath(skill.EncounteredPath); err != nil {
 			return result, err
 		}
 		result.Paths = append(result.Paths, skill.EncounteredPath)
 	}
 	return result, nil
+}
+
+func (m Manager) deleteSingleSelected(skill inventory.Skill, typedName string) (Result, error) {
+	if err := DeleteActive(skill, m.Config, typedName); err != nil {
+		return Result{}, err
+	}
+	return Result{Skills: []inventory.Skill{skill}, Paths: []string{skill.EncounteredPath}}, nil
 }
 
 func (m Manager) Quarantine(skill inventory.Skill, confirm bool) (string, error) {
@@ -171,7 +193,7 @@ func Rename(skill inventory.Skill, newName string, cfg config.Config, confirm bo
 			_ = os.Rename(preview.NewPath, skill.EncounteredPath)
 			return preview, err
 		}
-		updated, changed := updateSkillNameFrontmatter(string(data), skill.Name, newName)
+		updated, changed := updateSkillNameFrontmatter(string(data), skill.Name, preview.NewName)
 		if changed {
 			if err := os.WriteFile(newPrimaryPath, []byte(updated), 0o644); err != nil {
 				_ = os.Rename(preview.NewPath, skill.EncounteredPath)

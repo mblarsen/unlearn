@@ -11,17 +11,18 @@ import (
 )
 
 type fakeActionService struct {
-	writeRoots      map[string]bool
-	kept            []string
-	ignored         []string
-	quarantined     []string
-	quarantinedRoot []string
-	deleted         []string
-	deletedRoot     []string
-	renamed         []string
-	restored        []string
-	quarantinedList []string
-	deleteTypedName string
+	writeRoots       map[string]bool
+	kept             []string
+	ignored          []string
+	quarantined      []string
+	quarantinedRoot  []string
+	deleted          []string
+	deletedRoot      []string
+	renamed          []string
+	restored         []string
+	quarantinedList  []string
+	deleteTypedName  string
+	deleteBatchToken string
 }
 
 func (f *fakeActionService) KeepSkill(skill inventory.Skill) error {
@@ -56,10 +57,11 @@ func (f *fakeActionService) QuarantineSelected(skills []inventory.Skill) (fsacti
 	}
 	return result, nil
 }
-func (f *fakeActionService) DeleteSelected(skills []inventory.Skill) (fsactions.Result, error) {
+func (f *fakeActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
+	f.deleteTypedName = confirmation.TypedName
+	f.deleteBatchToken = confirmation.BatchToken
 	result := fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}
 	for _, skill := range skills {
-		f.deleteTypedName = skill.Name
 		f.deleted = append(f.deleted, skill.Name)
 		f.deletedRoot = append(f.deletedRoot, skill.Root)
 		result.Paths = append(result.Paths, skill.EncounteredPath)
@@ -144,6 +146,9 @@ func TestDashboardCanMarkMultipleDuplicateInstalls(t *testing.T) {
 	m = updated.(Model)
 	if len(service.deletedRoot) != 2 || service.deletedRoot[0] != "/two" || service.deletedRoot[1] != "/three" {
 		t.Fatalf("deleted roots=%v", service.deletedRoot)
+	}
+	if service.deleteBatchToken != fsactions.BatchDeleteConfirmation(servicePendingDeletedSkills(service)) {
+		t.Fatalf("batch token=%q", service.deleteBatchToken)
 	}
 }
 
@@ -353,6 +358,14 @@ func TestDashboardRestoreUsesPopupSelection(t *testing.T) {
 	if len(service.restored) != 1 || service.restored[0] != "older:/root" {
 		t.Fatalf("restored=%v", service.restored)
 	}
+}
+
+func servicePendingDeletedSkills(service *fakeActionService) []inventory.Skill {
+	skills := make([]inventory.Skill, 0, len(service.deletedRoot))
+	for i, root := range service.deletedRoot {
+		skills = append(skills, inventory.Skill{Name: service.deleted[i], Root: root})
+	}
+	return skills
 }
 
 func testModel(service *fakeActionService) Model {

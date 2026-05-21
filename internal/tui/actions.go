@@ -15,7 +15,7 @@ type ActionService interface {
 	FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool)
 	AllowWrite(root string) error
 	QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error)
-	DeleteSelected(skills []inventory.Skill) (fsactions.Result, error)
+	DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error)
 	PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview
 	Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error)
 	QuarantinedSkills() ([]string, error)
@@ -33,7 +33,7 @@ func (NoopActionService) AllowWrite(root string) error { return nil }
 func (NoopActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
 	return fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}, nil
 }
-func (NoopActionService) DeleteSelected(skills []inventory.Skill) (fsactions.Result, error) {
+func (NoopActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
 	return fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}, nil
 }
 func (NoopActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
@@ -76,9 +76,9 @@ func (s *ConfigActionService) QuarantineSelected(skills []inventory.Skill) (fsac
 	return mgr.QuarantineSelected(skills, true)
 }
 
-func (s *ConfigActionService) DeleteSelected(skills []inventory.Skill) (fsactions.Result, error) {
+func (s *ConfigActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
 	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
-	return mgr.DeleteSelected(skills, true)
+	return mgr.DeleteSelected(skills, confirmation)
 }
 
 func (s *ConfigActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
