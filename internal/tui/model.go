@@ -1003,7 +1003,9 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	}
 	lines = append(lines, "", theme.Section.Render("Summary"))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+installLabel(len(finding.Skills))+" across "+rootSummary(finding.Skills, 2), width)))
-	lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
+	if finding.Type != analysis.FindingOverlap {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
+	}
 	if summary := findingHistoryEvidenceSummary(finding); summary != "" {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• history "+summary, width)))
 	}
@@ -1019,9 +1021,13 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 			style = theme.SelectedRow.Width(width)
 		}
 		root := strings.TrimPrefix(skill.Root, homePrefix())
-		meta := fmt.Sprintf("%s · %s · %s", root, tokenRange([]inventory.Skill{skill}), riskLabel(skill.ActivationRisk))
+		parts := []string{root, tokenRange([]inventory.Skill{skill}), riskLabel(skill.ActivationRisk)}
+		if finding.Type == analysis.FindingOverlap {
+			parts = append([]string{skill.Name}, parts...)
+		}
+		meta := strings.Join(parts, " · ")
 		desc := descriptionSnippet(skill, 32)
-		if desc != "" {
+		if desc != "" && !(i == selected && m.Density == DensityRich) {
 			meta += " · " + desc
 		}
 		lines = append(lines, style.Render(ui.Truncate(prefix+meta, width)))
