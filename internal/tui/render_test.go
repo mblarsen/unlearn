@@ -52,6 +52,29 @@ func TestFindingListScrollsToSelectedGroup(t *testing.T) {
 	}
 }
 
+func TestFindingsRenderUserRelevantSectionOrder(t *testing.T) {
+	findings := []analysis.Finding{
+		{ID: "broken:alpha", Type: analysis.FindingBroken, Title: "alpha", Skills: []inventory.Skill{{Name: "alpha"}}},
+		{ID: "inactive:beta", Type: analysis.FindingInactiveRoot, Title: "beta", Skills: []inventory.Skill{{Name: "beta"}}},
+		{ID: "duplicate:gamma", Type: analysis.FindingDuplicate, Title: "gamma", Skills: []inventory.Skill{{Name: "gamma"}, {Name: "gamma"}}},
+		{ID: "activation:delta", Type: analysis.FindingBroadActivation, Title: "delta", Skills: []inventory.Skill{{Name: "delta"}}},
+		{ID: "unseen:epsilon", Type: analysis.FindingUnseen, Title: "epsilon", Skills: []inventory.Skill{{Name: "epsilon"}}},
+		{ID: "tokens:zeta", Type: analysis.FindingHighTokenCost, Title: "zeta", Skills: []inventory.Skill{{Name: "zeta"}}},
+		{ID: "conflict:eta", Type: analysis.FindingConflict, Title: "eta", Skills: []inventory.Skill{{Name: "eta"}, {Name: "eta"}}},
+		{ID: "overlap:theta:iota", Type: analysis.FindingOverlap, Title: "theta / iota", Skills: []inventory.Skill{{Name: "theta"}, {Name: "iota"}}},
+	}
+	sections := groupedFindings(findings)
+	want := []string{"Likely unused", "Duplicates", "Conflicts", "Overlaps", "High token cost", "Broad activation risk", "Broken links", "Inactive harness roots"}
+	if len(sections) != len(want) {
+		t.Fatalf("sections = %#v, want %d sections", sections, len(want))
+	}
+	for i, title := range want {
+		if sections[i].Title != title {
+			t.Fatalf("section %d = %q, want %q", i, sections[i].Title, title)
+		}
+	}
+}
+
 func TestSkillDetailsSuppressesBroadGenericFixtureDescription(t *testing.T) {
 	skills := []inventory.Skill{{Name: "fastmail", Description: "Use this skill to plan build create design implement review fix improve optimize enhance refactor check many things across content long product areas.", Root: "/tmp/root", LowerTokens: 10, UpperTokens: 20}}
 	m := New(skills, nil)

@@ -174,6 +174,35 @@ func TestAnalyzeDetectsInactiveRootFindings(t *testing.T) {
 	assertHasType(t, findings, FindingInactiveRoot)
 }
 
+func TestSortFindingsUsesUserRelevantOrder(t *testing.T) {
+	findings := []Finding{
+		{Type: FindingBroken, Title: "broken"},
+		{Type: FindingInactiveRoot, Title: "inactive"},
+		{Type: FindingDuplicate, Title: "duplicate"},
+		{Type: FindingBroadActivation, Title: "activation"},
+		{Type: FindingUnseen, Title: "unseen"},
+		{Type: FindingHighTokenCost, Title: "tokens"},
+		{Type: FindingConflict, Title: "conflict"},
+		{Type: FindingOverlap, Title: "overlap"},
+	}
+	SortFindings(findings)
+	want := []FindingType{
+		FindingUnseen,
+		FindingDuplicate,
+		FindingConflict,
+		FindingOverlap,
+		FindingHighTokenCost,
+		FindingBroadActivation,
+		FindingBroken,
+		FindingInactiveRoot,
+	}
+	for i, typ := range want {
+		if findings[i].Type != typ {
+			t.Fatalf("finding %d sorted as %s, want %s: %#v", i, findings[i].Type, typ, findings)
+		}
+	}
+}
+
 func TestAnalyzeWithLLMAddsSemanticOverlapFindings(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "ios-review", Description: "review App Store policy compliance", ContentHash: "a"},
