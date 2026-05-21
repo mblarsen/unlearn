@@ -33,6 +33,7 @@ type Model struct {
 	LLMEnabled    bool
 	HistoryScan   bool
 	Cursor        int
+	ScrollTop     int
 	Done          bool
 	Cancelled     bool
 	Width         int
@@ -56,6 +57,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		m.ensureCursorVisible()
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c", "esc", "q":
@@ -74,11 +76,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case " ":
 			m.toggleCurrent()
-		case "l":
-			m.LLMEnabled = !m.LLMEnabled
-		case "h":
-			m.HistoryScan = !m.HistoryScan
 		}
+		m.ensureCursorVisible()
 	}
 	return m, nil
 }
@@ -106,20 +105,14 @@ func (m Model) View() string {
 		theme.AppTitle.Render("unlearn setup") + theme.Muted.Render("  first launch permissions"),
 		theme.Muted.Render(ui.Truncate("Choose roots and active harnesses. Inactive harness roots become cleanup candidates.", contentWidth)),
 		"",
-		theme.Section.Render("Agent harnesses"),
+		theme.Section.Render("Skill roots"),
 	}
 	itemLines := make([]int, m.itemCount())
-	for i, agent := range m.Agents {
-		itemLines[i] = len(lines)
-		lines = append(lines, m.agentLine(theme, i, agent, contentWidth))
-	}
-	lines = append(lines, "", theme.Section.Render("Skill roots"))
 	for i, root := range m.Roots {
-		itemIndex := len(m.Agents) + i
-		itemLines[itemIndex] = len(lines)
-		lines = append(lines, m.rootLine(theme, itemIndex, root, contentWidth))
+		itemLines[i] = len(lines)
+		lines = append(lines, m.rootLine(theme, i, root, contentWidth))
 	}
-	optionStart := len(m.Agents) + len(m.Roots)
+	optionStart := len(m.Roots)
 	lines = append(lines, "", theme.Section.Render("Options"))
 	itemLines[optionStart] = len(lines)
 	lines = append(lines, m.optionLine(theme, optionStart, m.LLMEnabled, "LLM-assisted summaries and semantic overlap", contentWidth))
@@ -131,7 +124,14 @@ func (m Model) View() string {
 	}
 	itemLines[optionStart+1] = len(lines)
 	lines = append(lines, m.optionLine(theme, optionStart+1, m.HistoryScan, historyLabel, contentWidth))
-	visibleLines := setupVisibleLines(lines, itemLines, m.Cursor, bodyHeight-2)
+	agentStart := optionStart + 2
+	lines = append(lines, "", theme.Section.Render("Agent harnesses"))
+	for i, agent := range m.Agents {
+		itemIndex := agentStart + i
+		itemLines[itemIndex] = len(lines)
+		lines = append(lines, m.agentLine(theme, itemIndex, agent, contentWidth))
+	}
+	visibleLines := setupVisibleLines(lines, itemLines, m.Cursor, m.ScrollTop, bodyHeight-2)
 	panel := theme.Panel.Width(panelWidth - 2).Height(bodyHeight - 2).Render(strings.Join(ui.PadLines(visibleLines, bodyHeight-2), "\n"))
 	keybar := renderSetupKeybar(theme, width)
 	return lipgloss.JoinVertical(lipgloss.Left, panel, keybar)
@@ -235,33 +235,29 @@ func defaultActiveAgent(id string) bool {
 	}
 }
 
-func setupVisibleLines(lines []string, itemLines []int, cursor int, height int) []string {
+func setupVisibleLines(lines []string, itemLines []int, cursor int, scrollTop int, height int) []string {
 	if height <= 0 {
 		return nil
 	}
 	if len(lines) <= height {
 		return lines
 	}
-	selectedLine := 0
+	maxTop := len(lines) - height
+	if scrollTop < 0 {
+		scrollTop = 0
+	}
+	if scrollTop > maxTop {
+		scrollTop = maxTop
+	}
+	selectedLine := -1
 	if cursor >= 0 && cursor < len(itemLines) {
 		selectedLine = itemLines[cursor]
 	}
-	selectedOffset := height - 1
-	if selectedLine < len(lines)-1 {
-		selectedOffset = height - 2
-	}
-	start := selectedLine - selectedOffset
-	if start < 0 {
-		start = 0
-	}
-	if start > len(lines)-height {
-		start = len(lines) - height
-	}
-	out := append([]string(nil), lines[start:start+height]...)
-	if start > 0 {
+	out := append([]string(nil), lines[scrollTop:scrollTop+height]...)
+	if scrollTop > 0 && selectedLine != scrollTop {
 		out[0] = ui.Truncate("… above", lipgloss.Width(out[0]))
 	}
-	if start+height < len(lines) {
+	if scrollTop+height < len(lines) && selectedLine != scrollTop+height-1 {
 		out[height-1] = ui.Truncate("… more", lipgloss.Width(out[height-1]))
 	}
 	return out
@@ -286,8 +282,6 @@ func renderSetupKeybar(theme ui.Theme, width int) string {
 	parts := []string{
 		theme.Key.Render("space") + " toggle",
 		theme.Key.Render("j/k") + " move",
-		theme.Key.Render("l") + " llm",
-		theme.Key.Render("h") + " history",
 		theme.Key.Render("enter") + " continue",
 		theme.Key.Render("q") + " cancel",
 	}
@@ -341,29 +335,108 @@ func (m Model) ApplyTo(cfg config.Config) config.Config {
 
 func (m Model) itemCount() int { return len(m.Agents) + len(m.Roots) + 2 }
 
+func (m *Model) ensureCursorVisible() {
+	height := m.viewportHeight()
+	if height <= 0 {
+		return
+	}
+	maxTop := m.totalSetupLines() - height
+	if maxTop < 0 {
+		maxTop = 0
+	}
+	if m.ScrollTop > maxTop {
+		m.ScrollTop = maxTop
+	}
+	if m.ScrollTop < 0 {
+		m.ScrollTop = 0
+	}
+	itemLines := m.setupItemLines()
+	if m.Cursor < 0 || m.Cursor >= len(itemLines) {
+		return
+	}
+	selectedLine := itemLines[m.Cursor]
+	buffer := setupScrollBuffer(height)
+	if selectedLine < m.ScrollTop+buffer {
+		m.ScrollTop = selectedLine - buffer
+	} else if selectedLine > m.ScrollTop+height-buffer-1 {
+		m.ScrollTop = selectedLine - height + buffer + 1
+	}
+	if m.ScrollTop > maxTop {
+		m.ScrollTop = maxTop
+	}
+	if m.ScrollTop < 0 {
+		m.ScrollTop = 0
+	}
+}
+
+func setupScrollBuffer(height int) int {
+	if height <= 1 {
+		return 0
+	}
+	return min(5, (height-1)/2)
+}
+
+func (m Model) viewportHeight() int {
+	height := m.Height
+	if height <= 0 {
+		height = 25
+	}
+	bodyHeight := height - 4
+	if bodyHeight < 12 {
+		bodyHeight = 12
+	}
+	return bodyHeight - 2
+}
+
+func (m Model) setupItemLines() []int {
+	itemLines := make([]int, m.itemCount())
+	for i := range m.Roots {
+		itemLines[i] = 4 + i
+	}
+	optionStart := len(m.Roots)
+	itemLines[optionStart] = 6 + len(m.Roots)
+	itemLines[optionStart+1] = 7 + len(m.Roots)
+	agentStart := optionStart + 2
+	for i := range m.Agents {
+		itemLines[agentStart+i] = 10 + len(m.Roots) + i
+	}
+	return itemLines
+}
+
+func (m Model) totalSetupLines() int {
+	return 10 + len(m.Roots) + len(m.Agents)
+}
+
+func (m Model) optionCursor(optionIndex int) int {
+	return len(m.Roots) + optionIndex
+}
+
 func (m *Model) toggleCurrent() {
-	if m.Cursor < len(m.Agents) {
-		agent := &m.Agents[m.Cursor]
-		switch {
-		case agent.Active:
-			agent.Active = false
-			agent.Inactive = true
-		case agent.Inactive:
-			agent.Inactive = false
-		default:
-			agent.Active = true
-		}
+	if m.Cursor < len(m.Roots) {
+		m.Roots[m.Cursor].Trusted = !m.Roots[m.Cursor].Trusted
 		return
 	}
-	rootIndex := m.Cursor - len(m.Agents)
-	if rootIndex >= 0 && rootIndex < len(m.Roots) {
-		m.Roots[rootIndex].Trusted = !m.Roots[rootIndex].Trusted
-		return
-	}
-	optionIndex := m.Cursor - len(m.Agents) - len(m.Roots)
+	optionIndex := m.Cursor - m.optionCursor(0)
 	if optionIndex == 0 {
 		m.LLMEnabled = !m.LLMEnabled
 		return
 	}
-	m.HistoryScan = !m.HistoryScan
+	if optionIndex == 1 {
+		m.HistoryScan = !m.HistoryScan
+		return
+	}
+	agentIndex := m.Cursor - (m.optionCursor(0) + 2)
+	if agentIndex < 0 || agentIndex >= len(m.Agents) {
+		return
+	}
+	agent := &m.Agents[agentIndex]
+	switch {
+	case agent.Active:
+		agent.Active = false
+		agent.Inactive = true
+	case agent.Inactive:
+		agent.Inactive = false
+	default:
+		agent.Active = true
+	}
 }
