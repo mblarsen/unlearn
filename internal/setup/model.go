@@ -26,26 +26,27 @@ type AgentChoice struct {
 }
 
 type Model struct {
-	Roots        []RootChoice
-	Agents       []AgentChoice
-	HistoryJSONL []string
-	LLMEnabled   bool
-	HistoryScan  bool
-	Cursor       int
-	Done         bool
-	Cancelled    bool
-	Width        int
-	Height       int
+	Roots         []RootChoice
+	Agents        []AgentChoice
+	HistoryJSONL  []string
+	HistorySQLite []string
+	LLMEnabled    bool
+	HistoryScan   bool
+	Cursor        int
+	Done          bool
+	Cancelled     bool
+	Width         int
+	Height        int
 }
 
-func New(roots []RootChoice, historyJSONL []string, cfg config.Config, statuses []inventory.AgentStatus) Model {
+func New(roots []RootChoice, historyJSONL []string, historySQLite []string, cfg config.Config, statuses []inventory.AgentStatus) Model {
 	choices := make([]RootChoice, len(roots))
 	for i, root := range roots {
 		root.Trusted = cfg.IsTrusted(root.Path)
 		choices[i] = root
 	}
 	agents := agentChoices(cfg, statuses)
-	return Model{Roots: choices, Agents: agents, HistoryJSONL: historyJSONL, LLMEnabled: cfg.LLMAssisted, HistoryScan: cfg.HistoryScan}
+	return Model{Roots: choices, Agents: agents, HistoryJSONL: historyJSONL, HistorySQLite: historySQLite, LLMEnabled: cfg.LLMAssisted, HistoryScan: cfg.HistoryScan}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -122,11 +123,11 @@ func (m Model) View() string {
 	lines = append(lines, "", theme.Section.Render("Options"))
 	itemLines[optionStart] = len(lines)
 	lines = append(lines, m.optionLine(theme, optionStart, m.LLMEnabled, "LLM-assisted summaries and semantic overlap", contentWidth))
-	historyLabel := "Pi JSONL history evidence"
-	if len(m.HistoryJSONL) == 0 {
+	historyLabel := "Agent history evidence"
+	if len(m.HistoryJSONL) == 0 && len(m.HistorySQLite) == 0 {
 		historyLabel += " · none discovered"
 	} else {
-		historyLabel += fmt.Sprintf(" · %d paths discovered · read only after opt-in", len(m.HistoryJSONL))
+		historyLabel += fmt.Sprintf(" · %d JSONL · %d SQLite discovered · read only after opt-in", len(m.HistoryJSONL), len(m.HistorySQLite))
 	}
 	itemLines[optionStart+1] = len(lines)
 	lines = append(lines, m.optionLine(theme, optionStart+1, m.HistoryScan, historyLabel, contentWidth))
@@ -329,8 +330,10 @@ func (m Model) ApplyTo(cfg config.Config) config.Config {
 	cfg.HistoryScan = m.HistoryScan
 	if m.HistoryScan {
 		cfg.HistoryJSONL = append([]string(nil), m.HistoryJSONL...)
+		cfg.HistorySQLite = append([]string(nil), m.HistorySQLite...)
 	} else {
 		cfg.HistoryJSONL = nil
+		cfg.HistorySQLite = nil
 	}
 	cfg.SetupComplete = true
 	return cfg

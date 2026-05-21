@@ -37,6 +37,7 @@ type cliOptions struct {
 	yes             bool
 	restoreRoot     string
 	historyJSONL    []string
+	historySQLite   []string
 	historyCacheTTL time.Duration
 	rescanSources   bool
 	withLLM         bool
@@ -235,7 +236,7 @@ func (m loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case loadingProgressMsg:
-		m.status = "Scanning Pi history evidence"
+		m.status = "Scanning history evidence"
 		m.detail = fmt.Sprintf("%s · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
 		if msg.progress.Done {
 			m.detail = fmt.Sprintf("%s · complete · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
@@ -363,11 +364,15 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 		_, err := os.Stat(root)
 		choices = append(choices, setupflow.RootChoice{Path: root, Exists: err == nil})
 	}
-	historyPaths, err := discoverPiHistoryJSONL()
+	historyJSONL, err := discoverPiHistoryJSONL()
 	if err != nil {
 		return err
 	}
-	model := setupflow.New(choices, historyPaths, cfg, inventory.AgentStatuses())
+	historySQLite, err := discoverHistorySQLite(roots)
+	if err != nil {
+		return err
+	}
+	model := setupflow.New(choices, historyJSONL, historySQLite, cfg, inventory.AgentStatuses())
 	program := tea.NewProgram(model, tea.WithOutput(out), tea.WithAltScreen())
 	finalModel, err := program.Run()
 	if err != nil {
@@ -392,6 +397,10 @@ func discoverPiHistoryJSONL() ([]string, error) {
 	return history.DiscoverPiJSONL(home, history.DefaultDiscoveryLimit)
 }
 
+func discoverHistorySQLite(roots []string) ([]string, error) {
+	return history.DiscoverSQLite(roots, history.DefaultDiscoveryLimit)
+}
+
 func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringSliceVar(&opts.roots, "root", nil, "skill root to scan; may be repeated")
 	cmd.Flags().StringSliceVar(&opts.trustRoots, "trust-root", nil, "trust a skill root for this run and persist the decision")
@@ -400,6 +409,7 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringVar(&opts.stateDir, "state-dir", "", "state directory for index, quarantine, and caches")
 	cmd.Flags().StringVar(&opts.indexPath, "index", "", "SQLite index path")
 	cmd.Flags().StringSliceVar(&opts.historyJSONL, "history-jsonl", nil, "opt-in JSONL history file to scan for derived invocation evidence; may be repeated")
+	cmd.Flags().StringSliceVar(&opts.historySQLite, "history-sqlite", nil, "opt-in SQLite history database to scan text columns for derived invocation evidence; may be repeated")
 	cmd.Flags().DurationVar(&opts.historyCacheTTL, "history-cache-ttl", 24*time.Hour, "reuse cached history evidence until it is older than this duration")
 	cmd.Flags().BoolVar(&opts.rescanSources, "rescan-sources", false, "ignore cached source/history evidence and rescan local sources")
 	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to LLM-assisted analysis plumbing; current build uses deterministic analysis plus a disabled analyzer stub")
@@ -450,7 +460,7 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	usage, sources, lastSeen, err := loadUsageEvidence(opts, cfg, report.Skills, loadOpts)
+	usage, sources, lastSeen, err := loadUsageEvidence(opts, cfg, report.Skills, scanRoots, loadOpts)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -469,12 +479,23 @@ func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
 	return inventory.CandidateAgentIDs()
 }
 
-func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill, loadOpts inventoryLoadOptions) (analysis.UsageEvidence, map[string][]string, map[string]time.Time, error) {
-	historyPaths := opts.historyJSONL
-	if len(historyPaths) == 0 && cfg.HistoryScan {
-		historyPaths = cfg.HistoryJSONL
+func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill, scanRoots []string, loadOpts inventoryLoadOptions) (analysis.UsageEvidence, map[string][]string, map[string]time.Time, error) {
+	jsonlPaths := opts.historyJSONL
+	sqlitePaths := opts.historySQLite
+	if len(jsonlPaths) == 0 && len(sqlitePaths) == 0 && cfg.HistoryScan {
+		jsonlPaths = cfg.HistoryJSONL
+		sqlitePaths = cfg.HistorySQLite
 	}
-	if len(historyPaths) == 0 {
+	if cfg.HistoryScan && len(opts.historyJSONL) == 0 && len(opts.historySQLite) == 0 {
+		discoveredSQLite, err := discoverHistorySQLite(scanRoots)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		for _, path := range discoveredSQLite {
+			sqlitePaths = appendUnique(sqlitePaths, path)
+		}
+	}
+	if len(jsonlPaths) == 0 && len(sqlitePaths) == 0 {
 		return nil, nil, nil, nil
 	}
 	names := make([]string, 0, len(skills))
@@ -496,12 +517,7 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 		return nil, nil, nil, err
 	}
 	defer db.Close()
-	adapter := history.JSONLAdapter{}
-	for _, path := range historyPaths {
-		evidence, err := historyEvidenceForPath(db, adapter, path, names, opts, loadOpts)
-		if err != nil {
-			return nil, nil, nil, err
-		}
+	merge := func(evidence []history.Evidence) {
 		for _, item := range evidence {
 			current := usage[item.SkillName]
 			if current == "" || evidenceRank(item.Grade) < evidenceRank(history.EvidenceGrade(current)) {
@@ -513,10 +529,32 @@ func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.S
 			}
 		}
 	}
+	jsonlAdapter := history.JSONLAdapter{}
+	for _, path := range jsonlPaths {
+		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
+			return jsonlAdapter.ScanWithOptions(path, names, scanOpts)
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		merge(evidence)
+	}
+	sqliteAdapter := history.SQLiteAdapter{}
+	for _, path := range sqlitePaths {
+		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
+			return sqliteAdapter.ScanWithOptions(path, names, scanOpts)
+		})
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		merge(evidence)
+	}
 	return usage, sources, lastSeen, nil
 }
 
-func historyEvidenceForPath(db *sql.DB, adapter history.JSONLAdapter, path string, names []string, opts *cliOptions, loadOpts inventoryLoadOptions) ([]history.Evidence, error) {
+type historyScannerFunc func(path string, names []string, opts history.ScanOptions) ([]history.Evidence, error)
+
+func historyEvidenceForPath(db *sql.DB, path string, names []string, opts *cliOptions, loadOpts inventoryLoadOptions, scan historyScannerFunc) ([]history.Evidence, error) {
 	info, err := os.Stat(path)
 	if err != nil {
 		return nil, err
@@ -531,7 +569,7 @@ func historyEvidenceForPath(db *sql.DB, adapter history.JSONLAdapter, path strin
 			return state.LoadHistoryEvidence(db, path)
 		}
 	}
-	evidence, err := adapter.ScanWithOptions(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
+	evidence, err := scan(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
 	if err != nil {
 		return nil, err
 	}
@@ -602,7 +640,7 @@ func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
 		cfg.LLMAssisted = true
 		changed = true
 	}
-	if len(opts.historyJSONL) > 0 {
+	if len(opts.historyJSONL) > 0 || len(opts.historySQLite) > 0 {
 		if !cfg.HistoryScan {
 			cfg.HistoryScan = true
 			changed = true
@@ -610,6 +648,12 @@ func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
 		for _, path := range opts.historyJSONL {
 			if !containsString(cfg.HistoryJSONL, path) {
 				cfg.HistoryJSONL = append(cfg.HistoryJSONL, path)
+				changed = true
+			}
+		}
+		for _, path := range opts.historySQLite {
+			if !containsString(cfg.HistorySQLite, path) {
+				cfg.HistorySQLite = append(cfg.HistorySQLite, path)
 				changed = true
 			}
 		}

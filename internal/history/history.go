@@ -4,12 +4,17 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 type EvidenceGrade string
@@ -61,15 +66,11 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 		return nil, err
 	}
 	defer f.Close()
-	nameSet := map[string]bool{}
-	for _, name := range skillNames {
-		nameSet[strings.ToLower(name)] = true
-	}
-	best := map[string]EvidenceGrade{}
-	lastSeen := map[string]time.Time{}
+	matcher := newMatcher(skillNames)
 	fallbackSeenAt := fileModTime(path)
 	reader := bufio.NewReader(f)
 	lines := 0
+	reportProgress(opts, ScanProgress{Path: path, Lines: lines, Matches: matcher.MatchCount()})
 	for {
 		line, err := readHistoryLine(reader)
 		if len(line) > 0 {
@@ -78,33 +79,13 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 				if err := ctx.Err(); err != nil {
 					return nil, err
 				}
-				if opts.Progress != nil {
-					opts.Progress(ScanProgress{Path: path, Lines: lines, Matches: len(best)})
-				}
+				reportProgress(opts, ScanProgress{Path: path, Lines: lines, Matches: matcher.MatchCount()})
 			}
 			seenAt := extractSeenAt(line)
 			if seenAt.IsZero() {
 				seenAt = fallbackSeenAt
 			}
-			text := extractText(line)
-			lower := strings.ToLower(text)
-			for name := range nameSet {
-				if !strings.Contains(lower, name) {
-					continue
-				}
-				grade := EvidenceWeak
-				if strings.Contains(lower, "skill.md") || strings.Contains(lower, "use the "+name+" skill") || strings.Contains(lower, "using "+name) {
-					grade = EvidenceStrong
-				} else if strings.Contains(lower, "skills/") && strings.Contains(lower, name) {
-					grade = EvidenceMedium
-				}
-				if rank(grade) < rank(best[name]) || best[name] == "" {
-					best[name] = grade
-				}
-				if grade != EvidenceWeak && seenAt.After(lastSeen[name]) {
-					lastSeen[name] = seenAt
-				}
-			}
+			matcher.Observe(extractText(line), seenAt)
 		}
 		if err == nil {
 			continue
@@ -117,14 +98,231 @@ func (JSONLAdapter) ScanWithOptions(path string, skillNames []string, opts ScanO
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	reportProgress(opts, ScanProgress{Path: path, Lines: lines, Matches: matcher.MatchCount(), Done: true})
+	return matcher.Evidence(path), nil
+}
+
+type SQLiteAdapter struct {
+	RowLimit int
+}
+
+const DefaultSQLiteRowLimit = 5000
+
+func (a SQLiteAdapter) Scan(path string, skillNames []string) ([]Evidence, error) {
+	return a.ScanWithOptions(path, skillNames, ScanOptions{})
+}
+
+func (a SQLiteAdapter) ScanWithOptions(path string, skillNames []string, opts ScanOptions) ([]Evidence, error) {
+	ctx := opts.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	limit := a.RowLimit
+	if limit <= 0 {
+		limit = DefaultSQLiteRowLimit
+	}
+	db, err := sql.Open("sqlite", sqliteReadOnlyDSN(path))
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	tables, err := sqliteTables(db)
+	if err != nil {
+		return nil, err
+	}
+	matcher := newMatcher(skillNames)
+	seenAt := fileModTime(path)
+	rowsScanned := 0
+	reportProgress(opts, ScanProgress{Path: path, Lines: rowsScanned, Matches: matcher.MatchCount()})
+	for _, table := range tables {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		columns, err := sqliteTextColumns(db, table)
+		if err != nil {
+			return nil, err
+		}
+		if len(columns) == 0 {
+			continue
+		}
+		count, err := scanSQLiteTable(ctx, db, table, columns, limit, matcher, seenAt, func(rows int) {
+			rowsScanned += rows
+			reportProgress(opts, ScanProgress{Path: path, Lines: rowsScanned, Matches: matcher.MatchCount()})
+		})
+		rowsScanned += count
+		if err != nil {
+			return nil, err
+		}
+	}
+	reportProgress(opts, ScanProgress{Path: path, Lines: rowsScanned, Matches: matcher.MatchCount(), Done: true})
+	return matcher.Evidence(path), nil
+}
+
+func reportProgress(opts ScanOptions, progress ScanProgress) {
 	if opts.Progress != nil {
-		opts.Progress(ScanProgress{Path: path, Lines: lines, Matches: len(best), Done: true})
+		opts.Progress(progress)
 	}
-	var evidence []Evidence
-	for name, grade := range best {
-		evidence = append(evidence, Evidence{SkillName: name, Grade: grade, Source: path, SeenAt: lastSeen[name]})
+}
+
+func sqliteReadOnlyDSN(path string) string {
+	u := url.URL{Scheme: "file", Path: path}
+	q := u.Query()
+	q.Set("mode", "ro")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func sqliteTables(db *sql.DB) ([]string, error) {
+	rows, err := db.Query(`SELECT name FROM sqlite_schema WHERE type IN ('table', 'view') AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	if err != nil {
+		return nil, err
 	}
-	return evidence, nil
+	defer rows.Close()
+	var tables []string
+	for rows.Next() {
+		var table string
+		if err := rows.Scan(&table); err != nil {
+			return nil, err
+		}
+		tables = append(tables, table)
+	}
+	return tables, rows.Err()
+}
+
+func sqliteTextColumns(db *sql.DB, table string) ([]string, error) {
+	rows, err := db.Query("PRAGMA table_info(" + quoteSQLiteIdent(table) + ")")
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var columns []string
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue any
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return nil, err
+		}
+		if sqliteTypeLooksText(typ) {
+			columns = append(columns, name)
+		}
+	}
+	return columns, rows.Err()
+}
+
+func sqliteTypeLooksText(typ string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(typ))
+	if upper == "" {
+		return true
+	}
+	for _, marker := range []string{"CHAR", "CLOB", "TEXT", "VARCHAR", "JSON"} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func scanSQLiteTable(ctx context.Context, db *sql.DB, table string, columns []string, limit int, matcher *evidenceMatcher, seenAt time.Time, progress func(rows int)) (int, error) {
+	quoted := make([]string, 0, len(columns))
+	for _, column := range columns {
+		quoted = append(quoted, quoteSQLiteIdent(column))
+	}
+	query := fmt.Sprintf("SELECT %s FROM %s LIMIT ?", strings.Join(quoted, ", "), quoteSQLiteIdent(table))
+	rows, err := db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	values := make([]sql.NullString, len(columns))
+	dest := make([]any, len(columns))
+	for i := range values {
+		dest[i] = &values[i]
+	}
+	scanned := 0
+	pendingProgress := 0
+	for rows.Next() {
+		if scanned%500 == 0 {
+			if err := ctx.Err(); err != nil {
+				return scanned, err
+			}
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return scanned, err
+		}
+		parts := make([]string, 0, len(values))
+		for _, value := range values {
+			if value.Valid {
+				parts = append(parts, value.String)
+			}
+		}
+		matcher.Observe(strings.Join(parts, " "), seenAt)
+		scanned++
+		pendingProgress++
+		if pendingProgress == 500 {
+			progress(pendingProgress)
+			pendingProgress = 0
+		}
+	}
+	return pendingProgress, rows.Err()
+}
+
+func quoteSQLiteIdent(value string) string {
+	return `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+}
+
+type evidenceMatcher struct {
+	names    map[string]bool
+	best     map[string]EvidenceGrade
+	lastSeen map[string]time.Time
+}
+
+func newMatcher(skillNames []string) *evidenceMatcher {
+	names := map[string]bool{}
+	for _, name := range skillNames {
+		names[strings.ToLower(name)] = true
+	}
+	return &evidenceMatcher{names: names, best: map[string]EvidenceGrade{}, lastSeen: map[string]time.Time{}}
+}
+
+func (m *evidenceMatcher) Observe(text string, seenAt time.Time) {
+	lower := strings.ToLower(text)
+	for name := range m.names {
+		if !strings.Contains(lower, name) {
+			continue
+		}
+		grade := gradeEvidence(lower, name)
+		if rank(grade) < rank(m.best[name]) || m.best[name] == "" {
+			m.best[name] = grade
+		}
+		if grade != EvidenceWeak && seenAt.After(m.lastSeen[name]) {
+			m.lastSeen[name] = seenAt
+		}
+	}
+}
+
+func (m *evidenceMatcher) Evidence(source string) []Evidence {
+	evidence := make([]Evidence, 0, len(m.best))
+	for name, grade := range m.best {
+		evidence = append(evidence, Evidence{SkillName: name, Grade: grade, Source: source, SeenAt: m.lastSeen[name]})
+	}
+	return evidence
+}
+
+func (m *evidenceMatcher) MatchCount() int {
+	return len(m.best)
+}
+
+func gradeEvidence(lower, name string) EvidenceGrade {
+	if strings.Contains(lower, "skill.md") || strings.Contains(lower, "use the "+name+" skill") || strings.Contains(lower, "using "+name) {
+		return EvidenceStrong
+	}
+	if strings.Contains(lower, "skills/") && strings.Contains(lower, name) {
+		return EvidenceMedium
+	}
+	return EvidenceWeak
 }
 
 func readHistoryLine(reader *bufio.Reader) ([]byte, error) {

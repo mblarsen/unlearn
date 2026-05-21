@@ -3,6 +3,7 @@ package history
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -52,6 +53,52 @@ func TestJSONLAdapterHandlesLongJSONLLines(t *testing.T) {
 	}
 	if len(evidence) != 1 || evidence[0].Grade != EvidenceStrong {
 		t.Fatalf("unexpected evidence: %#v", evidence)
+	}
+}
+
+func TestSQLiteAdapterScansTextColumnsOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "history.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statements := []string{
+		`CREATE TABLE sessions (id INTEGER PRIMARY KEY, message TEXT, metadata JSON, count INTEGER)`,
+		`INSERT INTO sessions (message, metadata, count) VALUES ('read /tmp/skills/alpha/SKILL.md', '{}', 1)`,
+		`INSERT INTO sessions (message, metadata, count) VALUES ('ordinary row', '{"note":"using beta"}', 2)`,
+		`CREATE TABLE numbers (value INTEGER)`,
+		`INSERT INTO numbers (value) VALUES (12345)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	evidence, err := SQLiteAdapter{}.Scan(path, []string{"alpha", "beta", "12345"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	grades := map[string]EvidenceGrade{}
+	seen := map[string]bool{}
+	for _, item := range evidence {
+		grades[item.SkillName] = item.Grade
+		seen[item.SkillName] = !item.SeenAt.IsZero()
+	}
+	if grades["alpha"] != EvidenceStrong {
+		t.Fatalf("alpha grade=%s", grades["alpha"])
+	}
+	if grades["beta"] != EvidenceStrong {
+		t.Fatalf("beta grade=%s", grades["beta"])
+	}
+	if _, ok := grades["12345"]; ok {
+		t.Fatalf("numeric-only table produced evidence: %v", grades)
+	}
+	if !seen["alpha"] || !seen["beta"] {
+		t.Fatalf("expected SQLite evidence to carry last-seen fallback: %v", seen)
 	}
 }
 
