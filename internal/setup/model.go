@@ -41,13 +41,18 @@ type Model struct {
 }
 
 func New(roots []RootChoice, historyJSONL []string, historySQLite []string, cfg config.Config, statuses []inventory.AgentStatus) Model {
-	choices := make([]RootChoice, len(roots))
-	for i, root := range roots {
-		root.Trusted = cfg.IsTrusted(root.Path)
-		choices[i] = root
+	return NewFromPolicy(NewPolicy(roots, historyJSONL, historySQLite, cfg, statuses))
+}
+
+func NewFromPolicy(policy Policy) Model {
+	return Model{
+		Roots:         append([]RootChoice(nil), policy.Roots...),
+		Agents:        append([]AgentChoice(nil), policy.Agents...),
+		HistoryJSONL:  append([]string(nil), policy.HistoryJSONL...),
+		HistorySQLite: append([]string(nil), policy.HistorySQLite...),
+		LLMEnabled:    policy.LLMEnabled,
+		HistoryScan:   policy.HistoryScan,
 	}
-	agents := agentChoices(cfg, statuses)
-	return Model{Roots: choices, Agents: agents, HistoryJSONL: historyJSONL, HistorySQLite: historySQLite, LLMEnabled: cfg.LLMAssisted, HistoryScan: cfg.HistoryScan}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -198,43 +203,6 @@ func (m Model) optionLine(theme ui.Theme, index int, enabled bool, label string,
 	return theme.Row.Render("  " + line)
 }
 
-func agentChoices(cfg config.Config, statuses []inventory.AgentStatus) []AgentChoice {
-	active := map[string]bool{}
-	inactive := map[string]bool{}
-	if cfg.HasAgentSelection() {
-		for _, id := range cfg.ActiveAgents {
-			active[id] = true
-		}
-		for _, id := range cfg.InactiveAgents {
-			inactive[id] = true
-		}
-	}
-	choices := []AgentChoice{}
-	for _, status := range statuses {
-		if !status.ShowInSetup {
-			continue
-		}
-		choice := AgentChoice{ID: status.ID, Name: status.DisplayName, Detected: status.Installed}
-		if cfg.HasAgentSelection() {
-			choice.Active = active[status.ID]
-			choice.Inactive = inactive[status.ID]
-		} else if status.Installed || defaultActiveAgent(status.ID) {
-			choice.Active = true
-		}
-		choices = append(choices, choice)
-	}
-	return choices
-}
-
-func defaultActiveAgent(id string) bool {
-	switch id {
-	case "pi", "codex", "opencode", "cline":
-		return true
-	default:
-		return false
-	}
-}
-
 func setupVisibleLines(lines []string, itemLines []int, cursor int, scrollTop int, height int) []string {
 	if height <= 0 {
 		return nil
@@ -306,31 +274,18 @@ func renderSetupKeybar(theme ui.Theme, width int) string {
 }
 
 func (m Model) ApplyTo(cfg config.Config) config.Config {
-	for _, root := range m.Roots {
-		if root.Trusted {
-			cfg.TrustRoot(root.Path)
-		}
+	return m.Policy().Apply(cfg)
+}
+
+func (m Model) Policy() Policy {
+	return Policy{
+		Roots:         append([]RootChoice(nil), m.Roots...),
+		Agents:        append([]AgentChoice(nil), m.Agents...),
+		HistoryJSONL:  append([]string(nil), m.HistoryJSONL...),
+		HistorySQLite: append([]string(nil), m.HistorySQLite...),
+		LLMEnabled:    m.LLMEnabled,
+		HistoryScan:   m.HistoryScan,
 	}
-	cfg.ActiveAgents = nil
-	cfg.InactiveAgents = nil
-	for _, agent := range m.Agents {
-		if agent.Active {
-			cfg.ActiveAgents = append(cfg.ActiveAgents, agent.ID)
-		} else if agent.Inactive {
-			cfg.InactiveAgents = append(cfg.InactiveAgents, agent.ID)
-		}
-	}
-	cfg.LLMAssisted = m.LLMEnabled
-	cfg.HistoryScan = m.HistoryScan
-	if m.HistoryScan {
-		cfg.HistoryJSONL = append([]string(nil), m.HistoryJSONL...)
-		cfg.HistorySQLite = append([]string(nil), m.HistorySQLite...)
-	} else {
-		cfg.HistoryJSONL = nil
-		cfg.HistorySQLite = nil
-	}
-	cfg.SetupComplete = true
-	return cfg
 }
 
 func (m Model) itemCount() int { return len(m.Agents) + len(m.Roots) + 2 }
