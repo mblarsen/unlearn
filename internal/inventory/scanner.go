@@ -1,13 +1,11 @@
 package inventory
 
 import (
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"time"
 )
 
 type Scanner struct{}
@@ -58,6 +56,7 @@ func (s Scanner) Scan(opts ScanOptions) (Report, error) {
 }
 
 func (s Scanner) scanRoot(root string, ownership RootOwnership, rootKnown bool) ([]Skill, error) {
+	parser := newSkillInstallParser()
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return nil, err
@@ -75,24 +74,17 @@ func (s Scanner) scanRoot(root string, ownership RootOwnership, rootKnown bool) 
 		mode := info.Mode()
 		isSymlink := mode&os.ModeSymlink != 0
 		resolved, broken := resolve(path)
+		install := skillInstall{
+			Root:            root,
+			EncounteredPath: path,
+			ResolvedPath:    resolved,
+			Kind:            KindSkillLike,
+			IsSymlink:       isSymlink,
+			Ownership:       ownership,
+			RootKnown:       rootKnown,
+		}
 		if broken {
-			skills = append(skills, Skill{
-				ID:              stableID(path, resolved),
-				Name:            entry.Name(),
-				Kind:            KindSkillLike,
-				Root:            root,
-				EncounteredPath: path,
-				ResolvedPath:    resolved,
-				IsSymlink:       isSymlink,
-				Broken:          true,
-				ReadOnly:        true,
-				ActivationRisk:  "unknown",
-				Provenance:      inferProvenance(root, path, resolved, isSymlink),
-				RootKnown:       rootKnown,
-				ActiveAgents:    append([]string(nil), ownership.ActiveAgents...),
-				InactiveAgents:  append([]string(nil), ownership.InactiveAgents...),
-				ScannedAt:       time.Now(),
-			})
+			skills = append(skills, parser.Broken(install, entry.Name()))
 			continue
 		}
 		statInfo, err := os.Stat(path)
@@ -102,7 +94,9 @@ func (s Scanner) scanRoot(root string, ownership RootOwnership, rootKnown bool) 
 		if statInfo.IsDir() {
 			skillPath := filepath.Join(path, "SKILL.md")
 			if _, err := os.Stat(skillPath); err == nil {
-				skill, err := parseSkill(root, path, resolved, skillPath, KindDirectory, isSymlink, false, ownership, rootKnown)
+				install.Kind = KindDirectory
+				install.PrimaryPath = skillPath
+				skill, err := parser.Parse(install)
 				if err != nil {
 					return nil, err
 				}
@@ -110,12 +104,15 @@ func (s Scanner) scanRoot(root string, ownership RootOwnership, rootKnown bool) 
 				continue
 			}
 			if looksSkillLikeDir(path) {
-				skills = append(skills, unknownSkill(root, path, resolved, isSymlink, entry.Name(), true, ownership, rootKnown))
+				install.ReadOnly = true
+				skills = append(skills, parser.Unknown(install, entry.Name()))
 			}
 			continue
 		}
 		if strings.EqualFold(filepath.Ext(path), ".md") {
-			skill, err := parseSkill(root, path, resolved, path, KindMarkdown, isSymlink, false, ownership, rootKnown)
+			install.Kind = KindMarkdown
+			install.PrimaryPath = path
+			skill, err := parser.Parse(install)
 			if err != nil {
 				return nil, err
 			}
@@ -123,89 +120,6 @@ func (s Scanner) scanRoot(root string, ownership RootOwnership, rootKnown bool) 
 		}
 	}
 	return skills, nil
-}
-
-func parseSkill(root, encountered, resolved, primary string, kind SkillKind, isSymlink, readOnly bool, ownership RootOwnership, rootKnown bool) (Skill, error) {
-	data, err := os.ReadFile(primary)
-	if err != nil {
-		return Skill{}, err
-	}
-	front, body := ParseSkillMarkdown(data)
-	name := front["name"]
-	if name == "" {
-		name = strings.TrimSuffix(filepath.Base(encountered), filepath.Ext(encountered))
-	}
-	description := front["description"]
-	refs := ExtractReferences(string(data))
-	supportRefs := make([]SupportRef, 0, len(refs))
-	upper := EstimateTokens(data)
-	hashParts := [][]byte{data}
-	var brokenRefs []string
-	baseDir := encountered
-	if kind == KindMarkdown {
-		baseDir = filepath.Dir(encountered)
-	}
-	for _, ref := range refs {
-		refPath := filepath.Join(baseDir, ref)
-		refData, err := os.ReadFile(refPath)
-		item := SupportRef{Mention: ref, Path: refPath}
-		if err != nil {
-			item.Broken = true
-			brokenRefs = append(brokenRefs, ref)
-		} else {
-			item.Tokens = EstimateTokens(refData)
-			upper += item.Tokens
-			hashParts = append(hashParts, []byte(ref), refData)
-		}
-		supportRefs = append(supportRefs, item)
-	}
-	lower := EstimateTokens(data)
-	activation := AssessActivationRisk(description, body)
-	return Skill{
-		ID:                    stableID(encountered, resolved),
-		Name:                  name,
-		Description:           description,
-		Kind:                  kind,
-		Root:                  root,
-		EncounteredPath:       encountered,
-		ResolvedPath:          resolved,
-		IsSymlink:             isSymlink,
-		ReadOnly:              readOnly,
-		Frontmatter:           front,
-		Body:                  body,
-		PrimaryPath:           primary,
-		SupportRefs:           supportRefs,
-		BrokenRefs:            brokenRefs,
-		LowerTokens:           lower,
-		UpperTokens:           upper,
-		ContentHash:           ContentHash(hashParts...),
-		ActivationRisk:        activation.Risk,
-		ActivationRiskSignals: activation.Signals,
-		Provenance:            inferProvenance(root, encountered, resolved, isSymlink),
-		RootKnown:             rootKnown,
-		ActiveAgents:          append([]string(nil), ownership.ActiveAgents...),
-		InactiveAgents:        append([]string(nil), ownership.InactiveAgents...),
-		ScannedAt:             time.Now(),
-	}, nil
-}
-
-func unknownSkill(root, encountered, resolved string, isSymlink bool, name string, readOnly bool, ownership RootOwnership, rootKnown bool) Skill {
-	return Skill{
-		ID:              stableID(encountered, resolved),
-		Name:            name,
-		Kind:            KindSkillLike,
-		Root:            root,
-		EncounteredPath: encountered,
-		ResolvedPath:    resolved,
-		IsSymlink:       isSymlink,
-		ReadOnly:        readOnly,
-		ActivationRisk:  "unknown",
-		Provenance:      inferProvenance(root, encountered, resolved, isSymlink),
-		RootKnown:       rootKnown,
-		ActiveAgents:    append([]string(nil), ownership.ActiveAgents...),
-		InactiveAgents:  append([]string(nil), ownership.InactiveAgents...),
-		ScannedAt:       time.Now(),
-	}
 }
 
 func ignoreRootEntry(name string) bool {
@@ -235,57 +149,4 @@ func looksSkillLikeDir(path string) bool {
 		return nil
 	})
 	return found
-}
-
-func stableID(encountered, resolved string) string {
-	if resolved == "" {
-		resolved = encountered
-	}
-	return ContentHash([]byte(encountered), []byte(resolved))[:16]
-}
-
-func isAgentsSkillsRoot(root string) bool {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return false
-	}
-	return filepath.Clean(root) == filepath.Clean(filepath.Join(home, ".agents", "skills"))
-}
-
-func inferProvenance(root, encountered, resolved string, isSymlink bool) string {
-	parts := []string{}
-	if isSymlink {
-		parts = append(parts, fmt.Sprintf("symlink to %s", resolved))
-	}
-	if strings.Contains(encountered, string(filepath.Separator)+"node_modules"+string(filepath.Separator)) {
-		parts = append(parts, "npm package layout")
-	}
-	if _, err := os.Stat(filepath.Join(encountered, ".git")); err == nil {
-		parts = append(parts, "local git checkout")
-	}
-	if isAgentsSkillsRoot(root) {
-		parts = append(parts, "shared agents skills root")
-		return strings.Join(parts, "; ")
-	}
-	for _, agent := range AgentCatalog() {
-		for _, dir := range agent.GlobalSkillDirs() {
-			if filepath.Clean(root) == filepath.Clean(dir) {
-				parts = append(parts, strings.ToLower(agent.DisplayName)+" global skills root")
-				return strings.Join(parts, "; ")
-			}
-		}
-	}
-	switch {
-	case strings.Contains(root, filepath.Join(".pi", "agent", "skills")):
-		parts = append(parts, "pi global skills root")
-	case strings.Contains(root, filepath.Join(".agents", "skills")):
-		parts = append(parts, "agents global skills root")
-	case strings.Contains(root, filepath.Join(".codex", "skills")):
-		parts = append(parts, "codex global skills root")
-	case strings.Contains(root, filepath.Join("opencode", "skills")):
-		parts = append(parts, "opencode global skills root")
-	default:
-		parts = append(parts, "user-provided root")
-	}
-	return strings.Join(parts, "; ")
 }
