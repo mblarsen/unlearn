@@ -132,6 +132,8 @@ func truncateProgressDetail(value string, limit int) string {
 
 func progressLabel(step string) string {
 	switch step {
+	case "load-cache":
+		return "Load dashboard cache"
 	case "scan-roots":
 		return "Scan skill roots"
 	case "history":

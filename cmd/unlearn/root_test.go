@@ -12,8 +12,11 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/history"
+	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/state"
 )
 
 func TestLoadingModelShowsProgress(t *testing.T) {
@@ -21,15 +24,40 @@ func TestLoadingModelShowsProgress(t *testing.T) {
 	m := newLoadingModel(updates)
 	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
 	m = updated.(loadingModel)
-	updated, _ = m.Update(loadingProgressMsg{progress: history.ScanProgress{Path: "/sessions/a.jsonl", Lines: 500, Matches: 2}})
+	updated, _ = m.Update(loadingProgressMsg{event: inventoryProgress{Step: "history", Detail: "/sessions/a.jsonl · 500 lines · 2 matching skills"}})
 	m = updated.(loadingModel)
 
 	view := m.View()
 	if strings.Contains(view, "unlearn is loading") {
 		t.Fatalf("loading view should not include redundant loading title:\n%s", view)
 	}
-	if !strings.Contains(view, "Scanning history evidence") || !strings.Contains(view, "500 lines") {
+	if !strings.Contains(view, "Scan history evidence") || !strings.Contains(view, "500 lines") {
 		t.Fatalf("loading view missing progress details:\n%s", view)
+	}
+}
+
+func TestDashboardInventoryUsesCachedIndex(t *testing.T) {
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachedSkills := []inventory.Skill{{ID: "cached", Name: "cached", Root: "/missing-root", EncounteredPath: "/missing-root/cached", Kind: inventory.KindDirectory}}
+	cachedFindings := []analysis.Finding{{ID: "tokens:cached", Type: analysis.FindingHighTokenCost, Severity: 3, Title: "cached", Skills: cachedSkills, Reasons: []string{"cached finding"}}}
+	if err := state.ReplaceIndex(db, cachedSkills, cachedFindings); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	skills, findings, err := loadDashboardInventory(&cliOptions{stateDir: stateDir, configPath: configPath}, inventoryLoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || skills[0].Name != "cached" || len(findings) != 1 || findings[0].ID != "tokens:cached" {
+		t.Fatalf("dashboard did not load cached inventory: skills=%#v findings=%#v", skills, findings)
 	}
 }
 

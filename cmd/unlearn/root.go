@@ -197,7 +197,7 @@ type loadingResultMsg struct {
 }
 
 type loadingProgressMsg struct {
-	progress history.ScanProgress
+	event inventoryProgress
 }
 
 type loadingTickMsg time.Time
@@ -214,7 +214,7 @@ type loadingModel struct {
 }
 
 func newLoadingModel(updates <-chan tea.Msg) loadingModel {
-	return loadingModel{status: "Scanning skill roots", detail: "Building inventory and derived evidence", updates: updates}
+	return loadingModel{status: "Preparing inventory", detail: "Checking local dashboard cache", updates: updates}
 }
 
 func (m loadingModel) Init() tea.Cmd {
@@ -243,10 +243,10 @@ func (m loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case loadingProgressMsg:
-		m.status = "Scanning history evidence"
-		m.detail = fmt.Sprintf("%s · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
-		if msg.progress.Done {
-			m.detail = fmt.Sprintf("%s · complete · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
+		m.status = progressLabel(msg.event.Step)
+		m.detail = loadingProgressDetail(msg.event)
+		if msg.event.Done {
+			m.detail = "complete — " + m.detail
 		}
 		return m, waitForLoadingUpdate(m.updates)
 	case loadingResultMsg:
@@ -300,12 +300,19 @@ func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	updates := make(chan tea.Msg, 16)
+	sendProgress := func(event inventoryProgress) {
+		select {
+		case updates <- loadingProgressMsg{event: event}:
+		default:
+		}
+	}
 	go func() {
-		skills, findings, _, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Context: ctx, HistoryProgress: func(progress history.ScanProgress) {
-			select {
-			case updates <- loadingProgressMsg{progress: progress}:
-			default:
+		skills, findings, err := loadDashboardInventory(opts, inventoryLoadOptions{Context: ctx, Progress: sendProgress, HistoryProgress: func(progress history.ScanProgress) {
+			detail := fmt.Sprintf("%s · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches)
+			if progress.Done {
+				detail = fmt.Sprintf("%s · complete · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches)
 			}
+			sendProgress(inventoryProgress{Step: "history", Detail: detail, Done: progress.Done})
 		}})
 		updates <- loadingResultMsg{skills: skills, findings: findings, err: err}
 	}()
@@ -323,6 +330,69 @@ func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []
 		return nil, nil, fmt.Errorf("loading cancelled")
 	}
 	return loading.result.skills, loading.result.findings, loading.result.err
+}
+
+func loadingProgressDetail(event inventoryProgress) string {
+	detail := strings.TrimSpace(event.Detail)
+	if event.Total > 0 {
+		prefix := fmt.Sprintf("%d/%d", event.Current, event.Total)
+		if detail == "" {
+			return prefix
+		}
+		return prefix + " — " + detail
+	}
+	return detail
+}
+
+func loadDashboardInventory(opts *cliOptions, loadOpts inventoryLoadOptions) ([]inventory.Skill, []analysis.Finding, error) {
+	if canUseDashboardCache(opts) {
+		paths, err := pathsFromOptions(opts)
+		if err != nil {
+			return nil, nil, err
+		}
+		if err := paths.Ensure(); err != nil {
+			return nil, nil, err
+		}
+		db, err := state.OpenIndex(paths.IndexPath)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer db.Close()
+		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: "local dashboard index"})
+		skills, findings, err := state.LoadInventoryCache(db)
+		if err == nil {
+			reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: fmt.Sprintf("%d skills, %d findings", len(skills), len(findings)), Done: true})
+			return skills, findings, nil
+		}
+	}
+	skills, findings, _, err := loadInventoryWithOptions(opts, loadOpts)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := saveDashboardInventory(opts, skills, findings); err != nil {
+		return nil, nil, err
+	}
+	return skills, findings, nil
+}
+
+func canUseDashboardCache(opts *cliOptions) bool {
+	return !opts.rescanSources && len(opts.roots) == 0 && len(opts.trustRoots) == 0 && len(opts.writeRoots) == 0 && len(opts.historyJSONL) == 0 && len(opts.historySQLite) == 0 && len(opts.activeAgents) == 0 && len(opts.inactiveAgents) == 0 && !opts.withLLM
+}
+
+func saveDashboardInventory(opts *cliOptions, skills []inventory.Skill, findings []analysis.Finding) error {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	if err := paths.Ensure(); err != nil {
+		return err
+	}
+	db, err := state.OpenIndex(paths.IndexPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return state.ReplaceIndex(db, skills, findings)
 }
 
 func runFirstLaunchSetup(out io.Writer, opts *cliOptions) error {

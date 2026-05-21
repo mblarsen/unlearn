@@ -110,6 +110,11 @@ CREATE TABLE IF NOT EXISTS history_evidence (
   seen_at TEXT NOT NULL,
   PRIMARY KEY (source, skill_name)
 );
+CREATE TABLE IF NOT EXISTS inventory_cache (
+  key TEXT PRIMARY KEY,
+  payload TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 `)
 	return err
 }
