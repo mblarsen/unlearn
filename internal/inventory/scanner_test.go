@@ -63,6 +63,15 @@ func TestInferProvenance(t *testing.T) {
 	if got != "pi global skills root" {
 		t.Fatalf("provenance=%q", got)
 	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = inferProvenance(filepath.Join(home, ".agents", "skills"), filepath.Join(home, ".agents", "skills", "x"), "", false)
+	if got != "shared agents skills root" {
+		t.Fatalf("provenance=%q", got)
+	}
 }
 
 func write(t *testing.T, path, content string) {

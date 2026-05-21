@@ -244,6 +244,14 @@ func stableID(encountered, resolved string) string {
 	return ContentHash([]byte(encountered), []byte(resolved))[:16]
 }
 
+func isAgentsSkillsRoot(root string) bool {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	return filepath.Clean(root) == filepath.Clean(filepath.Join(home, ".agents", "skills"))
+}
+
 func inferProvenance(root, encountered, resolved string, isSymlink bool) string {
 	parts := []string{}
 	if isSymlink {
@@ -255,10 +263,16 @@ func inferProvenance(root, encountered, resolved string, isSymlink bool) string 
 	if _, err := os.Stat(filepath.Join(encountered, ".git")); err == nil {
 		parts = append(parts, "local git checkout")
 	}
+	if isAgentsSkillsRoot(root) {
+		parts = append(parts, "shared agents skills root")
+		return strings.Join(parts, "; ")
+	}
 	for _, agent := range AgentCatalog() {
-		if filepath.Clean(root) == filepath.Clean(agent.GlobalSkillsDir) {
-			parts = append(parts, strings.ToLower(agent.DisplayName)+" global skills root")
-			return strings.Join(parts, "; ")
+		for _, dir := range agent.GlobalSkillDirs() {
+			if filepath.Clean(root) == filepath.Clean(dir) {
+				parts = append(parts, strings.ToLower(agent.DisplayName)+" global skills root")
+				return strings.Join(parts, "; ")
+			}
 		}
 	}
 	switch {
