@@ -54,11 +54,18 @@ func RootChoices(roots []string) []RootChoice {
 // skill inventory roots are shown. Explicit roots have highest leverage;
 // otherwise the active/inactive harness policy supplies roots, with the catalog
 // fallback preserving historical behavior.
-func CandidateRoots(explicitRoots []string, cfg config.Config, statuses []inventory.AgentStatus) []string {
+func CandidateRoots(explicitRoots []string, activeOverride []string, inactiveOverride []string, cfg config.Config, statuses []inventory.AgentStatus) []string {
 	if len(explicitRoots) > 0 {
 		return append([]string(nil), explicitRoots...)
 	}
-	active, inactive := SelectAgentIDs(nil, nil, cfg, statuses)
+	active, inactive := SelectAgentIDs(activeOverride, inactiveOverride, cfg, statuses)
+	return RootsForSelectedAgents(active, inactive)
+}
+
+// RootsForSelectedAgents derives setup roots from already-selected active and
+// inactive harness IDs. Keeping this small helper separate lets CLI orchestration
+// reuse a selected harness seam without duplicating the root fallback policy.
+func RootsForSelectedAgents(active []string, inactive []string) []string {
 	roots := inventory.RootsForAgents(append(active, inactive...))
 	if len(roots) == 0 {
 		roots = inventory.KnownGlobalRoots()

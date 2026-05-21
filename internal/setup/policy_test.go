@@ -76,6 +76,22 @@ func TestPolicySelectAgentIDsPrefersOverridesThenConfig(t *testing.T) {
 	}
 }
 
+func TestPolicyCandidateRootsPrefersCLIOverridesOverConfig(t *testing.T) {
+	cfg := config.Default()
+	cfg.ActiveAgents = []string{"pi"}
+	cfg.InactiveAgents = []string{"cline"}
+
+	roots := CandidateRoots(nil, []string{"codex"}, nil, cfg, nil)
+
+	want := inventory.RootsForAgents([]string{"codex"})
+	if !reflect.DeepEqual(roots, want) {
+		t.Fatalf("candidate roots should come from CLI override: roots=%v want=%v", roots, want)
+	}
+	if reflect.DeepEqual(roots, inventory.RootsForAgents([]string{"pi", "cline"})) {
+		t.Fatalf("candidate roots unexpectedly came from config selection: %v", roots)
+	}
+}
+
 func TestPolicyApplyPreservesOptInHistoryBehavior(t *testing.T) {
 	policy := Policy{
 		Roots:         []RootChoice{{Path: "/skills", Trusted: true}},

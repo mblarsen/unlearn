@@ -438,7 +438,7 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 		return nil
 	}
 	statuses := inventory.AgentStatuses()
-	roots := setupflow.CandidateRoots(opts.roots, cfg, statuses)
+	roots := setupflow.CandidateRoots(opts.roots, opts.activeAgents, opts.inactiveAgents, cfg, statuses)
 	choices := setupflow.RootChoices(roots)
 	historyJSONL, err := discoverPiHistoryJSONL()
 	if err != nil {
