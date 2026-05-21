@@ -619,14 +619,14 @@ func genericKeyword(word string) bool {
 
 func SortFindings(findings []Finding) {
 	order := map[FindingType]int{
-		FindingDuplicate:       1,
-		FindingConflict:        2,
-		FindingBroken:          3,
-		FindingInactiveRoot:    4,
-		FindingOverlap:         5,
-		FindingHighTokenCost:   6,
-		FindingBroadActivation: 7,
-		FindingUnseen:          8,
+		FindingUnseen:          1,
+		FindingDuplicate:       2,
+		FindingConflict:        3,
+		FindingOverlap:         4,
+		FindingHighTokenCost:   5,
+		FindingBroadActivation: 6,
+		FindingBroken:          7,
+		FindingInactiveRoot:    8,
 	}
 	sort.Slice(findings, func(i, j int) bool {
 		if order[findings[i].Type] != order[findings[j].Type] {

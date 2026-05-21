@@ -45,13 +45,14 @@ func groupedFindings(findings []analysis.Finding) []findingSection {
 
 func findingTypeOrder() []analysis.FindingType {
 	return []analysis.FindingType{
+		analysis.FindingUnseen,
 		analysis.FindingDuplicate,
 		analysis.FindingConflict,
-		analysis.FindingBroken,
 		analysis.FindingOverlap,
 		analysis.FindingHighTokenCost,
 		analysis.FindingBroadActivation,
-		analysis.FindingUnseen,
+		analysis.FindingBroken,
+		analysis.FindingInactiveRoot,
 	}
 }
 
@@ -70,7 +71,9 @@ func findingTypeTitle(typ analysis.FindingType) string {
 	case analysis.FindingBroadActivation:
 		return "Broad activation risk"
 	case analysis.FindingUnseen:
-		return "Unseen in history"
+		return "Likely unused"
+	case analysis.FindingInactiveRoot:
+		return "Inactive harness roots"
 	default:
 		return string(typ)
 	}
