@@ -3,12 +3,10 @@ package unlearn
 import (
 	"bufio"
 	"context"
-	"database/sql"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -26,6 +24,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
 	"github.com/mblarsen/unlearn/internal/ui"
+	"github.com/mblarsen/unlearn/internal/usage"
 	"github.com/spf13/cobra"
 )
 
@@ -450,11 +449,11 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 		_, err := os.Stat(root)
 		choices = append(choices, setupflow.RootChoice{Path: root, Exists: err == nil})
 	}
-	historyJSONL, err := discoverPiHistoryJSONL()
+	historyJSONL, err := usage.DiscoverPiJSONL()
 	if err != nil {
 		return err
 	}
-	historySQLite, err := discoverHistorySQLite(roots)
+	historySQLite, err := usage.DiscoverSQLite(roots)
 	if err != nil {
 		return err
 	}
@@ -473,18 +472,6 @@ func runSetupScreen(out io.Writer, opts *cliOptions, force bool) error {
 	}
 	updated := finalSetup.ApplyTo(cfg)
 	return updated.Save(paths.ConfigPath)
-}
-
-func discoverPiHistoryJSONL() ([]string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
-	}
-	return history.DiscoverPiJSONL(home, history.DefaultDiscoveryLimit)
-}
-
-func discoverHistorySQLite(roots []string) ([]string, error) {
-	return history.DiscoverSQLite(roots, history.DefaultDiscoveryLimit)
 }
 
 func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
@@ -549,13 +536,30 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 		return nil, nil, nil, err
 	}
 	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "scan-roots", Detail: fmt.Sprintf("%d skill install(s)", len(report.Skills)), Done: true})
-	usage, sources, lastSeen, err := loadUsageEvidence(opts, cfg, report.Skills, scanRoots, loadOpts)
+	usageResult, err := usage.Load(usage.Options{
+		Config:          cfg,
+		Paths:           paths,
+		Skills:          report.Skills,
+		TrustedRoots:    scanRoots,
+		HistoryJSONL:    opts.historyJSONL,
+		HistorySQLite:   opts.historySQLite,
+		HistoryCacheTTL: opts.historyCacheTTL,
+		RescanSources:   opts.rescanSources,
+		Context:         loadOpts.Context,
+		Progress: func(event usage.Progress) {
+			reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
+		},
+		HistoryProgress: loadOpts.HistoryProgress,
+	})
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	skills := attachUsageEvidence(report.Skills, usage, sources, lastSeen)
+	skills := usageResult.Skills
+	if skills == nil {
+		skills = report.Skills
+	}
 	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: "duplicates, conflicts, keywords, safety findings"})
-	analysisOpts := analysis.Options{UsageEvidence: usage, Progress: func(event analysis.ProgressEvent) {
+	analysisOpts := analysis.Options{UsageEvidence: usageResult.Evidence, Progress: func(event analysis.ProgressEvent) {
 		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
 	}}
 	var recorder *recordingAnalyzer
@@ -574,7 +578,7 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
 	if err != nil {
 		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM semantic-overlap analysis did not complete; using deterministic analysis. Details: %v", err))
-		findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
+		findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usageResult.Evidence})
 	}
 	if recorder != nil {
 		skills = attachLLMSummaries(skills, recorder.Summaries())
@@ -639,148 +643,6 @@ func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
 		return append([]string(nil), cfg.ActiveAgents...), append([]string(nil), cfg.InactiveAgents...)
 	}
 	return inventory.CandidateAgentIDs()
-}
-
-func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill, scanRoots []string, loadOpts inventoryLoadOptions) (analysis.UsageEvidence, map[string][]string, map[string]time.Time, error) {
-	jsonlPaths := opts.historyJSONL
-	sqlitePaths := opts.historySQLite
-	if len(jsonlPaths) == 0 && len(sqlitePaths) == 0 && cfg.HistoryScan {
-		jsonlPaths = cfg.HistoryJSONL
-		sqlitePaths = cfg.HistorySQLite
-	}
-	if cfg.HistoryScan && len(opts.historyJSONL) == 0 && len(opts.historySQLite) == 0 {
-		discoveredSQLite, err := discoverHistorySQLite(scanRoots)
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		for _, path := range discoveredSQLite {
-			sqlitePaths = appendUnique(sqlitePaths, path)
-		}
-	}
-	if len(jsonlPaths) == 0 && len(sqlitePaths) == 0 {
-		return nil, nil, nil, nil
-	}
-	names := make([]string, 0, len(skills))
-	for _, skill := range skills {
-		names = append(names, skill.Name)
-	}
-	usage := analysis.UsageEvidence{}
-	sources := map[string][]string{}
-	lastSeen := map[string]time.Time{}
-	paths, err := pathsFromOptions(opts)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	if err := paths.Ensure(); err != nil {
-		return nil, nil, nil, err
-	}
-	db, err := state.OpenIndex(paths.IndexPath)
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	defer db.Close()
-	merge := func(evidence []history.Evidence) {
-		for _, item := range evidence {
-			current := usage[item.SkillName]
-			if current == "" || evidenceRank(item.Grade) < evidenceRank(history.EvidenceGrade(current)) {
-				usage[item.SkillName] = string(item.Grade)
-			}
-			sources[item.SkillName] = appendUnique(sources[item.SkillName], item.Source)
-			if item.SeenAt.After(lastSeen[item.SkillName]) {
-				lastSeen[item.SkillName] = item.SeenAt
-			}
-		}
-	}
-	jsonlAdapter := history.JSONLAdapter{}
-	for index, path := range jsonlPaths {
-		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Current: index + 1, Total: len(jsonlPaths) + len(sqlitePaths), Detail: filepath.Base(path)})
-		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
-			return jsonlAdapter.ScanWithOptions(path, names, scanOpts)
-		})
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		merge(evidence)
-	}
-	sqliteAdapter := history.SQLiteAdapter{}
-	for index, path := range sqlitePaths {
-		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Current: len(jsonlPaths) + index + 1, Total: len(jsonlPaths) + len(sqlitePaths), Detail: filepath.Base(path)})
-		evidence, err := historyEvidenceForPath(db, path, names, opts, loadOpts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
-			return sqliteAdapter.ScanWithOptions(path, names, scanOpts)
-		})
-		if err != nil {
-			return nil, nil, nil, err
-		}
-		merge(evidence)
-	}
-	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "history", Detail: fmt.Sprintf("%d file(s), %d matching skills", len(jsonlPaths)+len(sqlitePaths), len(usage)), Done: true})
-	return usage, sources, lastSeen, nil
-}
-
-type historyScannerFunc func(path string, names []string, opts history.ScanOptions) ([]history.Evidence, error)
-
-func historyEvidenceForPath(db *sql.DB, path string, names []string, opts *cliOptions, loadOpts inventoryLoadOptions, scan historyScannerFunc) ([]history.Evidence, error) {
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, err
-	}
-	now := time.Now().UTC()
-	if !opts.rescanSources {
-		status, err := state.HistoryCacheStatusForSource(db, path, info.ModTime(), opts.historyCacheTTL, now)
-		if err != nil {
-			return nil, err
-		}
-		if status.Fresh {
-			return state.LoadHistoryEvidence(db, path)
-		}
-	}
-	historyProgress := func(progress history.ScanProgress) {
-		if loadOpts.HistoryProgress != nil {
-			loadOpts.HistoryProgress(progress)
-		}
-	}
-	evidence, err := scan(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: historyProgress})
-	if err != nil {
-		return nil, err
-	}
-	if err := state.SaveHistoryEvidence(db, path, info.ModTime(), evidence); err != nil {
-		return nil, err
-	}
-	return evidence, nil
-}
-
-func attachUsageEvidence(skills []inventory.Skill, usage analysis.UsageEvidence, sources map[string][]string, lastSeen map[string]time.Time) []inventory.Skill {
-	if usage == nil {
-		return skills
-	}
-	enriched := append([]inventory.Skill(nil), skills...)
-	for i := range enriched {
-		key := strings.ToLower(enriched[i].Name)
-		enriched[i].HistoryEvidence = usage[key]
-		enriched[i].HistorySources = append([]string(nil), sources[key]...)
-		enriched[i].HistoryLastSeenAt = lastSeen[key]
-	}
-	return enriched
-}
-
-func appendUnique(values []string, value string) []string {
-	if containsString(values, value) {
-		return values
-	}
-	return append(values, value)
-}
-
-func evidenceRank(grade history.EvidenceGrade) int {
-	switch grade {
-	case history.EvidenceStrong:
-		return 1
-	case history.EvidenceMedium:
-		return 2
-	case history.EvidenceWeak:
-		return 3
-	default:
-		return 99
-	}
 }
 
 func loadConfig(opts *cliOptions, paths state.Paths) (config.Config, error) {
