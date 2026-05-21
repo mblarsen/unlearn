@@ -149,6 +149,19 @@ func TestSkillDetailsSurfaceLLMSummary(t *testing.T) {
 	}
 }
 
+func TestSkillDetailsHidesDisabledLLMSummary(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Description: "deterministic description", LLMSummary: "deterministic description", LLMProvider: "disabled", LLMModel: "disabled"}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "Gemini summary (disabled/disabled)") || strings.Contains(view, "disabled/disabled") {
+		t.Fatalf("disabled analyzer output should not render as a Gemini summary:\n%s", view)
+	}
+}
+
 func TestTokenRangeCollapsesEqualBounds(t *testing.T) {
 	skills := []inventory.Skill{{Name: "caveman", Kind: inventory.KindDirectory, LowerTokens: 2600, UpperTokens: 2600}}
 	m := New(skills, nil)
