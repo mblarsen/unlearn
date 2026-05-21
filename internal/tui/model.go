@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -1003,6 +1004,9 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	lines = append(lines, "", theme.Section.Render("Summary"))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+installLabel(len(finding.Skills))+" across "+rootSummary(finding.Skills, 2), width)))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
+	if summary := findingHistoryEvidenceSummary(finding); summary != "" {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• history "+summary, width)))
+	}
 	if len(finding.Skills) > 1 {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• tab cycles install focus for actions", width)))
 	}
@@ -1047,6 +1051,9 @@ func (m Model) renderSkillGroupDetails(theme ui.Theme, width, height int, group 
 		"activation " + riskLabel(skill.ActivationRisk),
 		"kind " + kindLabel(skill.Kind),
 		"roots " + rootSummary(group.Skills, 2),
+	}
+	if summary := historyEvidenceSummary(group.Skills); summary != "" {
+		facts = append(facts, "history "+summary)
 	}
 	for _, fact := range facts {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• "+fact, width)))
@@ -1283,6 +1290,87 @@ func renderDensityHint(theme ui.Theme, density Density, width int) string {
 	return theme.Muted.Render(ui.Truncate("r rich shows selected install description, path, provenance", width))
 }
 
+func findingHistoryEvidenceSummary(finding analysis.Finding) string {
+	if finding.Type != analysis.FindingUnseen {
+		return ""
+	}
+	summary := historyEvidenceSummary(finding.Skills)
+	if summary == "" {
+		return "no strong or medium invocation evidence"
+	}
+	return summary
+}
+
+func historyEvidenceSummary(skills []inventory.Skill) string {
+	best := ""
+	sources := 0
+	for _, skill := range skills {
+		if skill.HistoryEvidence == "weak" {
+			continue
+		}
+		if evidenceRank(skill.HistoryEvidence) < evidenceRank(best) {
+			best = skill.HistoryEvidence
+		}
+		sources += len(skill.HistorySources)
+	}
+	if best == "" {
+		return ""
+	}
+	lastSeen := latestHistorySeen(skills)
+	when := ""
+	if !lastSeen.IsZero() {
+		when = " · last seen " + relativeTime(lastSeen)
+	}
+	if sources == 0 {
+		return best + " derived evidence" + when
+	}
+	return fmt.Sprintf("%s derived evidence from %d source(s)%s", best, sources, when)
+}
+
+func latestHistorySeen(skills []inventory.Skill) time.Time {
+	var latest time.Time
+	for _, skill := range skills {
+		if skill.HistoryEvidence == "weak" {
+			continue
+		}
+		if skill.HistoryLastSeenAt.After(latest) {
+			latest = skill.HistoryLastSeenAt
+		}
+	}
+	return latest
+}
+
+func relativeTime(value time.Time) string {
+	duration := time.Since(value)
+	if duration < 0 {
+		return value.Format("2006-01-02")
+	}
+	switch {
+	case duration < time.Hour:
+		minutes := max(1, int(duration.Minutes()))
+		return fmt.Sprintf("%dm ago", minutes)
+	case duration < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(duration.Hours()))
+	case duration < 45*24*time.Hour:
+		return fmt.Sprintf("%dd ago", int(duration.Hours()/24))
+	default:
+		return value.Format("2006-01-02")
+	}
+}
+
+func evidenceRank(grade string) int {
+	switch grade {
+	case "strong":
+		return 1
+	case "medium":
+		return 2
+	case "weak":
+		return 3
+	default:
+		return 99
+	}
+}
+
 func renderSelectedInstallDetails(theme ui.Theme, skill inventory.Skill, width int) []string {
 	var lines []string
 	description := skill.Description
@@ -1300,6 +1388,17 @@ func renderSelectedInstallDetails(theme ui.Theme, skill inventory.Skill, width i
 	}
 	if skill.Provenance != "" {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("    provenance "+skill.Provenance, width)))
+	}
+	if skill.HistoryEvidence != "" {
+		sourceCount := len(skill.HistorySources)
+		label := fmt.Sprintf("    history %s evidence", skill.HistoryEvidence)
+		if sourceCount > 0 {
+			label += fmt.Sprintf(" from %d source(s)", sourceCount)
+		}
+		if !skill.HistoryLastSeenAt.IsZero() {
+			label += " · last seen " + relativeTime(skill.HistoryLastSeenAt)
+		}
+		lines = append(lines, theme.Muted.Render(ui.Truncate(label, width)))
 	}
 	return lines
 }

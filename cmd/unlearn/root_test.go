@@ -6,7 +6,24 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mblarsen/unlearn/internal/history"
 )
+
+func TestLoadingModelShowsProgress(t *testing.T) {
+	updates := make(chan tea.Msg, 1)
+	m := newLoadingModel(updates)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(loadingModel)
+	updated, _ = m.Update(loadingProgressMsg{progress: history.ScanProgress{Path: "/sessions/a.jsonl", Lines: 500, Matches: 2}})
+	m = updated.(loadingModel)
+
+	view := m.View()
+	if !strings.Contains(view, "unlearn is loading") || !strings.Contains(view, "Scanning Pi history evidence") || !strings.Contains(view, "500 lines") {
+		t.Fatalf("loading view missing progress details:\n%s", view)
+	}
+}
 
 func TestAuditOutputWithFixtureRoot(t *testing.T) {
 	root := t.TempDir()
@@ -101,6 +118,27 @@ func TestAuditHistoryJSONLAddsUnseenFindings(t *testing.T) {
 	}
 	if !strings.Contains(string(cfg), "history_scan = true") || !strings.Contains(string(cfg), historyPath) {
 		t.Fatalf("history opt-in/paths not persisted:\n%s", cfg)
+	}
+}
+
+func TestScanPrintsHistoryProgressAndIndexesEvidence(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+	historyPath := filepath.Join(t.TempDir(), "session.jsonl")
+	if err := os.WriteFile(historyPath, []byte(`{"message":"read skills/alpha/SKILL.md"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"scan", "--root", root, "--trust-root", root, "--history-jsonl", historyPath, "--state-dir", t.TempDir(), "--config", filepath.Join(t.TempDir(), "config.toml")})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+	for _, want := range []string{"History scanned:", "1 lines", "1 skills with derived evidence", "Indexed 1 skills"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("scan output missing %q:\n%s", want, got)
+		}
 	}
 }
 

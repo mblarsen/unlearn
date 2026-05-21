@@ -42,3 +42,24 @@ func TestSetupViewDocumentsBoundedHistoryDiscovery(t *testing.T) {
 		t.Fatalf("view missing setup details:\n%s", view)
 	}
 }
+
+func TestSetupViewScrollsToSelectedHarness(t *testing.T) {
+	statuses := make([]inventory.AgentStatus, 0, 18)
+	for i := range 18 {
+		statuses = append(statuses, inventory.AgentStatus{AgentDefinition: inventory.AgentDefinition{ID: "agent", DisplayName: "Agent", ShowInSetup: true}})
+		statuses[i].ID = "agent-" + string(rune('a'+i))
+		statuses[i].DisplayName = "Agent " + string(rune('A'+i))
+	}
+	m := New(nil, nil, config.Default(), statuses)
+	m.Width = 90
+	m.Height = 18
+	m.Cursor = 15
+
+	view := m.View()
+	if !strings.Contains(view, "Agent P") || !strings.Contains(view, "… above") {
+		t.Fatalf("view should scroll to selected harness:\n%s", view)
+	}
+	if strings.Contains(view, "Agent A") {
+		t.Fatalf("view should not stay pinned to first harness after scrolling:\n%s", view)
+	}
+}

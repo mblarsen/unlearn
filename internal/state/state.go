@@ -98,6 +98,18 @@ CREATE TABLE IF NOT EXISTS findings (
   title TEXT NOT NULL,
   reasons TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS history_sources (
+  source TEXT PRIMARY KEY,
+  source_mtime TEXT NOT NULL,
+  scanned_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS history_evidence (
+  source TEXT NOT NULL,
+  skill_name TEXT NOT NULL,
+  grade TEXT NOT NULL,
+  seen_at TEXT NOT NULL,
+  PRIMARY KEY (source, skill_name)
+);
 `)
 	return err
 }

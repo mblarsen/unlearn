@@ -32,6 +32,9 @@ type Skill struct {
 	ActivationRisk        string
 	ActivationRiskSignals []string
 	Provenance            string
+	HistoryEvidence       string
+	HistorySources        []string
+	HistoryLastSeenAt     time.Time
 	RootKnown             bool
 	ActiveAgents          []string
 	InactiveAgents        []string

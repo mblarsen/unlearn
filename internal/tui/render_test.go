@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -61,6 +62,43 @@ func TestSkillDetailsSuppressesBroadGenericFixtureDescription(t *testing.T) {
 	view := m.View()
 	if strings.Contains(view, "plan build create") || !strings.Contains(view, "Description is broad") || !strings.Contains(view, "distinctive") {
 		t.Fatalf("generic fixture description should be replaced with safety copy:\n%s", view)
+	}
+}
+
+func TestUnseenFindingDetailsDoNotDescribeWeakMentionsAsEvidence(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "weak", HistorySources: []string{"/sessions/a.jsonl"}}}
+	findings := []analysis.Finding{{ID: "unseen:alpha", Type: analysis.FindingUnseen, Title: "alpha", Skills: skills}}
+	m := New(skills, findings)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "weak derived evidence") || !strings.Contains(view, "no strong or medium") {
+		t.Fatalf("unseen finding should not describe weak mention as usage evidence:\n%s", view)
+	}
+}
+
+func TestFindingDetailsOnlySurfaceHistoryEvidenceForUnseenFindings(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "strong", HistorySources: []string{"/sessions/a.jsonl"}}}
+	findings := []analysis.Finding{{ID: "broken:alpha", Type: analysis.FindingBroken, Title: "alpha", Skills: skills}}
+	m := New(skills, findings)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 90, Height: 25})
+	m = updated.(Model)
+	view := m.View()
+	if strings.Contains(view, "history strong derived evidence") {
+		t.Fatalf("broken finding details should not append generic history evidence:\n%s", view)
+	}
+}
+
+func TestSkillDetailsSurfaceHistoryEvidence(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one", HistoryEvidence: "strong", HistorySources: []string{"/sessions/a.jsonl"}, HistoryLastSeenAt: time.Now().Add(-48 * time.Hour)}}
+	m := New(skills, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 160, Height: 25})
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	m = updated.(Model)
+	view := m.View()
+	if !strings.Contains(view, "history strong derived evidence") || !strings.Contains(view, "last seen") {
+		t.Fatalf("history evidence should be surfaced in skill details:\n%s", view)
 	}
 }
 

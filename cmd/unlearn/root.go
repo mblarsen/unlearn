@@ -1,13 +1,19 @@
 package unlearn
 
 import (
+	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/config"
@@ -16,23 +22,26 @@ import (
 	setupflow "github.com/mblarsen/unlearn/internal/setup"
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
+	"github.com/mblarsen/unlearn/internal/ui"
 	"github.com/spf13/cobra"
 )
 
 type cliOptions struct {
-	roots          []string
-	trustRoots     []string
-	writeRoots     []string
-	configPath     string
-	stateDir       string
-	indexPath      string
-	fix            bool
-	yes            bool
-	restoreRoot    string
-	historyJSONL   []string
-	withLLM        bool
-	activeAgents   []string
-	inactiveAgents []string
+	roots           []string
+	trustRoots      []string
+	writeRoots      []string
+	configPath      string
+	stateDir        string
+	indexPath       string
+	fix             bool
+	yes             bool
+	restoreRoot     string
+	historyJSONL    []string
+	historyCacheTTL time.Duration
+	rescanSources   bool
+	withLLM         bool
+	activeAgents    []string
+	inactiveAgents  []string
 }
 
 func Execute() error {
@@ -48,7 +57,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err := runFirstLaunchSetup(out, opts); err != nil {
 				return err
 			}
-			skills, findings, _, err := loadInventory(opts)
+			skills, findings, err := runLoadingInventory(out, opts)
 			if err != nil {
 				return err
 			}
@@ -92,7 +101,13 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		Use:   "scan",
 		Short: "Refresh the local inventory index",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			skills, findings, skipped, err := loadInventory(opts)
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			skills, findings, skipped, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Context: ctx, HistoryProgress: func(progress history.ScanProgress) {
+				if progress.Done {
+					fmt.Fprintf(out, "History scanned: %s (%d lines, %d skills with derived evidence)\n", progress.Path, progress.Lines, progress.Matches)
+				}
+			}})
 			if err != nil {
 				return err
 			}
@@ -165,6 +180,144 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	root.AddCommand(setupCmd)
 
 	return root
+}
+
+type loadingResultMsg struct {
+	skills   []inventory.Skill
+	findings []analysis.Finding
+	err      error
+}
+
+type loadingProgressMsg struct {
+	progress history.ScanProgress
+}
+
+type loadingTickMsg time.Time
+
+type loadingModel struct {
+	width     int
+	height    int
+	frame     int
+	status    string
+	detail    string
+	updates   <-chan tea.Msg
+	result    loadingResultMsg
+	cancelled bool
+}
+
+func newLoadingModel(updates <-chan tea.Msg) loadingModel {
+	return loadingModel{status: "Scanning skill roots", detail: "Building inventory and derived evidence", updates: updates}
+}
+
+func (m loadingModel) Init() tea.Cmd {
+	return tea.Batch(loadingTickCmd(), waitForLoadingUpdate(m.updates))
+}
+
+func loadingTickCmd() tea.Cmd {
+	return tea.Tick(120*time.Millisecond, func(t time.Time) tea.Msg { return loadingTickMsg(t) })
+}
+
+func waitForLoadingUpdate(updates <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		return <-updates
+	}
+}
+
+func (m loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		m.width = msg.Width
+		m.height = msg.Height
+	case tea.KeyMsg:
+		switch msg.String() {
+		case "ctrl+c", "esc", "q":
+			m.cancelled = true
+			return m, tea.Quit
+		}
+	case loadingProgressMsg:
+		m.status = "Scanning Pi history evidence"
+		m.detail = fmt.Sprintf("%s · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
+		if msg.progress.Done {
+			m.detail = fmt.Sprintf("%s · complete · %d lines · %d matching skills", msg.progress.Path, msg.progress.Lines, msg.progress.Matches)
+		}
+		return m, waitForLoadingUpdate(m.updates)
+	case loadingResultMsg:
+		m.result = msg
+		return m, tea.Quit
+	case loadingTickMsg:
+		m.frame++
+		return m, loadingTickCmd()
+	}
+	return m, nil
+}
+
+func (m loadingModel) View() string {
+	width := m.width
+	if width <= 0 {
+		width = 90
+	}
+	height := m.height
+	if height <= 0 {
+		height = 25
+	}
+	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+	barWidth := min(36, max(12, width-24))
+	filled := (m.frame % (barWidth + 1))
+	bar := strings.Repeat("━", filled) + strings.Repeat("─", barWidth-filled)
+	theme := tuiThemeForLoading()
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("63")).
+		Padding(1, 3).
+		Width(min(72, width-8)).
+		Render(strings.Join([]string{
+			theme.title.Render(spinner[m.frame%len(spinner)] + " unlearn is loading"),
+			theme.status.Render(m.status),
+			theme.bar.Render(bar),
+			theme.detail.Render(ui.Truncate(m.detail, min(64, width-16))),
+			theme.detail.Render("press q to cancel"),
+		}, "\n"))
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
+}
+
+type loadingTheme struct{ title, status, bar, detail lipgloss.Style }
+
+func tuiThemeForLoading() loadingTheme {
+	return loadingTheme{
+		title:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")),
+		status: lipgloss.NewStyle().Foreground(lipgloss.Color("255")),
+		bar:    lipgloss.NewStyle().Foreground(lipgloss.Color("75")),
+		detail: lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
+	}
+}
+
+func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []analysis.Finding, error) {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	updates := make(chan tea.Msg, 16)
+	go func() {
+		skills, findings, _, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Context: ctx, HistoryProgress: func(progress history.ScanProgress) {
+			select {
+			case updates <- loadingProgressMsg{progress: progress}:
+			default:
+			}
+		}})
+		updates <- loadingResultMsg{skills: skills, findings: findings, err: err}
+	}()
+	program := tea.NewProgram(newLoadingModel(updates), tea.WithOutput(out), tea.WithAltScreen())
+	finalModel, err := program.Run()
+	stop()
+	if err != nil {
+		return nil, nil, err
+	}
+	loading, ok := finalModel.(loadingModel)
+	if !ok {
+		return nil, nil, fmt.Errorf("loading returned unexpected model %T", finalModel)
+	}
+	if loading.cancelled {
+		return nil, nil, fmt.Errorf("loading cancelled")
+	}
+	return loading.result.skills, loading.result.findings, loading.result.err
 }
 
 func runFirstLaunchSetup(out io.Writer, opts *cliOptions) error {
@@ -247,12 +400,23 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringVar(&opts.stateDir, "state-dir", "", "state directory for index, quarantine, and caches")
 	cmd.Flags().StringVar(&opts.indexPath, "index", "", "SQLite index path")
 	cmd.Flags().StringSliceVar(&opts.historyJSONL, "history-jsonl", nil, "opt-in JSONL history file to scan for derived invocation evidence; may be repeated")
+	cmd.Flags().DurationVar(&opts.historyCacheTTL, "history-cache-ttl", 24*time.Hour, "reuse cached history evidence until it is older than this duration")
+	cmd.Flags().BoolVar(&opts.rescanSources, "rescan-sources", false, "ignore cached source/history evidence and rescan local sources")
 	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to LLM-assisted analysis plumbing; current build uses deterministic analysis plus a disabled analyzer stub")
 	cmd.Flags().StringSliceVar(&opts.activeAgents, "active-agent", nil, "active agent harness whose global skill roots should be audited; may be repeated")
 	cmd.Flags().StringSliceVar(&opts.inactiveAgents, "inactive-agent", nil, "inactive agent harness whose skill roots should be scanned as cleanup candidates; may be repeated")
 }
 
+type inventoryLoadOptions struct {
+	Context         context.Context
+	HistoryProgress func(history.ScanProgress)
+}
+
 func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
+	return loadInventoryWithOptions(opts, inventoryLoadOptions{})
+}
+
+func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
 	paths, err := pathsFromOptions(opts)
 	if err != nil {
 		return nil, nil, nil, err
@@ -286,12 +450,13 @@ func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []s
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	usage, err := loadUsageEvidence(opts, cfg, report.Skills)
+	usage, sources, lastSeen, err := loadUsageEvidence(opts, cfg, report.Skills, loadOpts)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	findings := analysis.Analyze(report.Skills, analysis.Options{UsageEvidence: usage})
-	return report.Skills, findings, skipped, nil
+	skills := attachUsageEvidence(report.Skills, usage, sources, lastSeen)
+	findings := analysis.Analyze(skills, analysis.Options{UsageEvidence: usage})
+	return skills, findings, skipped, nil
 }
 
 func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
@@ -304,33 +469,97 @@ func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
 	return inventory.CandidateAgentIDs()
 }
 
-func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill) (analysis.UsageEvidence, error) {
+func loadUsageEvidence(opts *cliOptions, cfg config.Config, skills []inventory.Skill, loadOpts inventoryLoadOptions) (analysis.UsageEvidence, map[string][]string, map[string]time.Time, error) {
 	historyPaths := opts.historyJSONL
 	if len(historyPaths) == 0 && cfg.HistoryScan {
 		historyPaths = cfg.HistoryJSONL
 	}
 	if len(historyPaths) == 0 {
-		return nil, nil
+		return nil, nil, nil, nil
 	}
 	names := make([]string, 0, len(skills))
 	for _, skill := range skills {
 		names = append(names, skill.Name)
 	}
 	usage := analysis.UsageEvidence{}
+	sources := map[string][]string{}
+	lastSeen := map[string]time.Time{}
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := paths.Ensure(); err != nil {
+		return nil, nil, nil, err
+	}
+	db, err := state.OpenIndex(paths.IndexPath)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	defer db.Close()
 	adapter := history.JSONLAdapter{}
 	for _, path := range historyPaths {
-		evidence, err := adapter.Scan(path, names)
+		evidence, err := historyEvidenceForPath(db, adapter, path, names, opts, loadOpts)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, err
 		}
 		for _, item := range evidence {
 			current := usage[item.SkillName]
 			if current == "" || evidenceRank(item.Grade) < evidenceRank(history.EvidenceGrade(current)) {
 				usage[item.SkillName] = string(item.Grade)
 			}
+			sources[item.SkillName] = appendUnique(sources[item.SkillName], item.Source)
+			if item.SeenAt.After(lastSeen[item.SkillName]) {
+				lastSeen[item.SkillName] = item.SeenAt
+			}
 		}
 	}
-	return usage, nil
+	return usage, sources, lastSeen, nil
+}
+
+func historyEvidenceForPath(db *sql.DB, adapter history.JSONLAdapter, path string, names []string, opts *cliOptions, loadOpts inventoryLoadOptions) ([]history.Evidence, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if !opts.rescanSources {
+		status, err := state.HistoryCacheStatusForSource(db, path, info.ModTime(), opts.historyCacheTTL, now)
+		if err != nil {
+			return nil, err
+		}
+		if status.Fresh {
+			return state.LoadHistoryEvidence(db, path)
+		}
+	}
+	evidence, err := adapter.ScanWithOptions(path, names, history.ScanOptions{Context: loadOpts.Context, Progress: loadOpts.HistoryProgress})
+	if err != nil {
+		return nil, err
+	}
+	if err := state.SaveHistoryEvidence(db, path, info.ModTime(), evidence); err != nil {
+		return nil, err
+	}
+	return evidence, nil
+}
+
+func attachUsageEvidence(skills []inventory.Skill, usage analysis.UsageEvidence, sources map[string][]string, lastSeen map[string]time.Time) []inventory.Skill {
+	if usage == nil {
+		return skills
+	}
+	enriched := append([]inventory.Skill(nil), skills...)
+	for i := range enriched {
+		key := strings.ToLower(enriched[i].Name)
+		enriched[i].HistoryEvidence = usage[key]
+		enriched[i].HistorySources = append([]string(nil), sources[key]...)
+		enriched[i].HistoryLastSeenAt = lastSeen[key]
+	}
+	return enriched
+}
+
+func appendUnique(values []string, value string) []string {
+	if containsString(values, value) {
+		return values
+	}
+	return append(values, value)
 }
 
 func evidenceRank(grade history.EvidenceGrade) int {
