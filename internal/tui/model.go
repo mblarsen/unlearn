@@ -52,11 +52,6 @@ const (
 	ActionRestore
 )
 
-type batchRootChoice struct {
-	Root   string
-	Skills []inventory.Skill
-}
-
 type Model struct {
 	Skills       []inventory.Skill
 	SkillGroups  []skillGroup
@@ -79,7 +74,7 @@ type Model struct {
 	RestoreCursor     int
 	RestoreChoices    []string
 	BatchRootCursor   int
-	BatchRootChoices  []batchRootChoice
+	BatchRootChoices  []fsactions.BatchRootChoice
 	Input             string
 	Message           string
 	Status            string
@@ -204,23 +199,22 @@ func (m Model) updateWriteGate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		removed := m.selectedPendingSkills()
-		var lastDest string
-		for _, skill := range removed {
-			dest, err := m.Actions.Quarantine(skill)
-			if err != nil {
-				m.fail(err)
-				return m, nil
-			}
-			lastDest = dest
+		result, err := m.Actions.QuarantineSelected(m.selectedPendingSkills())
+		if err != nil {
+			m.fail(err)
+			return m, nil
 		}
-		for _, skill := range removed {
+		for _, skill := range result.Skills {
 			m.removeSkillFromModel(skill)
 		}
-		if len(removed) == 1 {
-			m.complete(fmt.Sprintf("quarantined %s -> %s", removed[0].Name, lastDest))
+		if len(result.Skills) == 1 {
+			dest := ""
+			if len(result.Paths) > 0 {
+				dest = result.Paths[0]
+			}
+			m.complete(fmt.Sprintf("quarantined %s -> %s", result.Skills[0].Name, dest))
 		} else {
-			m.complete(fmt.Sprintf("quarantined %d installs", len(removed)))
+			m.complete(fmt.Sprintf("quarantined %d installs", len(result.Skills)))
 		}
 	case "n", "N", "esc":
 		m.cancel("quarantine cancelled")
@@ -231,20 +225,19 @@ func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		removed := m.selectedPendingSkills()
-		for _, skill := range removed {
-			if err := m.Actions.Delete(skill, skill.Name); err != nil {
-				m.fail(err)
-				return m, nil
-			}
+		selected := m.selectedPendingSkills()
+		result, err := m.Actions.DeleteSelected(selected, deleteConfirmationFor(selected))
+		if err != nil {
+			m.fail(err)
+			return m, nil
 		}
-		for _, skill := range removed {
+		for _, skill := range result.Skills {
 			m.removeSkillFromModel(skill)
 		}
-		if len(removed) == 1 {
-			m.complete("deleted " + removed[0].Name)
+		if len(result.Skills) == 1 {
+			m.complete("deleted " + result.Skills[0].Name)
 		} else {
-			m.complete(fmt.Sprintf("deleted %d installs", len(removed)))
+			m.complete(fmt.Sprintf("deleted %d installs", len(result.Skills)))
 		}
 	case "n", "N", "esc":
 		m.cancel("delete cancelled")
@@ -321,21 +314,19 @@ func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.InstallSelections[m.InstallCursor] = !m.InstallSelections[m.InstallCursor]
 		}
 	case "enter":
-		if len(skills) == 0 {
-			m.cancel("no install selected")
+		selected, err := fsactions.ResolveSelection(fsactions.SelectionInput{
+			Kind:     destructiveKind(m.PendingAction),
+			Choices:  skills,
+			Cursor:   m.InstallCursor,
+			Marked:   m.InstallSelections,
+			AllowAll: true,
+		})
+		if err != nil {
+			m.cancel(err.Error())
 			return m, nil
 		}
-		selected := m.selectedInstallChoices(skills)
-		if len(selected) > 0 {
-			m.PendingSkills = selected
-			m.PendingSkill = selected[0]
-		} else if m.canActOnAllInstalls() && m.InstallCursor == len(skills) {
-			m.PendingSkills = append([]inventory.Skill(nil), skills...)
-			m.PendingSkill = skills[0]
-		} else {
-			m.PendingSkill = skills[m.InstallCursor]
-			m.PendingSkills = []inventory.Skill{m.PendingSkill}
-		}
+		m.PendingSkills = selected
+		m.PendingSkill = selected[0]
 		m.continuePendingWithSelectedSkills()
 	case "esc", "q":
 		m.cancel("action cancelled")
@@ -424,13 +415,11 @@ func (m *Model) beginSkillAction(action PendingAction) {
 }
 
 func (m *Model) continuePendingWithSelectedSkills() {
-	for _, skill := range m.selectedPendingSkills() {
-		if !m.Actions.CanWrite(skill.Root) {
-			m.PendingSkill = skill
-			m.State = StateWriteGate
-			m.Message = fmt.Sprintf("Allow write access for this install?\n%s", skillTarget(skill))
-			return
-		}
+	if skill, ok := m.Actions.FirstMissingWrite(m.selectedPendingSkills()); ok {
+		m.PendingSkill = skill
+		m.State = StateWriteGate
+		m.Message = fmt.Sprintf("Allow write access for this install?\n%s", skillTarget(skill))
+		return
 	}
 	m.continuePendingAfterWriteGate()
 }
@@ -1243,48 +1232,8 @@ func padBetween(left, right string, width int) string {
 	return left + strings.Repeat(" ", width-leftWidth-rightWidth) + right
 }
 
-func (m Model) selectedInstallChoices(skills []inventory.Skill) []inventory.Skill {
-	var selected []inventory.Skill
-	for i, skill := range skills {
-		if m.InstallSelections[i] {
-			selected = append(selected, skill)
-		}
-	}
-	return selected
-}
-
-func (m Model) duplicateRootChoices() []batchRootChoice {
-	byRoot := map[string]map[string]inventory.Skill{}
-	for _, finding := range m.Findings {
-		if finding.Type != analysis.FindingDuplicate || len(finding.Skills) < 2 {
-			continue
-		}
-		for _, skill := range finding.Skills {
-			if byRoot[skill.Root] == nil {
-				byRoot[skill.Root] = map[string]inventory.Skill{}
-			}
-			byRoot[skill.Root][finding.ID] = skill
-		}
-	}
-	choices := make([]batchRootChoice, 0, len(byRoot))
-	for root, byFinding := range byRoot {
-		if len(byFinding) == 0 {
-			continue
-		}
-		skills := make([]inventory.Skill, 0, len(byFinding))
-		for _, skill := range byFinding {
-			skills = append(skills, skill)
-		}
-		sort.Slice(skills, func(i, j int) bool { return skills[i].Name < skills[j].Name })
-		choices = append(choices, batchRootChoice{Root: root, Skills: skills})
-	}
-	sort.Slice(choices, func(i, j int) bool {
-		if len(choices[i].Skills) != len(choices[j].Skills) {
-			return len(choices[i].Skills) > len(choices[j].Skills)
-		}
-		return choices[i].Root < choices[j].Root
-	})
-	return choices
+func (m Model) duplicateRootChoices() []fsactions.BatchRootChoice {
+	return fsactions.DuplicateRootChoices(m.Findings)
 }
 
 func (m Model) selectedPendingSkills() []inventory.Skill {
@@ -1310,7 +1259,27 @@ func (m Model) pendingTargetText() string {
 }
 
 func (m Model) canActOnAllInstalls() bool {
-	return (m.PendingAction == ActionQuarantine || m.PendingAction == ActionDelete) && len(m.pendingInstallChoices()) > 1
+	return fsactions.AllowsAllInstalls(destructiveKind(m.PendingAction), m.pendingInstallChoices())
+}
+
+func deleteConfirmationFor(skills []inventory.Skill) fsactions.DeleteConfirmation {
+	if len(skills) == 1 {
+		return fsactions.DeleteConfirmation{TypedName: skills[0].Name}
+	}
+	return fsactions.DeleteConfirmation{BatchToken: fsactions.BatchDeleteConfirmation(skills)}
+}
+
+func destructiveKind(action PendingAction) fsactions.DestructiveKind {
+	switch action {
+	case ActionQuarantine:
+		return fsactions.DestructiveQuarantine
+	case ActionDelete:
+		return fsactions.DestructiveDelete
+	case ActionRename:
+		return fsactions.DestructiveRename
+	default:
+		return fsactions.DestructiveUnknown
+	}
 }
 
 func optionLineForState(theme ui.Theme, state InteractionState) string {
