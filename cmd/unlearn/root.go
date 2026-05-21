@@ -268,7 +268,6 @@ func (m loadingModel) View() string {
 	if height <= 0 {
 		height = 25
 	}
-	spinner := []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 	barWidth := min(36, max(12, width-24))
 	filled := (m.frame % (barWidth + 1))
 	bar := strings.Repeat("━", filled) + strings.Repeat("─", barWidth-filled)
@@ -279,7 +278,6 @@ func (m loadingModel) View() string {
 		Padding(1, 3).
 		Width(min(72, width-8)).
 		Render(strings.Join([]string{
-			theme.title.Render(spinner[m.frame%len(spinner)] + " unlearn is loading"),
 			theme.status.Render(m.status),
 			theme.bar.Render(bar),
 			theme.detail.Render(ui.Truncate(m.detail, min(64, width-16))),
@@ -288,11 +286,10 @@ func (m loadingModel) View() string {
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, box)
 }
 
-type loadingTheme struct{ title, status, bar, detail lipgloss.Style }
+type loadingTheme struct{ status, bar, detail lipgloss.Style }
 
 func tuiThemeForLoading() loadingTheme {
 	return loadingTheme{
-		title:  lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("81")),
 		status: lipgloss.NewStyle().Foreground(lipgloss.Color("255")),
 		bar:    lipgloss.NewStyle().Foreground(lipgloss.Color("75")),
 		detail: lipgloss.NewStyle().Foreground(lipgloss.Color("245")),

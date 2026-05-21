@@ -25,7 +25,10 @@ func TestLoadingModelShowsProgress(t *testing.T) {
 	m = updated.(loadingModel)
 
 	view := m.View()
-	if !strings.Contains(view, "unlearn is loading") || !strings.Contains(view, "Scanning history evidence") || !strings.Contains(view, "500 lines") {
+	if strings.Contains(view, "unlearn is loading") {
+		t.Fatalf("loading view should not include redundant loading title:\n%s", view)
+	}
+	if !strings.Contains(view, "Scanning history evidence") || !strings.Contains(view, "500 lines") {
 		t.Fatalf("loading view missing progress details:\n%s", view)
 	}
 }
