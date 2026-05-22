@@ -62,6 +62,41 @@ func TestDashboardInventoryUsesCachedIndex(t *testing.T) {
 	}
 }
 
+func TestDashboardInventoryIgnoresLegacyDuplicateCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := config.Default()
+	cfg.SetupComplete = true
+	cfg.ActiveAgents = []string{"pi"}
+	cfg.TrustRoot(filepath.Join(home, ".agents", "skills"))
+	cfg.TrustRoot(filepath.Join(home, ".pi", "agent", "skills"))
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyPayload := `{"skills":[{"ID":"cached","Name":"find-skills","Root":"/stale","EncounteredPath":"/stale/find-skills","Kind":"directory"}],"findings":[{"ID":"duplicate:find-skills","Type":"duplicate","Severity":1,"Title":"find-skills","Skills":null,"Reasons":["legacy duplicate"]}]}`
+	if _, err := db.Exec(`INSERT INTO inventory_cache(key, payload, updated_at) VALUES (?, ?, ?)`, "dashboard-inventory-v1", legacyPayload, "2026-05-22T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	skills, findings, err := loadDashboardInventory(&cliOptions{stateDir: stateDir, configPath: configPath}, inventoryLoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 0 || len(findings) != 0 {
+		t.Fatalf("dashboard loaded legacy duplicate cache instead of rescanning: skills=%#v findings=%#v", skills, findings)
+	}
+}
+
 func TestResetYesRemovesLocalStateButKeepsQuarantine(t *testing.T) {
 	stateDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.toml")

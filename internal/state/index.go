@@ -11,7 +11,9 @@ import (
 	"github.com/mblarsen/unlearn/internal/inventory"
 )
 
-const inventoryCacheKey = "dashboard-inventory-v1"
+// inventoryCacheKey versions cached analysis semantics as well as payload shape.
+// v2 invalidates v1 findings that treated symlink aliases as actionable duplicates.
+const inventoryCacheKey = "dashboard-inventory-v2"
 
 type inventoryCachePayload struct {
 	Skills   []inventory.Skill  `json:"skills"`

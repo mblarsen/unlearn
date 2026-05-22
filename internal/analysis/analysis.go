@@ -194,18 +194,30 @@ func duplicatesAndConflicts(skills []inventory.Skill) []Finding {
 	}
 	var findings []Finding
 	for name, group := range byName {
-		if len(group) < 2 || !groupHasSharedActiveReader(group) {
+		if len(group) < 2 {
 			continue
 		}
+
 		byHash := map[string][]inventory.Skill{}
 		for _, skill := range group {
 			byHash[skill.ContentHash] = append(byHash[skill.ContentHash], skill)
 		}
-		if len(byHash) == 1 {
-			findings = append(findings, Finding{ID: "duplicate:" + name, Type: FindingDuplicate, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name and identical effective content visible to at least one active harness"}})
-			continue
+		for hash, hashGroup := range byHash {
+			duplicateSkills := strictDuplicateSkills(hashGroup)
+			if len(duplicateSkills) < 2 {
+				continue
+			}
+			id := "duplicate:" + name
+			if len(byHash) > 1 {
+				id += ":" + hash
+			}
+			findings = append(findings, Finding{ID: id, Type: FindingDuplicate, Severity: 1, Title: displayName(duplicateSkills), Skills: duplicateSkills, Reasons: []string{"same skill name and identical effective content in distinct physical installs visible to at least one active harness"}})
 		}
-		findings = append(findings, Finding{ID: "conflict:" + name, Type: FindingConflict, Severity: 1, Title: displayName(group), Skills: group, Reasons: []string{"same skill name but different effective content visible to at least one active harness"}})
+
+		conflictSkills := conflictingSkills(group)
+		if len(conflictSkills) >= 2 {
+			findings = append(findings, Finding{ID: "conflict:" + name, Type: FindingConflict, Severity: 1, Title: displayName(conflictSkills), Skills: conflictSkills, Reasons: []string{"same skill name but different effective content visible to at least one active harness"}})
+		}
 	}
 	return findings
 }
@@ -435,18 +447,104 @@ func overlapFinding(skills []inventory.Skill, sharedTerms []string) Finding {
 	return Finding{ID: "overlap:" + strings.Join(lowerNames(names), ":"), Type: FindingOverlap, Severity: 2, Title: summarizeNames(names), Skills: skills, Reasons: []string{"shared domain keywords: " + strings.Join(sharedTerms, ", ")}}
 }
 
-func groupHasSharedActiveReader(group []inventory.Skill) bool {
+func strictDuplicateSkills(group []inventory.Skill) []inventory.Skill {
+	participatingIdentities := map[string]bool{}
 	for i := 0; i < len(group); i++ {
 		for j := i + 1; j < len(group); j++ {
-			if group[i].Root == group[j].Root || intersects(group[i].ActiveAgents, group[j].ActiveAgents) {
-				return true
+			leftIdentity := physicalIdentity(group[i])
+			rightIdentity := physicalIdentity(group[j])
+			if leftIdentity == rightIdentity || !sharedActiveReader(group[i], group[j]) {
+				continue
 			}
-			if len(group[i].ActiveAgents) == 0 && len(group[i].InactiveAgents) == 0 && len(group[j].ActiveAgents) == 0 && len(group[j].InactiveAgents) == 0 {
-				return true
-			}
+			participatingIdentities[leftIdentity] = true
+			participatingIdentities[rightIdentity] = true
 		}
 	}
-	return false
+	return representativeSkillsForPhysicalIdentities(group, participatingIdentities)
+}
+
+func conflictingSkills(group []inventory.Skill) []inventory.Skill {
+	participatingIdentities := map[string]bool{}
+	for i := 0; i < len(group); i++ {
+		for j := i + 1; j < len(group); j++ {
+			leftIdentity := physicalIdentity(group[i])
+			rightIdentity := physicalIdentity(group[j])
+			if leftIdentity == rightIdentity || group[i].ContentHash == group[j].ContentHash || !sharedActiveReader(group[i], group[j]) {
+				continue
+			}
+			participatingIdentities[leftIdentity] = true
+			participatingIdentities[rightIdentity] = true
+		}
+	}
+	return representativeSkillsForPhysicalIdentities(group, participatingIdentities)
+}
+
+func representativeSkillsForPhysicalIdentities(group []inventory.Skill, identities map[string]bool) []inventory.Skill {
+	byIdentity := map[string]inventory.Skill{}
+	for _, skill := range group {
+		identity := physicalIdentity(skill)
+		if !identities[identity] {
+			continue
+		}
+		if existing, ok := byIdentity[identity]; !ok || preferPhysicalRepresentative(skill, existing) {
+			byIdentity[identity] = skill
+		}
+	}
+	out := make([]inventory.Skill, 0, len(byIdentity))
+	for _, skill := range byIdentity {
+		out = append(out, skill)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		left := physicalIdentity(out[i])
+		right := physicalIdentity(out[j])
+		if left != right {
+			return left < right
+		}
+		return out[i].EncounteredPath < out[j].EncounteredPath
+	})
+	return out
+}
+
+func preferPhysicalRepresentative(candidate, existing inventory.Skill) bool {
+	if candidate.IsSymlink != existing.IsSymlink {
+		return !candidate.IsSymlink
+	}
+	candidatePath := representativePath(candidate)
+	existingPath := representativePath(existing)
+	if candidatePath != existingPath {
+		return candidatePath < existingPath
+	}
+	return candidate.ID < existing.ID
+}
+
+func representativePath(skill inventory.Skill) string {
+	if strings.TrimSpace(skill.EncounteredPath) != "" {
+		return skill.EncounteredPath
+	}
+	if strings.TrimSpace(skill.ResolvedPath) != "" {
+		return skill.ResolvedPath
+	}
+	return skill.ID
+}
+
+func physicalIdentity(skill inventory.Skill) string {
+	if strings.TrimSpace(skill.ResolvedPath) != "" {
+		return skill.ResolvedPath
+	}
+	if strings.TrimSpace(skill.EncounteredPath) != "" {
+		return skill.EncounteredPath
+	}
+	return skill.ID
+}
+
+func sharedActiveReader(left, right inventory.Skill) bool {
+	if strings.TrimSpace(left.Root) != "" && left.Root == right.Root {
+		return true
+	}
+	if intersects(left.ActiveAgents, right.ActiveAgents) {
+		return true
+	}
+	return len(left.ActiveAgents) == 0 && len(left.InactiveAgents) == 0 && len(right.ActiveAgents) == 0 && len(right.InactiveAgents) == 0
 }
 
 func intersects(a, b []string) bool {
