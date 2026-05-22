@@ -154,8 +154,8 @@ func TestOverlapUsesLogicalSkillNamesForClusters(t *testing.T) {
 
 func TestDuplicateRequiresSharedActiveHarness(t *testing.T) {
 	skills := []inventory.Skill{
-		{Name: "shared", ID: "a", ContentHash: "h1", Root: "/pi", ActiveAgents: []string{"pi"}},
-		{Name: "shared", ID: "b", ContentHash: "h1", Root: "/codex", ActiveAgents: []string{"codex"}},
+		{Name: "shared", ID: "a", ContentHash: "h1", Root: "/pi", EncounteredPath: "/pi/shared", ActiveAgents: []string{"pi"}},
+		{Name: "shared", ID: "b", ContentHash: "h1", Root: "/codex", EncounteredPath: "/codex/shared", ActiveAgents: []string{"codex"}},
 	}
 	findings := Analyze(skills, Options{})
 	if countType(findings, FindingDuplicate) != 0 {
@@ -165,6 +165,76 @@ func TestDuplicateRequiresSharedActiveHarness(t *testing.T) {
 	findings = Analyze(skills, Options{})
 	if countType(findings, FindingDuplicate) != 1 {
 		t.Fatalf("shared active harness should create duplicate: %#v", findings)
+	}
+}
+
+func TestDuplicateIgnoresSymlinkAliasesToSameResolvedPath(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "find-skills", ID: "physical", ContentHash: "h1", EncounteredPath: "/Users/mbl/.agents/skills/find-skills", ResolvedPath: "/Users/mbl/.agents/skills/find-skills", ActiveAgents: []string{"pi", "gemini-cli"}},
+		{Name: "find-skills", ID: "crush-alias", ContentHash: "h1", EncounteredPath: "/Users/mbl/.config/crush/skills/find-skills", ResolvedPath: "/Users/mbl/.agents/skills/find-skills", IsSymlink: true, InactiveAgents: []string{"crush"}},
+		{Name: "find-skills", ID: "gemini-alias", ContentHash: "h1", EncounteredPath: "/Users/mbl/.gemini/skills/find-skills", ResolvedPath: "/Users/mbl/.agents/skills/find-skills", IsSymlink: true, ActiveAgents: []string{"gemini-cli"}},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingDuplicate) != 0 {
+		t.Fatalf("symlink aliases to one physical skill should not be strict duplicates: %#v", findingsOfType(findings, FindingDuplicate))
+	}
+}
+
+func TestDuplicateRequiresDifferentPhysicalPaths(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "shared", ID: "a", ContentHash: "h1", EncounteredPath: "/one/shared", ResolvedPath: "/one/shared", ActiveAgents: []string{"pi"}},
+		{Name: "shared", ID: "b", ContentHash: "h1", EncounteredPath: "/two/shared", ResolvedPath: "/two/shared", ActiveAgents: []string{"pi"}},
+	}
+	findings := Analyze(skills, Options{})
+	duplicates := findingsOfType(findings, FindingDuplicate)
+	if len(duplicates) != 1 {
+		t.Fatalf("distinct physical installs visible to pi should create one duplicate, got %#v", findings)
+	}
+	if len(duplicates[0].Skills) != 2 {
+		t.Fatalf("duplicate should include both physical installs: %#v", duplicates[0])
+	}
+}
+
+func TestDuplicateSuppressesReplicatedInstallsWithoutSharedActiveHarness(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "replicated", ID: "a", ContentHash: "h1", EncounteredPath: "/pi/replicated", ResolvedPath: "/pi/replicated", ActiveAgents: []string{"pi"}},
+		{Name: "replicated", ID: "b", ContentHash: "h1", EncounteredPath: "/codex/replicated", ResolvedPath: "/codex/replicated", ActiveAgents: []string{"codex"}},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingDuplicate) != 0 {
+		t.Fatalf("replicated installs for non-overlapping active harnesses should not be strict duplicates: %#v", findingsOfType(findings, FindingDuplicate))
+	}
+}
+
+func TestConflictStillEmitsForDifferentContentVisibleToSameActiveHarness(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "conflict", ID: "a", ContentHash: "h1", EncounteredPath: "/one/conflict", ResolvedPath: "/one/conflict", ActiveAgents: []string{"pi"}},
+		{Name: "conflict", ID: "b", ContentHash: "h2", EncounteredPath: "/two/conflict", ResolvedPath: "/two/conflict", ActiveAgents: []string{"pi"}},
+	}
+	findings := Analyze(skills, Options{})
+	if countType(findings, FindingConflict) != 1 {
+		t.Fatalf("different content visible to same active harness should conflict: %#v", findings)
+	}
+}
+
+func TestDuplicateFindingOmitsSymlinkAliasesWhenPhysicalDuplicateExists(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "find-skills", ID: "physical", ContentHash: "h1", EncounteredPath: "/Users/mbl/.agents/skills/find-skills", ResolvedPath: "/Users/mbl/.agents/skills/find-skills", ActiveAgents: []string{"pi", "gemini-cli"}},
+		{Name: "find-skills", ID: "gemini-alias", ContentHash: "h1", EncounteredPath: "/Users/mbl/.gemini/skills/find-skills", ResolvedPath: "/Users/mbl/.agents/skills/find-skills", IsSymlink: true, ActiveAgents: []string{"gemini-cli"}},
+		{Name: "find-skills", ID: "duplicate", ContentHash: "h1", EncounteredPath: "/Users/mbl/.pi/agent/skills/find-skills", ResolvedPath: "/Users/mbl/.pi/agent/skills/find-skills", ActiveAgents: []string{"pi"}},
+	}
+	findings := Analyze(skills, Options{})
+	duplicates := findingsOfType(findings, FindingDuplicate)
+	if len(duplicates) != 1 {
+		t.Fatalf("expected one actionable duplicate, got %#v", findings)
+	}
+	if len(duplicates[0].Skills) != 2 {
+		t.Fatalf("duplicate should include one representative per physical install, got %#v", duplicates[0])
+	}
+	for _, skill := range duplicates[0].Skills {
+		if skill.ID == "gemini-alias" {
+			t.Fatalf("duplicate should omit symlink alias to already represented physical install: %#v", duplicates[0])
+		}
 	}
 }
 

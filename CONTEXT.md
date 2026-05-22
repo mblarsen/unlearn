@@ -32,7 +32,7 @@ A removal flow where `unlearn` asks for the action per selected skill instead of
 
 ### Duplicate skill
 
-A skill that has the same name and identical effective content as another installed skill, and the installs are visible to at least one shared active harness. Same-name/content installs in roots for different non-overlapping active harnesses are not actionable duplicates, because each harness may need its own readable copy.
+A strict duplicate is a skill that has the same name and identical effective content as another installed skill, resolves to a different physical filesystem object, and the installs are visible to at least one shared active harness. Same-name/content installs in roots for different non-overlapping active harnesses are weak duplicates rather than actionable cleanup candidates, because each harness may need its own readable copy. Same-name/content installs that resolve to the same physical filesystem object are symlink aliases rather than duplicate cleanup candidates.
 
 ### Conflicting skill
 
@@ -76,7 +76,7 @@ Display-only evidence about where a skill came from, such as an npm package, Git
 
 ### Symlinked alias
 
-A skill installation path that resolves to the same physical directory or file content as another installation path. Whether symlinked aliases should be treated as cleanup candidates or intentional sharing is unresolved.
+A skill installation path that resolves to the same physical directory or file content as another installation path. Symlink aliases are inventory/provenance facts, but they are not strict duplicate cleanup candidates on their own because removing one alias may affect intentional shared-root access rather than remove redundant content.
 
 ### Conflict resolution
 
