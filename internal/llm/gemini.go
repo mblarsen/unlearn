@@ -175,6 +175,48 @@ func (a GeminiAnalyzer) LintSkillQuality(ctx context.Context, request SkillQuali
 	return SkillQualityResult{Issues: issues, Provider: "gemini", Model: a.model(), ContentHash: request.ContentHash}, nil
 }
 
+func (a GeminiAnalyzer) GenerateMergedSkillDraft(ctx context.Context, request DraftRequest) (DraftResult, error) {
+	if len(request.Skills) < 2 {
+		return DraftResult{}, fmt.Errorf("select at least two skills to draft a merge")
+	}
+	if request.PromptVersion == "" {
+		request.PromptVersion = DraftPromptVersion
+	}
+	items := make([]map[string]any, 0, len(request.Skills))
+	for _, skill := range request.Skills {
+		items = append(items, map[string]any{
+			"name":        skill.Name,
+			"description": skill.Description,
+			"frontmatter": skill.Frontmatter,
+			"body":        skill.Body,
+			"path":        skill.Path,
+		})
+	}
+	data, err := json.Marshal(items)
+	if err != nil {
+		return DraftResult{}, err
+	}
+	prompt := strings.Join([]string{
+		"Draft a proposed merged SKILL.md for the selected AI-agent skills.",
+		"This is preview-only: do not describe filesystem actions, renames, deletion, quarantine, or installation steps.",
+		"Return only plain markdown for one complete SKILL.md file, including YAML frontmatter and the body.",
+		"The frontmatter must include a concise kebab-case name and a description that preserves the useful trigger intent from the inputs without becoming overly broad.",
+		"Preserve critical safety constraints, workflow steps, command examples, and relative references only when they still make sense for one combined skill.",
+		"Remove duplicate or contradictory wording. Prefer clear sections and concise instructions.",
+		"Selected skills JSON:",
+		string(data),
+	}, "\n")
+	text, err := a.generateText(ctx, prompt, 8192, false)
+	if err != nil {
+		return DraftResult{}, err
+	}
+	markdown := strings.TrimSpace(text)
+	if markdown == "" {
+		return DraftResult{}, fmt.Errorf("Gemini returned an empty merged skill draft")
+	}
+	return DraftResult{Markdown: markdown, Provider: "gemini", Model: a.model(), PromptVersion: request.PromptVersion}, nil
+}
+
 func (a GeminiAnalyzer) generateText(ctx context.Context, prompt string, maxTokens int, jsonMode bool) (string, error) {
 	if strings.TrimSpace(a.APIKey) == "" {
 		return "", fmt.Errorf("missing Gemini API key")

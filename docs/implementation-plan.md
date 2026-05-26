@@ -133,7 +133,17 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
-Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis now has minimal Gemini REST support for cached summaries and semantic-overlap groups behind `--with-llm` plus `GEMINI_API_KEY`/`GOOGLE_API_KEY`, but richer provider selection remains future work; Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, SQLite history scanning covers explicit database paths plus bounded discovery under configured scan roots, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
+Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis now has minimal Gemini REST support for cached summaries, semantic-overlap groups, and preview-only merged-skill draft generation behind `--with-llm`/setup opt-in plus `GEMINI_API_KEY`/`GOOGLE_API_KEY`, but richer provider selection remains future work; Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, SQLite history scanning covers explicit database paths plus bounded discovery under configured scan roots, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
+
+## Priority 4 — preview-only merged skill drafts
+
+- [x] Add an LLM draft-generation interface and Gemini implementation for selected skill metadata/content.
+- [x] Cache draft results by selected content hashes plus provider/model/prompt version.
+- [x] Add dashboard merge-draft flow with arbitrary logical skill selection.
+- [x] Group and preselect the current overlap finding's skills when invoked from an overlap detail.
+- [x] Keep the flow preview-only: display a read-only `SKILL.md` draft and do not mutate skill files.
+- [x] Show friendly advisory status when LLM-assisted draft generation is disabled or missing API credentials.
+- [x] Cover picker selection, arbitrary skills, overlap grouping/preselection, generator success/failure, cache behavior, Gemini prompting, and no skill inventory mutation with tests.
 
 ## Issue #2 — Pi history scan flow
 

@@ -11,6 +11,7 @@ import (
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 	"github.com/mblarsen/unlearn/internal/ui"
 )
 
@@ -40,6 +41,9 @@ const (
 	StateSelectRestore
 	StateSelectInstall
 	StateSelectBatchRoot
+	StateSelectDraftSkills
+	StateGeneratingDraft
+	StatePreviewDraft
 )
 
 type PendingAction int
@@ -79,6 +83,18 @@ type Model struct {
 	Message           string
 	Status            string
 	RenamePreview     fsactions.RenamePreview
+	DraftCursor       int
+	DraftScroll       int
+	DraftChoices      []draftSkillChoice
+	DraftSelections   map[int]bool
+	DraftPreview      string
+	DraftProvider     string
+	DraftModel        string
+}
+
+type draftSkillChoice struct {
+	Skill          inventory.Skill
+	OverlapGrouped bool
 }
 
 func New(skills []inventory.Skill, findings []analysis.Finding) Model {
@@ -104,8 +120,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateInteraction(msg)
 		}
 		return m.updateNormal(msg)
+	case draftMergeResultMsg:
+		return m.handleDraftMergeResult(msg), nil
 	}
 	return m, nil
+}
+
+type draftMergeResultMsg struct {
+	Skills []inventory.Skill
+	Result llm.DraftResult
+	Err    error
+}
+
+func draftMergeCmd(service ActionService, skills []inventory.Skill) tea.Cmd {
+	selected := append([]inventory.Skill(nil), skills...)
+	return func() tea.Msg {
+		result, err := service.DraftMerge(selected)
+		return draftMergeResultMsg{Skills: selected, Result: result, Err: err}
+	}
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -154,6 +186,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.beginSkillAction(ActionRestore)
 	case "ctrl+b":
 		m.beginBatchRootAction()
+	case "m":
+		m.beginDraftMergeAction()
 	}
 	return m, nil
 }
@@ -176,6 +210,12 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateInstallSelection(msg)
 	case StateSelectBatchRoot:
 		return m.updateBatchRootSelection(msg)
+	case StateSelectDraftSkills:
+		return m.updateDraftSkillSelection(msg)
+	case StateGeneratingDraft:
+		return m.updateDraftGeneration(msg)
+	case StatePreviewDraft:
+		return m.updateDraftPreview(msg)
 	default:
 		m.resetInteraction()
 		return m, nil
@@ -361,6 +401,81 @@ func (m Model) updateBatchRootSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) updateDraftSkillSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		if m.DraftCursor < len(m.DraftChoices)-1 {
+			m.DraftCursor++
+		}
+	case "k", "up":
+		if m.DraftCursor > 0 {
+			m.DraftCursor--
+		}
+	case " ":
+		if len(m.DraftChoices) > 0 {
+			if m.DraftSelections == nil {
+				m.DraftSelections = map[int]bool{}
+			}
+			m.DraftSelections[m.DraftCursor] = !m.DraftSelections[m.DraftCursor]
+		}
+	case "enter":
+		selected := m.selectedDraftSkills()
+		if len(selected) < 2 {
+			m.Status = "select at least two skills for a merged draft"
+			return m, nil
+		}
+		m.PendingSkills = selected
+		m.State = StateGeneratingDraft
+		m.Message = fmt.Sprintf("Generating read-only merged SKILL.md preview for %d selected skills", len(selected))
+		return m, draftMergeCmd(m.Actions, selected)
+	case "esc", "q":
+		m.cancel("merge draft cancelled")
+	}
+	return m, nil
+}
+
+func (m Model) updateDraftGeneration(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		m.cancel("merge draft cancelled")
+	}
+	return m, nil
+}
+
+func (m Model) handleDraftMergeResult(msg draftMergeResultMsg) Model {
+	if m.State != StateGeneratingDraft {
+		return m
+	}
+	if msg.Err != nil {
+		m.cancel("merge draft unavailable: " + msg.Err.Error())
+		return m
+	}
+	m.PendingSkills = append([]inventory.Skill(nil), msg.Skills...)
+	m.DraftPreview = msg.Result.Markdown
+	m.DraftProvider = msg.Result.Provider
+	m.DraftModel = msg.Result.Model
+	m.DraftScroll = 0
+	m.State = StatePreviewDraft
+	m.Message = fmt.Sprintf("Read-only merged SKILL.md preview for %d selected skills", len(msg.Skills))
+	return m
+}
+
+func (m Model) updateDraftPreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "j", "down":
+		if m.DraftScroll < max(0, len(strings.Split(m.DraftPreview, "\n"))-1) {
+			m.DraftScroll++
+		}
+	case "k", "up":
+		if m.DraftScroll > 0 {
+			m.DraftScroll--
+		}
+	case "esc", "q", "enter":
+		m.complete("closed merge draft preview without writing files")
+	}
+	return m, nil
+}
+
 func (m Model) updateRenamePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
@@ -473,6 +588,20 @@ func (m *Model) beginBatchRootAction() {
 	m.BatchRootCursor = 0
 	m.State = StateSelectBatchRoot
 	m.Message = "Choose a root to quarantine duplicate installs from"
+}
+
+func (m *Model) beginDraftMergeAction() {
+	choices, preselected := m.draftSkillChoices()
+	if len(choices) == 0 {
+		m.Status = "no skills available for merge draft"
+		return
+	}
+	m.DraftChoices = choices
+	m.DraftSelections = preselected
+	m.DraftCursor = firstSelectedIndex(preselected)
+	m.DraftScroll = 0
+	m.State = StateSelectDraftSkills
+	m.Message = "Select any skills to combine into a preview-only SKILL.md draft"
 }
 
 func (m *Model) beginRestoreAction() {
@@ -673,6 +802,13 @@ func (m *Model) resetInteraction() {
 	m.Input = ""
 	m.Message = ""
 	m.RenamePreview = fsactions.RenamePreview{}
+	m.DraftCursor = 0
+	m.DraftScroll = 0
+	m.DraftChoices = nil
+	m.DraftSelections = nil
+	m.DraftPreview = ""
+	m.DraftProvider = ""
+	m.DraftModel = ""
 }
 
 func (m *Model) complete(status string) {
@@ -870,15 +1006,18 @@ func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 
 func (m Model) renderModalBody(theme ui.Theme, width, height int) string {
 	modalWidth := width - 16
-	if modalWidth > 76 {
-		modalWidth = 76
+	if m.State == StatePreviewDraft && width > 100 {
+		modalWidth = width - 10
+	}
+	if modalWidth > 110 {
+		modalWidth = 110
 	}
 	if modalWidth < 52 {
 		modalWidth = width - 4
 	}
 	contentWidth := modalWidth - 6
-	lines := m.renderInteraction(theme, contentWidth)
-	modal := theme.Modal.Width(modalWidth - 2).Render(strings.Join(lines, "\n"))
+	lines := m.renderInteraction(theme, contentWidth, height-4)
+	modal := theme.Modal.Width(modalWidth - 2).Render(strings.Join(ui.FitLines(lines, height-4), "\n"))
 	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
 }
 
@@ -889,7 +1028,7 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 		return strings.Join(ui.PadLines(lines, height), "\n")
 	}
 	if m.State != StateNormal {
-		lines = append(lines, m.renderInteraction(theme, width)...)
+		lines = append(lines, m.renderInteraction(theme, width, height-1)...)
 		return strings.Join(ui.PadLines(ui.FitLines(lines, height), height), "\n")
 	}
 	if m.Mode == ViewFindings {
@@ -900,7 +1039,7 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 	return strings.Join(ui.PadLines(ui.FitLines(lines, height), height), "\n")
 }
 
-func (m Model) renderInteraction(theme ui.Theme, width int) []string {
+func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 	label := "CONFIRM ACTION"
 	if m.State == StateSelectInstall {
 		label = "CHOOSE EXACT INSTALL"
@@ -910,6 +1049,15 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 	}
 	if m.State == StateSelectBatchRoot {
 		label = "BATCH DUPLICATES BY ROOT"
+	}
+	if m.State == StateSelectDraftSkills {
+		label = "DRAFT MERGED SKILL"
+	}
+	if m.State == StateGeneratingDraft {
+		label = "GENERATING MERGE DRAFT"
+	}
+	if m.State == StatePreviewDraft {
+		label = "READ-ONLY MERGE DRAFT"
 	}
 	lines := []string{theme.BadgeWarn.Render(label), ""}
 	messageLines := strings.Split(m.Message, "\n")
@@ -979,10 +1127,86 @@ func (m Model) renderInteraction(theme ui.Theme, width int) []string {
 			lines = append(lines, style.Render(ui.Truncate(prefix+fmt.Sprintf("All %d installs", len(m.pendingInstallChoices())), width)))
 		}
 	}
+	if m.State == StateSelectDraftSkills {
+		lines = append(lines, m.renderDraftSkillPicker(theme, width, height-len(lines)-3)...)
+	}
+	if m.State == StateGeneratingDraft {
+		lines = append(lines, "", theme.Muted.Render("Generating preview… the dashboard will update when the LLM response is ready."))
+	}
+	if m.State == StatePreviewDraft {
+		lines = append(lines, m.renderDraftPreview(theme, width, height-len(lines)-3)...)
+	}
 	if m.Input != "" || m.State == StateInputRename {
 		lines = append(lines, "", theme.Muted.Render("Input"), theme.Accent.Render("› ")+ui.Truncate(m.Input, width-2))
 	}
 	lines = append(lines, "", theme.Muted.Render("Options"), optionLineForState(theme, m.State))
+	return lines
+}
+
+func (m Model) renderDraftSkillPicker(theme ui.Theme, width, height int) []string {
+	selectedCount := len(m.selectedDraftSkills())
+	lines := []string{"", theme.Muted.Render(fmt.Sprintf("Use ↑/↓, space to select any skills, enter to generate (%d selected):", selectedCount))}
+	rows := m.renderDraftChoiceRows(theme, width, max(1, height-1))
+	lines = append(lines, rows...)
+	return lines
+}
+
+func (m Model) renderDraftChoiceRows(theme ui.Theme, width, height int) []string {
+	if len(m.DraftChoices) == 0 {
+		return []string{theme.Muted.Render("  No skills available")}
+	}
+	var rows []string
+	selectedLine := 0
+	lastGrouped := false
+	for i, choice := range m.DraftChoices {
+		if choice.OverlapGrouped && !lastGrouped {
+			rows = append(rows, theme.Section.Render(ui.Truncate("Overlap group from current finding", width)))
+		}
+		if !choice.OverlapGrouped && (lastGrouped || i == 0) {
+			label := "All skills"
+			if i > 0 {
+				label = "Other skills"
+			}
+			rows = append(rows, theme.Section.Render(ui.Truncate(label, width)))
+		}
+		lastGrouped = choice.OverlapGrouped
+		mark := "[ ]"
+		if m.DraftSelections[i] {
+			mark = "[x]"
+		}
+		prefix := "  "
+		style := theme.Row
+		if i == m.DraftCursor {
+			prefix = "▸ "
+			style = theme.SelectedRow.Width(width)
+			selectedLine = len(rows)
+		}
+		label := fmt.Sprintf("%s %s", mark, draftChoiceLabel(choice.Skill))
+		rows = append(rows, style.Render(ui.Truncate(prefix+label, width)))
+	}
+	return windowLines(rows, height, selectedLine)
+}
+
+func (m Model) renderDraftPreview(theme ui.Theme, width, height int) []string {
+	provider := emptyDetailLabel(m.DraftProvider)
+	model := emptyDetailLabel(m.DraftModel)
+	lines := []string{"", theme.Muted.Render(fmt.Sprintf("Generated by %s/%s. Preview only; no files were written.", provider, model)), ""}
+	previewLines := strings.Split(strings.TrimSpace(m.DraftPreview), "\n")
+	visible := max(1, height-4)
+	start := m.DraftScroll
+	if start > max(0, len(previewLines)-visible) {
+		start = max(0, len(previewLines)-visible)
+	}
+	end := min(len(previewLines), start+visible)
+	if start > 0 {
+		lines = append(lines, theme.Muted.Render("… above"))
+	}
+	for _, line := range previewLines[start:end] {
+		lines = append(lines, theme.Row.Render(ui.Truncate(line, width)))
+	}
+	if end < len(previewLines) {
+		lines = append(lines, theme.Muted.Render("… more"))
+	}
 	return lines
 }
 
@@ -1192,6 +1416,12 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "restore"}, {"esc", "cancel"}}
 		case StateSelectBatchRoot:
 			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "preview"}, {"esc", "cancel"}}
+		case StateSelectDraftSkills:
+			return []keyPart{{"↑↓/jk", "choose"}, {"space", "toggle"}, {"enter", "generate"}, {"esc", "cancel"}}
+		case StateGeneratingDraft:
+			return []keyPart{{"esc", "cancel"}}
+		case StatePreviewDraft:
+			return []keyPart{{"↑↓/jk", "scroll"}, {"esc", "close"}}
 		case StateInputRename:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		}
@@ -1202,7 +1432,7 @@ func (m Model) keyParts() []keyPart {
 	} else {
 		parts = append(parts, keyPart{"f", "findings"})
 	}
-	parts = append(parts, keyPart{"ctrl+k", "keep"}, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"q", "quit"})
+	parts = append(parts, keyPart{"m", "draft merge"}, keyPart{"ctrl+k", "keep"}, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"q", "quit"})
 	return parts
 }
 
@@ -1309,6 +1539,12 @@ func optionLineForState(theme ui.Theme, state InteractionState) string {
 		return theme.Key.Render("enter") + " restore highlighted skill  " + theme.Key.Render("esc") + " cancel"
 	case StateSelectBatchRoot:
 		return theme.Key.Render("enter") + " preview root cleanup  " + theme.Key.Render("esc") + " cancel"
+	case StateSelectDraftSkills:
+		return theme.Key.Render("space") + " toggle  " + theme.Key.Render("enter") + " generate preview  " + theme.Key.Render("esc") + " cancel"
+	case StateGeneratingDraft:
+		return theme.Key.Render("esc") + " cancel"
+	case StatePreviewDraft:
+		return theme.Key.Render("↑↓/jk") + " scroll  " + theme.Key.Render("esc") + " close"
 	case StateInputRename:
 		return theme.Key.Render("enter") + " submit  " + theme.Key.Render("esc") + " cancel"
 	default:
@@ -1450,6 +1686,70 @@ func descriptionSnippet(skill inventory.Skill, width int) string {
 	return ui.Truncate(description, width)
 }
 
+func (m Model) draftSkillChoices() ([]draftSkillChoice, map[int]bool) {
+	preselectedNames := map[string]bool{}
+	if finding, ok := m.selectedFinding(); ok && finding.Type == analysis.FindingOverlap {
+		for _, skill := range finding.Skills {
+			preselectedNames[strings.ToLower(strings.TrimSpace(skill.Name))] = true
+		}
+	}
+	choices := make([]draftSkillChoice, 0, len(m.SkillGroups))
+	add := func(grouped bool) {
+		for _, group := range m.SkillGroups {
+			name := strings.ToLower(strings.TrimSpace(group.Name))
+			if preselectedNames[name] != grouped {
+				continue
+			}
+			choices = append(choices, draftSkillChoice{Skill: group.Representative, OverlapGrouped: grouped})
+		}
+	}
+	add(true)
+	add(false)
+	selections := map[int]bool{}
+	for i, choice := range choices {
+		if choice.OverlapGrouped {
+			selections[i] = true
+		}
+	}
+	return choices, selections
+}
+
+func (m Model) selectedDraftSkills() []inventory.Skill {
+	var selected []inventory.Skill
+	for i, choice := range m.DraftChoices {
+		if m.DraftSelections[i] {
+			selected = append(selected, choice.Skill)
+		}
+	}
+	return selected
+}
+
+func firstSelectedIndex(selections map[int]bool) int {
+	for i := 0; ; i++ {
+		selected, ok := selections[i]
+		if !ok {
+			if i > len(selections) {
+				return 0
+			}
+			continue
+		}
+		if selected {
+			return i
+		}
+	}
+}
+
+func draftChoiceLabel(skill inventory.Skill) string {
+	label := skill.Name
+	if skill.Description != "" && !broadGenericDescription(skill.Description) {
+		label += " · " + ui.Truncate(skill.Description, 48)
+	}
+	if skill.Root != "" {
+		label += " · " + skill.Root
+	}
+	return label
+}
+
 func (m Model) pendingInstallChoices() []inventory.Skill {
 	if len(m.PendingFinding.Skills) > 0 {
 		return m.PendingFinding.Skills
@@ -1573,6 +1873,13 @@ func homePrefix() string { return "" }
 
 func max(a, b int) int {
 	if a > b {
+		return a
+	}
+	return b
+}
+
+func min(a, b int) int {
+	if a < b {
 		return a
 	}
 	return b

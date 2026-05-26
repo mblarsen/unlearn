@@ -58,6 +58,33 @@ func TestGeminiAnalyzerSummarizeFallsBackFromVeryLongResponse(t *testing.T) {
 	}
 }
 
+func TestGeminiAnalyzerGenerateMergedSkillDraft(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req geminiGenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		prompt := req.Contents[0].Parts[0].Text
+		if !strings.Contains(prompt, "preview-only") || !strings.Contains(prompt, "Return only plain markdown") || !strings.Contains(prompt, "alpha") || !strings.Contains(prompt, "beta") {
+			t.Fatalf("draft prompt missing constraints or selected skills: %s", prompt)
+		}
+		if req.GenerationConfig.MaxOutputTokens < 4096 {
+			t.Fatalf("draft token budget too small: %d", req.GenerationConfig.MaxOutputTokens)
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"---\nname: merged-alpha-beta\ndescription: Combined alpha beta workflows\n---\n\n# Merged"}]}}]}`))
+	}))
+	defer server.Close()
+
+	analyzer := GeminiAnalyzer{APIKey: "test-key", Model: "gemini-test", BaseURL: server.URL, Client: server.Client()}
+	result, err := analyzer.GenerateMergedSkillDraft(context.Background(), DraftRequest{Skills: []DraftSkill{{Name: "alpha", Body: "alpha body"}, {Name: "beta", Body: "beta body"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Markdown, "merged-alpha-beta") || result.Provider != "gemini" || result.Model != "gemini-test" || result.PromptVersion != DraftPromptVersion {
+		t.Fatalf("unexpected draft result: %#v", result)
+	}
+}
+
 func TestGeminiAnalyzerFindOverlapsParsesJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req geminiGenerateRequest

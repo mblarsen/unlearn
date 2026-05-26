@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/llm"
 )
 
 type fakeActionService struct {
@@ -23,6 +25,9 @@ type fakeActionService struct {
 	quarantinedList  []string
 	deleteTypedName  string
 	deleteBatchToken string
+	draftMarkdown    string
+	draftErr         error
+	draftSelected    []string
 }
 
 func (f *fakeActionService) KeepSkill(skill inventory.Skill) error {
@@ -81,6 +86,20 @@ func (f *fakeActionService) QuarantinedSkills() ([]string, error) {
 func (f *fakeActionService) Restore(name string, destRoot string) (string, error) {
 	f.restored = append(f.restored, name+":"+destRoot)
 	return destRoot + "/" + name, nil
+}
+func (f *fakeActionService) DraftMerge(skills []inventory.Skill) (llm.DraftResult, error) {
+	f.draftSelected = nil
+	for _, skill := range skills {
+		f.draftSelected = append(f.draftSelected, skill.Name)
+	}
+	if f.draftErr != nil {
+		return llm.DraftResult{}, f.draftErr
+	}
+	markdown := f.draftMarkdown
+	if markdown == "" {
+		markdown = "---\nname: merged-skill\ndescription: Combined skill\n---\n\n# Combined"
+	}
+	return llm.DraftResult{Markdown: markdown, Provider: "fake", Model: "test"}, nil
 }
 
 func TestDashboardKeepAndIgnoreFindingActions(t *testing.T) {
@@ -357,6 +376,121 @@ func TestDashboardRestoreUsesPopupSelection(t *testing.T) {
 	m = updated.(Model)
 	if len(service.restored) != 1 || service.restored[0] != "older:/root" {
 		t.Fatalf("restored=%v", service.restored)
+	}
+}
+
+func TestDashboardDraftMergePickerAllowsArbitrarySkills(t *testing.T) {
+	service := &fakeActionService{}
+	skills := []inventory.Skill{
+		{Name: "alpha", Description: "Alpha workflow", Root: "/one", Body: "alpha body"},
+		{Name: "beta", Description: "Beta workflow", Root: "/two", Body: "beta body"},
+		{Name: "gamma", Description: "Gamma workflow", Root: "/three", Body: "gamma body"},
+	}
+	m := NewWithActions(skills, nil, service)
+	m.Mode = ViewSkills
+	updated, _ := m.Update(key("m"))
+	m = updated.(Model)
+	if m.State != StateSelectDraftSkills || !strings.Contains(m.View(), "All skills") || !strings.Contains(m.View(), "alpha") || !strings.Contains(m.View(), "gamma") {
+		t.Fatalf("expected arbitrary skill picker:\n%s", m.View())
+	}
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateGeneratingDraft || cmd == nil {
+		t.Fatalf("expected async draft generation, state=%v cmd nil=%v", m.State, cmd == nil)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.State != StatePreviewDraft || len(service.draftSelected) != 2 || service.draftSelected[0] != "alpha" || service.draftSelected[1] != "beta" {
+		t.Fatalf("state=%v selected=%v view=%s", m.State, service.draftSelected, m.View())
+	}
+	if !strings.Contains(m.View(), "READ-ONLY MERGE DRAFT") || !strings.Contains(m.View(), "Preview only") {
+		t.Fatalf("expected read-only preview:\n%s", m.View())
+	}
+}
+
+func TestDashboardDraftMergeGroupsAndPreselectsCurrentOverlap(t *testing.T) {
+	service := &fakeActionService{}
+	skills := []inventory.Skill{
+		{Name: "alpha", Description: "Alpha workflow", Root: "/one"},
+		{Name: "beta", Description: "Beta workflow", Root: "/two"},
+		{Name: "gamma", Description: "Gamma workflow", Root: "/three"},
+	}
+	findings := []analysis.Finding{{ID: "overlap:alpha:beta", Type: analysis.FindingOverlap, Title: "alpha / beta", Skills: skills[:2]}}
+	m := NewWithActions(skills, findings, service)
+	updated, _ := m.Update(key("m"))
+	m = updated.(Model)
+	view := m.View()
+	if m.State != StateSelectDraftSkills || !strings.Contains(view, "Overlap group from current finding") || !strings.Contains(view, "Other skills") {
+		t.Fatalf("expected grouped overlap picker:\n%s", view)
+	}
+	if !m.DraftSelections[0] || !m.DraftSelections[1] || m.DraftSelections[2] {
+		t.Fatalf("expected alpha/beta preselected, selections=%v", m.DraftSelections)
+	}
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateGeneratingDraft || cmd == nil {
+		t.Fatalf("expected async draft generation, state=%v cmd nil=%v", m.State, cmd == nil)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.State != StatePreviewDraft || strings.Join(service.draftSelected, ",") != "alpha,beta" {
+		t.Fatalf("state=%v selected=%v", m.State, service.draftSelected)
+	}
+}
+
+func TestDashboardDraftMergeFailureShowsFriendlyAdvisory(t *testing.T) {
+	service := &fakeActionService{draftErr: fmt.Errorf("GEMINI_API_KEY or GOOGLE_API_KEY is required")}
+	skills := []inventory.Skill{{Name: "alpha"}, {Name: "beta"}}
+	m := NewWithActions(skills, nil, service)
+	m.Mode = ViewSkills
+	updated, _ := m.Update(key("m"))
+	m = updated.(Model)
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateGeneratingDraft || cmd == nil {
+		t.Fatalf("expected async draft generation, state=%v cmd nil=%v", m.State, cmd == nil)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if m.State != StateNormal || !strings.Contains(m.Status, "merge draft unavailable") || !strings.Contains(m.Status, "GEMINI_API_KEY") {
+		t.Fatalf("expected advisory status, state=%v status=%q", m.State, m.Status)
+	}
+}
+
+func TestDraftMergePreviewDoesNotMutateInventory(t *testing.T) {
+	service := &fakeActionService{}
+	skills := []inventory.Skill{{Name: "alpha"}, {Name: "beta"}}
+	m := NewWithActions(skills, nil, service)
+	m.Mode = ViewSkills
+	updated, _ := m.Update(key("m"))
+	m = updated.(Model)
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key(" "))
+	m = updated.(Model)
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if m.State != StateGeneratingDraft || cmd == nil {
+		t.Fatalf("expected async draft generation, state=%v cmd nil=%v", m.State, cmd == nil)
+	}
+	updated, _ = m.Update(cmd())
+	m = updated.(Model)
+	if len(m.Skills) != 2 || len(service.quarantined) != 0 || len(service.deleted) != 0 || len(service.renamed) != 0 {
+		t.Fatalf("draft preview mutated state: skills=%d quarantined=%v deleted=%v renamed=%v", len(m.Skills), service.quarantined, service.deleted, service.renamed)
 	}
 }
 

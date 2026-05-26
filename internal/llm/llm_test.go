@@ -156,6 +156,47 @@ func TestCachedAnalyzerQualityCacheInvalidatesOnProviderModelChange(t *testing.T
 	}
 }
 
+func TestCachedDraftGeneratorReusesDraftBySelectedContentAndModel(t *testing.T) {
+	delegate := &countingDraftGenerator{markdown: "---\nname: merged\n---\n\n# Merged"}
+	generator := NewCachedDraftGenerator(t.TempDir(), delegate)
+	request := DraftRequest{PromptVersion: DraftPromptVersion, Skills: []DraftSkill{
+		{Name: "alpha", ContentHash: "hash-a", Body: "alpha"},
+		{Name: "beta", ContentHash: "hash-b", Body: "beta"},
+	}}
+	reversed := DraftRequest{PromptVersion: DraftPromptVersion, Skills: []DraftSkill{request.Skills[1], request.Skills[0]}}
+
+	first, err := generator.GenerateMergedSkillDraft(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := generator.GenerateMergedSkillDraft(context.Background(), reversed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delegate.calls != 1 {
+		t.Fatalf("expected delegate once, got %d", delegate.calls)
+	}
+	if second.Markdown != first.Markdown || second.Provider != "test" || second.Model != "fake" {
+		t.Fatalf("unexpected cached draft: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestCachedDraftGeneratorInvalidatesOnContentHashChange(t *testing.T) {
+	delegate := &countingDraftGenerator{markdown: "draft"}
+	generator := NewCachedDraftGenerator(t.TempDir(), delegate)
+	base := DraftRequest{PromptVersion: DraftPromptVersion, Skills: []DraftSkill{{Name: "alpha", ContentHash: "hash-a"}, {Name: "beta", ContentHash: "hash-b"}}}
+	changed := DraftRequest{PromptVersion: DraftPromptVersion, Skills: []DraftSkill{{Name: "alpha", ContentHash: "hash-a"}, {Name: "beta", ContentHash: "hash-c"}}}
+	if _, err := generator.GenerateMergedSkillDraft(context.Background(), base); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := generator.GenerateMergedSkillDraft(context.Background(), changed); err != nil {
+		t.Fatal(err)
+	}
+	if delegate.calls != 2 {
+		t.Fatalf("expected changed content hash to miss cache, calls=%d", delegate.calls)
+	}
+}
+
 type countingAnalyzer struct {
 	summaryCalls int
 	overlapCalls int
@@ -202,6 +243,34 @@ func (a *countingAnalyzer) ProviderName() string {
 func (a *countingAnalyzer) ModelName() string {
 	if a.model != "" {
 		return a.model
+	}
+	return "fake"
+}
+
+type countingDraftGenerator struct {
+	calls    int
+	markdown string
+	provider string
+	model    string
+}
+
+func (g *countingDraftGenerator) GenerateMergedSkillDraft(ctx context.Context, request DraftRequest) (DraftResult, error) {
+	g.calls++
+	provider := g.ProviderName()
+	model := g.ModelName()
+	return DraftResult{Markdown: g.markdown, Provider: provider, Model: model, PromptVersion: request.PromptVersion}, nil
+}
+
+func (g *countingDraftGenerator) ProviderName() string {
+	if g.provider != "" {
+		return g.provider
+	}
+	return "test"
+}
+
+func (g *countingDraftGenerator) ModelName() string {
+	if g.model != "" {
+		return g.model
 	}
 	return "fake"
 }

@@ -15,6 +15,7 @@ import (
 const (
 	overlapCacheVersion      = "overlap-v1"
 	skillQualityCacheVersion = "skill-quality-v1"
+	DraftPromptVersion       = "merged-skill-draft-v1"
 )
 
 type GeneratedSummary struct {
@@ -77,6 +78,36 @@ type ActivationRiskAssessment struct {
 	ContentHash string
 }
 
+type DraftSkill struct {
+	Name        string            `json:"name"`
+	Description string            `json:"description,omitempty"`
+	Frontmatter map[string]string `json:"frontmatter,omitempty"`
+	Body        string            `json:"body,omitempty"`
+	ContentHash string            `json:"content_hash,omitempty"`
+	Path        string            `json:"path,omitempty"`
+}
+
+type DraftRequest struct {
+	Skills        []DraftSkill
+	PromptVersion string
+}
+
+type DraftResult struct {
+	Markdown      string `json:"markdown"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	PromptVersion string `json:"prompt_version"`
+}
+
+type DraftGenerator interface {
+	GenerateMergedSkillDraft(ctx context.Context, request DraftRequest) (DraftResult, error)
+}
+
+type IdentifiedGenerator interface {
+	ProviderName() string
+	ModelName() string
+}
+
 // ActivationRiskAssessor is the opt-in extension point for a future cached LLM
 // pass. Implementations should cache by ContentHash plus provider/model/prompt and
 // only run after deterministic assessment leaves a decision worth escalating.
@@ -122,8 +153,17 @@ type CachedAnalyzer struct {
 	Next Analyzer
 }
 
+type CachedDraftGenerator struct {
+	Dir  string
+	Next DraftGenerator
+}
+
 func NewCachedAnalyzer(dir string, next Analyzer) CachedAnalyzer {
 	return CachedAnalyzer{Dir: dir, Next: next}
+}
+
+func NewCachedDraftGenerator(dir string, next DraftGenerator) CachedDraftGenerator {
+	return CachedDraftGenerator{Dir: dir, Next: next}
 }
 
 func (a CachedAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (GeneratedSummary, error) {
@@ -220,6 +260,49 @@ func (a CachedAnalyzer) next() Analyzer {
 	return a.Next
 }
 
+func (g CachedDraftGenerator) GenerateMergedSkillDraft(ctx context.Context, request DraftRequest) (DraftResult, error) {
+	if request.PromptVersion == "" {
+		request.PromptVersion = DraftPromptVersion
+	}
+	if g.Dir == "" || len(request.Skills) < 2 {
+		return g.next().GenerateMergedSkillDraft(ctx, request)
+	}
+	path, err := g.draftPath(request)
+	if err != nil {
+		return DraftResult{}, err
+	}
+	cached, err := readDraftCache(path)
+	if err == nil && cached.PromptVersion == request.PromptVersion && strings.TrimSpace(cached.Markdown) != "" {
+		return cached, nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return DraftResult{}, err
+	}
+	result, err := g.next().GenerateMergedSkillDraft(ctx, request)
+	if err != nil {
+		return DraftResult{}, err
+	}
+	if result.PromptVersion == "" {
+		result.PromptVersion = request.PromptVersion
+	}
+	return result, writeDraftCache(path, result)
+}
+
+func (g CachedDraftGenerator) next() DraftGenerator {
+	if g.Next == nil {
+		return disabledDraftGenerator{}
+	}
+	return g.Next
+}
+
+func (g CachedDraftGenerator) draftPath(request DraftRequest) (string, error) {
+	key, err := draftCacheKey(request, g.next())
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(DraftCacheDir(g.Dir), key+".json"), nil
+}
+
 func (a CachedAnalyzer) summaryPath(contentHash string) string {
 	return SummaryCachePath(a.Dir, contentHash)
 }
@@ -234,6 +317,10 @@ func OverlapCacheDir(dir string) string {
 
 func QualityCacheDir(dir string) string {
 	return filepath.Join(dir, "quality")
+}
+
+func DraftCacheDir(dir string) string {
+	return filepath.Join(dir, "drafts")
 }
 
 func (a CachedAnalyzer) overlapPath(summaries []GeneratedSummary) (string, error) {
@@ -282,6 +369,19 @@ type overlapCacheEntry struct {
 	Provider    string `json:"provider"`
 	Model       string `json:"model"`
 	Summary     string `json:"summary"`
+}
+
+type draftCacheEntry struct {
+	Name        string `json:"name"`
+	ContentHash string `json:"content_hash"`
+	BodyHash    string `json:"body_hash,omitempty"`
+}
+
+type draftCacheKeyInput struct {
+	Version  string            `json:"version"`
+	Provider string            `json:"provider"`
+	Model    string            `json:"model"`
+	Entries  []draftCacheEntry `json:"entries"`
 }
 
 type overlapCacheKeyInput struct {
@@ -350,6 +450,65 @@ func skillQualityCacheKey(contentHash, provider, model string) (string, error) {
 	return hex.EncodeToString(sum[:]), nil
 }
 
+func draftCacheKey(request DraftRequest, generator DraftGenerator) (string, error) {
+	provider, model := generatorIdentity(generator)
+	entries := make([]draftCacheEntry, 0, len(request.Skills))
+	for _, skill := range request.Skills {
+		contentHash := strings.TrimSpace(skill.ContentHash)
+		bodyHash := ""
+		if contentHash == "" {
+			bodyHash = draftSkillMaterialHash(skill)
+		}
+		entries = append(entries, draftCacheEntry{Name: strings.TrimSpace(skill.Name), ContentHash: contentHash, BodyHash: bodyHash})
+	}
+	sort.Slice(entries, func(i, j int) bool {
+		left := strings.ToLower(entries[i].Name)
+		right := strings.ToLower(entries[j].Name)
+		if left != right {
+			return left < right
+		}
+		if entries[i].ContentHash != entries[j].ContentHash {
+			return entries[i].ContentHash < entries[j].ContentHash
+		}
+		return entries[i].BodyHash < entries[j].BodyHash
+	})
+	data, err := json.Marshal(draftCacheKeyInput{Version: request.PromptVersion, Provider: provider, Model: model, Entries: entries})
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+func generatorIdentity(generator DraftGenerator) (string, string) {
+	identified, ok := generator.(IdentifiedGenerator)
+	if !ok {
+		return "unknown", "unknown"
+	}
+	provider := strings.TrimSpace(identified.ProviderName())
+	if provider == "" {
+		provider = "unknown"
+	}
+	model := strings.TrimSpace(identified.ModelName())
+	if model == "" {
+		model = "unknown"
+	}
+	return provider, model
+}
+
+func draftSkillMaterialHash(skill DraftSkill) string {
+	data, err := json.Marshal(skill)
+	if err != nil {
+		return hashText(strings.Join([]string{skill.Name, skill.Description, skill.Body}, "\n"))
+	}
+	return hashText(string(data))
+}
+
+func hashText(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
+}
+
 func readOverlapCache(path string) (overlapCacheFile, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -398,6 +557,30 @@ func writeSkillQualityCache(path string, cached skillQualityCacheFile) error {
 	return os.WriteFile(path, data, 0o600)
 }
 
+func readDraftCache(path string) (DraftResult, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return DraftResult{}, err
+	}
+	var cached DraftResult
+	if err := json.Unmarshal(data, &cached); err != nil {
+		return DraftResult{}, err
+	}
+	return cached, nil
+}
+
+func writeDraftCache(path string, result DraftResult) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(result, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	return os.WriteFile(path, data, 0o600)
+}
+
 func normalizeSkillQualityResult(result SkillQualityResult, contentHash string) SkillQualityResult {
 	if result.Issues == nil {
 		result.Issues = []SkillQualityIssue{}
@@ -431,6 +614,15 @@ func analyzerProviderModel(analyzer Analyzer) (string, string) {
 	}
 	return provider, model
 }
+
+type disabledDraftGenerator struct{}
+
+func (disabledDraftGenerator) GenerateMergedSkillDraft(ctx context.Context, request DraftRequest) (DraftResult, error) {
+	return DraftResult{}, errors.New("LLM merged-draft generation is disabled; rerun with --with-llm and GEMINI_API_KEY or enable LLM-assisted analysis in setup")
+}
+
+func (disabledDraftGenerator) ProviderName() string { return "disabled" }
+func (disabledDraftGenerator) ModelName() string    { return "disabled" }
 
 func safeFileName(value string) string {
 	var b strings.Builder
