@@ -1,0 +1,65 @@
+# Fixture for opt-in LLM-assisted summary and semantic-overlap analysis.
+# Extend this file when prompts/models change by adding skills, expected summaries,
+# and the semantic groups a fake analyzer should contribute.
+title = "semantic overlap eval"
+provider = "fixture"
+model = "llm-eval-v1"
+
+[[skills]]
+name = "app-store-review"
+description = "Evaluate Apple App Store policy compliance before release."
+body = "Review privacy, metadata, in-app purchases, and rejection risks."
+content_hash = "hash-app-store-review"
+
+[[skills]]
+name = "app-submission"
+description = "Prepare iOS submission metadata and release checklist."
+body = "Organize screenshots, reviewer notes, staged rollout, and binary readiness."
+content_hash = "hash-app-submission"
+
+[[skills]]
+name = "fastmail"
+description = "Read and send Fastmail email and calendar data."
+body = "Search messages, manage labels, inspect contacts, and draft replies."
+content_hash = "hash-fastmail"
+
+[[skills]]
+name = "macos-reminders"
+description = "Create Apple Reminders tasks and todo lists."
+body = "Capture reminders with due dates, priorities, lists, and notes."
+content_hash = "hash-macos-reminders"
+
+[[expected_summaries]]
+name = "app-store-review"
+deterministic_summary = "Evaluate Apple App Store policy compliance before release."
+summary = "App Store review readiness"
+
+[[expected_summaries]]
+name = "app-submission"
+deterministic_summary = "Prepare iOS submission metadata and release checklist."
+summary = "iOS submission preparation"
+
+[[expected_summaries]]
+name = "fastmail"
+deterministic_summary = "Read and send Fastmail email and calendar data."
+summary = "Fastmail email automation"
+
+[[expected_summaries]]
+name = "macos-reminders"
+deterministic_summary = "Create Apple Reminders tasks and todo lists."
+summary = "Apple Reminders task capture"
+
+[[llm_overlaps]]
+skill_names = ["app-store-review", "app-submission"]
+reason = "both support App Store release readiness"
+
+[[expected_overlap_findings]]
+id = "llm-overlap:app-store-review:app-submission"
+skill_names = ["app-store-review", "app-submission"]
+reason = "LLM-assisted semantic overlap: both support App Store release readiness (fixture/llm-eval-v1)"
+
+[[expected_non_overlap_pairs]]
+skill_names = ["fastmail", "macos-reminders"]
+
+[[expected_non_overlap_pairs]]
+skill_names = ["app-store-review", "fastmail"]
