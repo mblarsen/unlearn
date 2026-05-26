@@ -159,6 +159,10 @@ func (a *fixtureLLMAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.G
 	return overlaps, nil
 }
 
+func (a *fixtureLLMAnalyzer) LintSkillQuality(ctx context.Context, request llm.SkillQualityRequest) (llm.SkillQualityResult, error) {
+	return llm.SkillQualityResult{Issues: []llm.SkillQualityIssue{}, Provider: a.fixture.Provider, Model: a.fixture.Model, ContentHash: request.ContentHash}, nil
+}
+
 func (a *fixtureLLMAnalyzer) assertSummariesSeen() {
 	a.t.Helper()
 	for name := range a.summaries {

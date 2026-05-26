@@ -835,6 +835,9 @@ func findingRowText(finding analysis.Finding, width int) string {
 	if finding.Type == analysis.FindingOverlap {
 		meta += " · cluster"
 	}
+	if finding.Type == analysis.FindingSkillQuality {
+		meta += " · advisory"
+	}
 	if hasLLMReason(finding) {
 		meta += " · LLM"
 	}
@@ -999,6 +1002,9 @@ func (m Model) renderFindingDetails(theme ui.Theme, width, height int) []string 
 	}
 	lines = append(lines, "", theme.Section.Render("Summary"))
 	lines = append(lines, theme.Muted.Render(ui.Truncate("• "+installLabel(len(finding.Skills))+" across "+rootSummary(finding.Skills, 2), width)))
+	if finding.Type == analysis.FindingSkillQuality {
+		lines = append(lines, theme.Muted.Render(ui.Truncate("• Advisory only; safe fixes ignore this finding", width)))
+	}
 	if finding.Type != analysis.FindingOverlap {
 		lines = append(lines, theme.Muted.Render(ui.Truncate("• tokens "+tokenRange(finding.Skills), width)))
 	}
@@ -1132,6 +1138,8 @@ func findingBadge(theme ui.Theme, typ analysis.FindingType) string {
 		return theme.BadgeDanger.Render(label)
 	case analysis.FindingHighTokenCost, analysis.FindingBroadActivation:
 		return theme.BadgeWarn.Render(label)
+	case analysis.FindingSkillQuality:
+		return theme.Badge.Render(label)
 	case analysis.FindingDuplicate:
 		return theme.BadgeSuccess.Render(label)
 	default:

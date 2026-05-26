@@ -488,7 +488,7 @@ func addSharedFlags(cmd *cobra.Command, opts *cliOptions) {
 	cmd.Flags().StringSliceVar(&opts.historySQLite, "history-sqlite", nil, "opt-in SQLite history database to scan text columns for derived invocation evidence; may be repeated")
 	cmd.Flags().DurationVar(&opts.historyCacheTTL, "history-cache-ttl", 24*time.Hour, "reuse cached history evidence until it is older than this duration")
 	cmd.Flags().BoolVar(&opts.rescanSources, "rescan-sources", false, "ignore cached source/history evidence and rescan local sources")
-	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to Gemini-assisted semantic overlap analysis; uses GEMINI_API_KEY or GOOGLE_API_KEY")
+	cmd.Flags().BoolVar(&opts.withLLM, "with-llm", false, "opt in to Gemini-assisted semantic overlap and skill-quality analysis; uses GEMINI_API_KEY or GOOGLE_API_KEY")
 	cmd.Flags().StringSliceVar(&opts.activeAgents, "active-agent", nil, "active agent harness whose global skill roots should be audited; may be repeated")
 	cmd.Flags().StringSliceVar(&opts.inactiveAgents, "inactive-agent", nil, "inactive agent harness whose skill roots should be scanned as cleanup candidates; may be repeated")
 }
@@ -580,8 +580,10 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	}
 	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
 	if err != nil {
-		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM semantic-overlap analysis did not complete; using deterministic analysis. Details: %v", err))
-		findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usageResult.Evidence})
+		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM analysis did not complete; continuing with available findings. Details: %v", err))
+		if len(findings) == 0 {
+			findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usageResult.Evidence})
+		}
 	}
 	if recorder != nil {
 		skills = attachLLMSummaries(skills, recorder.Summaries())
@@ -609,6 +611,24 @@ func (a *recordingAnalyzer) Summarize(ctx context.Context, name, deterministicSu
 
 func (a *recordingAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.GeneratedSummary) ([]llm.SemanticOverlap, error) {
 	return a.next.FindOverlaps(ctx, summaries)
+}
+
+func (a *recordingAnalyzer) LintSkillQuality(ctx context.Context, request llm.SkillQualityRequest) (llm.SkillQualityResult, error) {
+	return a.next.LintSkillQuality(ctx, request)
+}
+
+func (a *recordingAnalyzer) ProviderName() string {
+	if identified, ok := a.next.(llm.ProviderModel); ok {
+		return identified.ProviderName()
+	}
+	return "unknown"
+}
+
+func (a *recordingAnalyzer) ModelName() string {
+	if identified, ok := a.next.(llm.ProviderModel); ok {
+		return identified.ModelName()
+	}
+	return "unknown"
 }
 
 func (a *recordingAnalyzer) Summaries() map[string]llm.GeneratedSummary {
@@ -969,8 +989,11 @@ func printAudit(out io.Writer, skills []inventory.Skill, findings []analysis.Fin
 	}
 	counts := analysis.FindingCounts(findings)
 	fmt.Fprintln(out, "Findings:")
-	for _, typ := range []analysis.FindingType{analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap, analysis.FindingBroken, analysis.FindingInactiveRoot, analysis.FindingHighTokenCost, analysis.FindingBroadActivation, analysis.FindingUnseen} {
+	for _, typ := range []analysis.FindingType{analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap, analysis.FindingBroken, analysis.FindingInactiveRoot, analysis.FindingHighTokenCost, analysis.FindingBroadActivation, analysis.FindingUnseen, analysis.FindingSkillQuality} {
 		fmt.Fprintf(out, "  %s: %d\n", typ, counts[typ])
+	}
+	if counts[analysis.FindingSkillQuality] > 0 {
+		fmt.Fprintln(out, "  skill-quality findings are LLM-assisted advisory recommendations only; safe fixes ignore them.")
 	}
 	fmt.Fprintln(out, "Top cleanup candidates:")
 	limit := 5

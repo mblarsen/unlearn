@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -21,6 +22,7 @@ const (
 	FindingBroadActivation FindingType = "broad-activation-risk"
 	FindingBroken          FindingType = "broken-symlink-reference"
 	FindingInactiveRoot    FindingType = "inactive-harness-root"
+	FindingSkillQuality    FindingType = "skill-quality"
 )
 
 type Finding struct {
@@ -65,19 +67,26 @@ func AnalyzeWithLLM(ctx context.Context, skills []inventory.Skill, opts Options)
 	var findings []Finding
 	findings = append(findings, duplicatesAndConflicts(skills)...)
 	findings = append(findings, overlaps(skills)...)
+	var llmErr error
 	if opts.LLMAnalyzer != nil {
 		llmFindings, err := llmOverlaps(ctx, skills, opts.LLMAnalyzer, opts.Progress)
 		if err != nil {
-			SortFindings(findings)
-			return findings, err
+			llmErr = errors.Join(llmErr, fmt.Errorf("semantic overlap: %w", err))
+		} else {
+			findings = mergeLLMOverlapFindings(findings, llmFindings)
 		}
-		findings = mergeLLMOverlapFindings(findings, llmFindings)
+		qualityFindings, err := llmSkillQuality(ctx, skills, opts.LLMAnalyzer, opts.Progress)
+		if err != nil {
+			llmErr = errors.Join(llmErr, fmt.Errorf("skill quality: %w", err))
+		} else {
+			findings = append(findings, qualityFindings...)
+		}
 	}
 	findings = append(findings, brokenFindings(skills)...)
 	findings = append(findings, inactiveRootFindings(skills)...)
 	findings = append(findings, groupedSingleSkillFindings(skills, opts)...)
 	SortFindings(findings)
-	return findings, nil
+	return findings, llmErr
 }
 
 func brokenFindings(skills []inventory.Skill) []Finding {
@@ -322,6 +331,83 @@ func llmOverlaps(ctx context.Context, skills []inventory.Skill, analyzer llm.Ana
 		findings = append(findings, llmOverlapFinding(group, overlap))
 	}
 	return findings, nil
+}
+
+func llmSkillQuality(ctx context.Context, skills []inventory.Skill, analyzer llm.Analyzer, progress ProgressFunc) ([]Finding, error) {
+	logicalSkills := representativeSkills(skills)
+	byName := skillsByLogicalName(skills)
+	findings := make([]Finding, 0, len(logicalSkills))
+	for index, skill := range logicalSkills {
+		reportProgress(progress, ProgressEvent{Step: "llm-quality", Current: index + 1, Total: len(logicalSkills), Detail: skill.Name})
+		result, err := analyzer.LintSkillQuality(ctx, skillQualityRequest(skill))
+		if err != nil {
+			return nil, err
+		}
+		if len(result.Issues) == 0 {
+			continue
+		}
+		group := byName[logicalName(skill)]
+		finding, ok := skillQualityFinding(group, result)
+		if ok {
+			findings = append(findings, finding)
+		}
+	}
+	reportProgress(progress, ProgressEvent{Step: "llm-quality", Current: len(logicalSkills), Total: len(logicalSkills), Detail: fmt.Sprintf("%d advisory finding(s)", len(findings)), Done: true})
+	return findings, nil
+}
+
+func skillQualityRequest(skill inventory.Skill) llm.SkillQualityRequest {
+	refs := make([]llm.SkillQualitySupportRef, 0, len(skill.SupportRefs))
+	for _, ref := range skill.SupportRefs {
+		refs = append(refs, llm.SkillQualitySupportRef{Mention: ref.Mention, Path: ref.Path, Tokens: ref.Tokens, Broken: ref.Broken})
+	}
+	return llm.SkillQualityRequest{
+		Name:        skill.Name,
+		Description: skill.Description,
+		Body:        skill.Body,
+		ContentHash: skill.ContentHash,
+		SupportRefs: refs,
+	}
+}
+
+func skillsByLogicalName(skills []inventory.Skill) map[string][]inventory.Skill {
+	byName := map[string][]inventory.Skill{}
+	for _, skill := range skills {
+		byName[logicalName(skill)] = append(byName[logicalName(skill)], skill)
+	}
+	return byName
+}
+
+func skillQualityFinding(skills []inventory.Skill, result llm.SkillQualityResult) (Finding, bool) {
+	if len(skills) == 0 {
+		return Finding{}, false
+	}
+	reasons := make([]string, 0, len(result.Issues))
+	for _, issue := range result.Issues {
+		issueType := strings.TrimSpace(issue.IssueType)
+		reason := strings.TrimSpace(issue.Reason)
+		recommendation := strings.TrimSpace(issue.Recommendation)
+		if issueType == "" || reason == "" || recommendation == "" {
+			continue
+		}
+		provider := firstNonEmptyString(issue.Provider, result.Provider)
+		model := firstNonEmptyString(issue.Model, result.Model)
+		reasons = append(reasons, fmt.Sprintf("LLM-assisted advisory skill-quality: %s — %s Recommendation: %s (%s/%s)", issueType, reason, recommendation, emptyLabel(provider), emptyLabel(model)))
+	}
+	if len(reasons) == 0 {
+		return Finding{}, false
+	}
+	name := logicalName(skills[0])
+	return Finding{ID: "skill-quality:" + name, Type: FindingSkillQuality, Severity: 4, Title: displayName(skills), Skills: skills, Reasons: reasons}, true
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mergeLLMOverlapFindings(findings, llmFindings []Finding) []Finding {
@@ -725,6 +811,7 @@ func SortFindings(findings []Finding) {
 		FindingBroadActivation: 6,
 		FindingBroken:          7,
 		FindingInactiveRoot:    8,
+		FindingSkillQuality:    9,
 	}
 	sort.Slice(findings, func(i, j int) bool {
 		if order[findings[i].Type] != order[findings[j].Type] {

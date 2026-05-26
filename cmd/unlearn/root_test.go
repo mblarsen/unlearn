@@ -559,6 +559,10 @@ func TestAuditWithLLMPrintsProgressToErr(t *testing.T) {
 			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"overlaps\":[]}"}]}}]}`))
 			return
 		}
+		if strings.Contains(string(body), "Review one AI agent skill file") {
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"findings\":[]}"}]}}]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Short summary."}]}}]}`))
 	}))
 	defer server.Close()
@@ -573,13 +577,26 @@ func TestAuditWithLLMPrintsProgressToErr(t *testing.T) {
 		t.Fatal(err)
 	}
 	progress := errOut.String()
-	for _, want := range []string{"Scan skill roots", "Run deterministic checks", "Generate Gemini summaries", "Find semantic overlaps"} {
+	for _, want := range []string{"Scan skill roots", "Run deterministic checks", "Generate Gemini summaries", "Find semantic overlaps", "Review skill quality"} {
 		if !strings.Contains(progress, want) {
 			t.Fatalf("progress output missing %q:\n%s", want, progress)
 		}
 	}
 	if strings.Contains(out.String(), "Generate Gemini summaries") {
 		t.Fatalf("progress leaked to stdout:\n%s", out.String())
+	}
+}
+
+func TestPrintAuditShowsSkillQualityAdvisoryCount(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one"}}
+	findings := []analysis.Finding{{ID: "skill-quality:alpha", Type: analysis.FindingSkillQuality, Severity: 4, Title: "alpha", Skills: skills, Reasons: []string{"LLM-assisted advisory skill-quality: vague_description — too broad Recommendation: be specific (test/fake)"}}}
+	var out bytes.Buffer
+	printAudit(&out, skills, findings, nil)
+	got := out.String()
+	for _, want := range []string{"skill-quality: 1", "LLM-assisted advisory recommendations only", "safe fixes ignore them"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("audit output missing %q:\n%s", want, got)
+		}
 	}
 }
 

@@ -67,6 +67,10 @@ func (a GeminiAnalyzer) Summarize(ctx context.Context, name, deterministicSummar
 	return GeneratedSummary{Name: name, Summary: text, Provider: "gemini", Model: a.model(), ContentHash: contentHash}, nil
 }
 
+func (a GeminiAnalyzer) ProviderName() string { return "gemini" }
+
+func (a GeminiAnalyzer) ModelName() string { return a.model() }
+
 func (a GeminiAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedSummary) ([]SemanticOverlap, error) {
 	if len(summaries) < 2 {
 		return nil, nil
@@ -116,6 +120,59 @@ func (a GeminiAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedS
 		overlaps = append(overlaps, SemanticOverlap{SkillNames: item.SkillNames, Reason: item.Reason, Provider: "gemini", Model: a.model()})
 	}
 	return overlaps, nil
+}
+
+func (a GeminiAnalyzer) LintSkillQuality(ctx context.Context, request SkillQualityRequest) (SkillQualityResult, error) {
+	payload := map[string]any{
+		"name":         request.Name,
+		"description":  request.Description,
+		"body_preview": truncatePromptText(request.Body, 6000),
+		"support_refs": request.SupportRefs,
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return SkillQualityResult{}, err
+	}
+	prompt := strings.Join([]string{
+		"Review one AI agent skill file for quality risks. This is advisory lint only; do not recommend deletion, quarantine, or renaming.",
+		"Report only concrete issues that make the skill risky or hard to use correctly.",
+		"Allowed issue_type values: vague_description, overly_broad_trigger, conflicting_instructions, missing_examples, unnecessary_support_file_loading.",
+		"Prefer no findings when the skill is clear enough. Return at most 3 findings.",
+		"Return strict JSON with this shape: {\"findings\":[{\"issue_type\":\"vague_description\",\"reason\":\"short concrete reason\",\"recommendation\":\"specific preview-only improvement\"}]}",
+		"Skill JSON:",
+		string(data),
+	}, "\n")
+	var decoded geminiSkillQualityResponse
+	var lastErr error
+	for attempt := 1; attempt <= 3; attempt++ {
+		text, err := a.generateText(ctx, prompt, 2048, true)
+		if err != nil {
+			return SkillQualityResult{}, err
+		}
+		decoded, err = parseGeminiSkillQualityResponse(text)
+		if err == nil {
+			lastErr = nil
+			break
+		}
+		lastErr = err
+	}
+	if lastErr != nil {
+		return SkillQualityResult{}, fmt.Errorf("Gemini returned invalid skill-quality JSON after 3 attempts: %w", lastErr)
+	}
+	issues := make([]SkillQualityIssue, 0, len(decoded.Findings))
+	for _, item := range decoded.Findings {
+		issueType := strings.TrimSpace(item.IssueType)
+		reason := strings.TrimSpace(item.Reason)
+		recommendation := strings.TrimSpace(item.Recommendation)
+		if issueType == "" || reason == "" || recommendation == "" {
+			continue
+		}
+		issues = append(issues, SkillQualityIssue{IssueType: issueType, Reason: reason, Recommendation: recommendation, Provider: "gemini", Model: a.model()})
+		if len(issues) == 3 {
+			break
+		}
+	}
+	return SkillQualityResult{Issues: issues, Provider: "gemini", Model: a.model(), ContentHash: request.ContentHash}, nil
 }
 
 func (a GeminiAnalyzer) generateText(ctx context.Context, prompt string, maxTokens int, jsonMode bool) (string, error) {
@@ -199,6 +256,14 @@ type geminiOverlapResponse struct {
 	} `json:"overlaps"`
 }
 
+type geminiSkillQualityResponse struct {
+	Findings []struct {
+		IssueType      string `json:"issue_type"`
+		Reason         string `json:"reason"`
+		Recommendation string `json:"recommendation"`
+	} `json:"findings"`
+}
+
 func parseGeminiOverlapResponse(text string) (geminiOverlapResponse, error) {
 	jsonText := extractJSONObject(text)
 	if strings.TrimSpace(jsonText) == "" {
@@ -207,6 +272,18 @@ func parseGeminiOverlapResponse(text string) (geminiOverlapResponse, error) {
 	var decoded geminiOverlapResponse
 	if err := json.Unmarshal([]byte(jsonText), &decoded); err != nil {
 		return geminiOverlapResponse{}, fmt.Errorf("could not parse JSON (%w); response preview %q", err, truncateForError(text, 240))
+	}
+	return decoded, nil
+}
+
+func parseGeminiSkillQualityResponse(text string) (geminiSkillQualityResponse, error) {
+	jsonText := extractJSONObject(text)
+	if strings.TrimSpace(jsonText) == "" {
+		return geminiSkillQualityResponse{}, fmt.Errorf("no JSON object in response preview %q", truncateForError(text, 240))
+	}
+	var decoded geminiSkillQualityResponse
+	if err := json.Unmarshal([]byte(jsonText), &decoded); err != nil {
+		return geminiSkillQualityResponse{}, fmt.Errorf("could not parse JSON (%w); response preview %q", err, truncateForError(text, 240))
 	}
 	return decoded, nil
 }
@@ -257,6 +334,14 @@ func truncateForError(value string, limit int) string {
 		return value
 	}
 	return value[:limit] + "…"
+}
+
+func truncatePromptText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return value[:limit] + "\n[truncated]"
 }
 
 func extractJSONObject(value string) string {

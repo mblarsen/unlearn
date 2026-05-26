@@ -62,9 +62,10 @@ func TestFindingsRenderUserRelevantSectionOrder(t *testing.T) {
 		{ID: "tokens:zeta", Type: analysis.FindingHighTokenCost, Title: "zeta", Skills: []inventory.Skill{{Name: "zeta"}}},
 		{ID: "conflict:eta", Type: analysis.FindingConflict, Title: "eta", Skills: []inventory.Skill{{Name: "eta"}, {Name: "eta"}}},
 		{ID: "overlap:theta:iota", Type: analysis.FindingOverlap, Title: "theta / iota", Skills: []inventory.Skill{{Name: "theta"}, {Name: "iota"}}},
+		{ID: "skill-quality:kappa", Type: analysis.FindingSkillQuality, Title: "kappa", Skills: []inventory.Skill{{Name: "kappa"}}},
 	}
 	sections := groupedFindings(findings)
-	want := []string{"Likely unused", "Duplicates", "Conflicts", "Overlaps", "High token cost", "Broad activation risk", "Broken links", "Inactive harness roots"}
+	want := []string{"Likely unused", "Duplicates", "Conflicts", "Overlaps", "High token cost", "Broad activation risk", "Broken links", "Inactive harness roots", "Skill quality (LLM advisory)"}
 	if len(sections) != len(want) {
 		t.Fatalf("sections = %#v, want %d sections", sections, len(want))
 	}
@@ -133,6 +134,19 @@ func TestLLMOverlapFindingShowsBadge(t *testing.T) {
 	view := m.View()
 	if !strings.Contains(view, "LLM") || !strings.Contains(view, "LLM-assisted semantic overlap") {
 		t.Fatalf("LLM finding should show badge and reason:\n%s", view)
+	}
+}
+
+func TestSkillQualityFindingShowsAdvisoryCopy(t *testing.T) {
+	findings := []analysis.Finding{{ID: "skill-quality:alpha", Type: analysis.FindingSkillQuality, Title: "alpha", Skills: []inventory.Skill{{Name: "alpha", Root: "/one", LowerTokens: 100, UpperTokens: 200}}, Reasons: []string{"LLM-assisted advisory skill-quality: vague_description — description is generic Recommendation: name the concrete workflow (gemini/gemini-test)"}}}
+	m := New(nil, findings)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 110, Height: 25})
+	m = updated.(Model)
+	view := m.View()
+	for _, want := range []string{"Skill quality (LLM advisory)", "QUALITY", "advisory", "LLM", "safe fixes ignore this"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("quality finding view missing %q:\n%s", want, view)
+		}
 	}
 }
 

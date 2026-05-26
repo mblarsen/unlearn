@@ -269,3 +269,7 @@ func (failAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, c
 func (failAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedSummary) ([]SemanticOverlap, error) {
 	return nil, errors.New("delegate should not be called for cached overlap fixture")
 }
+
+func (failAnalyzer) LintSkillQuality(ctx context.Context, request SkillQualityRequest) (SkillQualityResult, error) {
+	return SkillQualityResult{}, errors.New("delegate should not be called for llm eval fixture")
+}

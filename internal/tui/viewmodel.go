@@ -53,6 +53,7 @@ func findingTypeOrder() []analysis.FindingType {
 		analysis.FindingBroadActivation,
 		analysis.FindingBroken,
 		analysis.FindingInactiveRoot,
+		analysis.FindingSkillQuality,
 	}
 }
 
@@ -74,6 +75,8 @@ func findingTypeTitle(typ analysis.FindingType) string {
 		return "Likely unused"
 	case analysis.FindingInactiveRoot:
 		return "Inactive harness roots"
+	case analysis.FindingSkillQuality:
+		return "Skill quality (LLM advisory)"
 	default:
 		return string(typ)
 	}
@@ -121,6 +124,8 @@ func findingTypeBadge(typ analysis.FindingType) string {
 		return "BROAD"
 	case analysis.FindingUnseen:
 		return "UNSEEN"
+	case analysis.FindingSkillQuality:
+		return "QUALITY"
 	default:
 		return "FINDING"
 	}

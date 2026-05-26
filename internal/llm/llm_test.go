@@ -116,10 +116,54 @@ func TestCachedAnalyzerOverlapCacheKeyIsOrderIndependent(t *testing.T) {
 	}
 }
 
+func TestCachedAnalyzerReusesSkillQualityByContentHashProviderModelAndVersion(t *testing.T) {
+	delegate := &countingAnalyzer{quality: SkillQualityResult{Issues: []SkillQualityIssue{{IssueType: "vague_description", Reason: "too broad", Recommendation: "be specific"}}, Provider: "test", Model: "fake"}}
+	analyzer := NewCachedAnalyzer(t.TempDir(), delegate)
+	ctx := context.Background()
+	request := SkillQualityRequest{Name: "alpha", Description: "first", ContentHash: "hash-a"}
+
+	first, err := analyzer.LintSkillQuality(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Description = "changed"
+	second, err := analyzer.LintSkillQuality(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delegate.qualityCalls != 1 {
+		t.Fatalf("expected delegate once, got %d", delegate.qualityCalls)
+	}
+	if len(first.Issues) != 1 || len(second.Issues) != 1 || second.ContentHash != "hash-a" {
+		t.Fatalf("unexpected cached quality results: first=%#v second=%#v", first, second)
+	}
+}
+
+func TestCachedAnalyzerQualityCacheInvalidatesOnProviderModelChange(t *testing.T) {
+	dir := t.TempDir()
+	ctx := context.Background()
+	firstDelegate := &countingAnalyzer{provider: "test", model: "one"}
+	secondDelegate := &countingAnalyzer{provider: "test", model: "two"}
+
+	if _, err := NewCachedAnalyzer(dir, firstDelegate).LintSkillQuality(ctx, SkillQualityRequest{Name: "alpha", ContentHash: "hash-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewCachedAnalyzer(dir, secondDelegate).LintSkillQuality(ctx, SkillQualityRequest{Name: "alpha", ContentHash: "hash-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if firstDelegate.qualityCalls != 1 || secondDelegate.qualityCalls != 1 {
+		t.Fatalf("expected provider/model change to miss cache, first=%d second=%d", firstDelegate.qualityCalls, secondDelegate.qualityCalls)
+	}
+}
+
 type countingAnalyzer struct {
 	summaryCalls int
 	overlapCalls int
+	qualityCalls int
 	overlaps     []SemanticOverlap
+	quality      SkillQualityResult
+	provider     string
+	model        string
 }
 
 func (a *countingAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (GeneratedSummary, error) {
@@ -130,4 +174,34 @@ func (a *countingAnalyzer) Summarize(ctx context.Context, name, deterministicSum
 func (a *countingAnalyzer) FindOverlaps(ctx context.Context, summaries []GeneratedSummary) ([]SemanticOverlap, error) {
 	a.overlapCalls++
 	return append([]SemanticOverlap(nil), a.overlaps...), nil
+}
+
+func (a *countingAnalyzer) LintSkillQuality(ctx context.Context, request SkillQualityRequest) (SkillQualityResult, error) {
+	a.qualityCalls++
+	result := a.quality
+	if result.Provider == "" {
+		result.Provider = a.ProviderName()
+	}
+	if result.Model == "" {
+		result.Model = a.ModelName()
+	}
+	result.ContentHash = request.ContentHash
+	if result.Issues == nil {
+		result.Issues = []SkillQualityIssue{}
+	}
+	return result, nil
+}
+
+func (a *countingAnalyzer) ProviderName() string {
+	if a.provider != "" {
+		return a.provider
+	}
+	return "test"
+}
+
+func (a *countingAnalyzer) ModelName() string {
+	if a.model != "" {
+		return a.model
+	}
+	return "fake"
 }
