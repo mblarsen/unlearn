@@ -3,7 +3,8 @@ package state
 import (
 	"database/sql"
 	"encoding/json"
-	"fmt"
+	"errors"
+	"os"
 	"strings"
 	"time"
 
@@ -66,10 +67,73 @@ func LoadInventoryCache(db *sql.DB) ([]inventory.Skill, []analysis.Finding, erro
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
 		return nil, nil, err
 	}
-	if len(payload.Skills) == 0 && len(payload.Findings) == 0 {
-		return nil, nil, fmt.Errorf("inventory cache is empty")
-	}
 	return payload.Skills, payload.Findings, nil
+}
+
+// ReconcileMissingPaths removes cached installs whose encountered paths were
+// deleted outside unlearn. Lstat keeps broken symlinks in inventory while
+// permission and other filesystem errors remain visible instead of being
+// mistaken for absence.
+func ReconcileMissingPaths(skills []inventory.Skill, findings []analysis.Finding) ([]inventory.Skill, []analysis.Finding, []inventory.Skill) {
+	var missing []inventory.Skill
+	for _, skill := range skills {
+		if skill.EncounteredPath == "" {
+			continue
+		}
+		if _, err := os.Lstat(skill.EncounteredPath); errors.Is(err, os.ErrNotExist) {
+			missing = append(missing, skill)
+		}
+	}
+	remainingSkills, remainingFindings := RemoveInventorySkills(skills, findings, missing)
+	return remainingSkills, remainingFindings, missing
+}
+
+// RemoveInventorySkills removes exact installs and prunes findings that no
+// longer have enough members to be meaningful.
+func RemoveInventorySkills(skills []inventory.Skill, findings []analysis.Finding, removed []inventory.Skill) ([]inventory.Skill, []analysis.Finding) {
+	remainingSkills := append([]inventory.Skill(nil), skills...)
+	remainingFindings := append([]analysis.Finding(nil), findings...)
+	for _, skill := range removed {
+		remainingSkills = removeSkill(remainingSkills, skill)
+		nextFindings := make([]analysis.Finding, 0, len(remainingFindings))
+		for _, finding := range remainingFindings {
+			finding.Skills = removeSkill(finding.Skills, skill)
+			if keepFinding(finding) {
+				nextFindings = append(nextFindings, finding)
+			}
+		}
+		remainingFindings = nextFindings
+	}
+	return remainingSkills, remainingFindings
+}
+
+func removeSkill(skills []inventory.Skill, removed inventory.Skill) []inventory.Skill {
+	out := make([]inventory.Skill, 0, len(skills))
+	for _, skill := range skills {
+		if !sameSkillInstall(skill, removed) {
+			out = append(out, skill)
+		}
+	}
+	return out
+}
+
+func sameSkillInstall(a, b inventory.Skill) bool {
+	if a.ID != "" && b.ID != "" && a.ID == b.ID {
+		return true
+	}
+	if a.EncounteredPath != "" && b.EncounteredPath != "" {
+		return a.EncounteredPath == b.EncounteredPath
+	}
+	return a.Name == b.Name && a.Root == b.Root
+}
+
+func keepFinding(finding analysis.Finding) bool {
+	switch finding.Type {
+	case analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap:
+		return len(finding.Skills) > 1
+	default:
+		return len(finding.Skills) > 0
+	}
 }
 
 func boolInt(val bool) int {

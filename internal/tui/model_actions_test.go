@@ -25,6 +25,8 @@ type fakeActionService struct {
 	quarantinedList  []string
 	deleteTypedName  string
 	deleteBatchToken string
+	deleteResult     fsactions.Result
+	deleteErr        error
 	draftMarkdown    string
 	draftErr         error
 	draftSelected    []string
@@ -70,6 +72,9 @@ func (f *fakeActionService) DeleteSelected(skills []inventory.Skill, confirmatio
 		f.deleted = append(f.deleted, skill.Name)
 		f.deletedRoot = append(f.deletedRoot, skill.Root)
 		result.Paths = append(result.Paths, skill.EncounteredPath)
+	}
+	if f.deleteResult.Skills != nil || f.deleteErr != nil {
+		return f.deleteResult, f.deleteErr
 	}
 	return result, nil
 }
@@ -300,6 +305,65 @@ func TestDashboardDeleteUpdatesDuplicateFindingCount(t *testing.T) {
 	view := m.View()
 	if strings.Contains(view, "3 installs") || !strings.Contains(view, "2 installs") {
 		t.Fatalf("delete should update duplicate count in current view:\n%s", view)
+	}
+}
+
+func TestDashboardDeleteClearsAllMissingInstallsWithStaleFeedback(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/one": true, "/two": true}}
+	skills := []inventory.Skill{
+		{Name: "alpha", Root: "/one", EncounteredPath: "/one/alpha"},
+		{Name: "alpha", Root: "/two", EncounteredPath: "/two/alpha"},
+	}
+	finding := analysis.Finding{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills}
+	service.deleteResult = fsactions.Result{Skills: skills, Missing: skills}
+	m := NewWithActions(skills, []analysis.Finding{finding}, service)
+
+	updated, _ := m.Update(key("ctrl+d"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(key("y"))
+	m = updated.(Model)
+
+	if len(m.Skills) != 0 || len(m.Findings) != 0 {
+		t.Fatalf("stale installs remain: skills=%#v findings=%#v", m.Skills, m.Findings)
+	}
+	if m.Status != "removed 2 stale installs from inventory" {
+		t.Fatalf("status=%q", m.Status)
+	}
+}
+
+func TestDashboardDeleteReconcilesCompletedSkillsAfterPartialFailure(t *testing.T) {
+	service := &fakeActionService{writeRoots: map[string]bool{"/one": true, "/two": true}}
+	skills := []inventory.Skill{
+		{Name: "alpha", Root: "/one", EncounteredPath: "/one/alpha"},
+		{Name: "alpha", Root: "/two", EncounteredPath: "/two/alpha"},
+	}
+	finding := analysis.Finding{ID: "duplicate:alpha", Title: "alpha", Type: analysis.FindingDuplicate, Skills: skills}
+	service.deleteResult = fsactions.Result{Skills: []inventory.Skill{skills[0]}, Paths: []string{skills[0].EncounteredPath}}
+	service.deleteErr = fmt.Errorf("delete %s: permission denied", skills[1].EncounteredPath)
+	m := NewWithActions(skills, []analysis.Finding{finding}, service)
+
+	updated, _ := m.Update(key("ctrl+d"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("j"))
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	updated, _ = m.Update(key("y"))
+	m = updated.(Model)
+
+	if len(m.Skills) != 1 || m.Skills[0].Root != "/two" {
+		t.Fatalf("skills after partial failure=%#v", m.Skills)
+	}
+	if !strings.Contains(m.Status, "permission denied") || !strings.Contains(m.Status, "deleted 1") {
+		t.Fatalf("partial failure status=%q", m.Status)
 	}
 }
 

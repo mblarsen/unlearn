@@ -240,21 +240,18 @@ func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		result, err := m.Actions.QuarantineSelected(m.selectedPendingSkills())
-		if err != nil {
-			m.fail(err)
-			return m, nil
-		}
 		for _, skill := range result.Skills {
 			m.removeSkillFromModel(skill)
 		}
-		if len(result.Skills) == 1 {
-			dest := ""
-			if len(result.Paths) > 0 {
-				dest = result.Paths[0]
-			}
-			m.complete(fmt.Sprintf("quarantined %s -> %s", result.Skills[0].Name, dest))
+		status := actionResultStatus("quarantined", result)
+		if err != nil {
+			m.complete(actionFailureStatus(status, err))
+			return m, nil
+		}
+		if len(result.Skills) == 1 && len(result.Paths) == 1 {
+			m.complete(fmt.Sprintf("quarantined %s -> %s", result.Skills[0].Name, result.Paths[0]))
 		} else {
-			m.complete(fmt.Sprintf("quarantined %d installs", len(result.Skills)))
+			m.complete(status)
 		}
 	case "n", "N", "esc":
 		m.cancel("quarantine cancelled")
@@ -267,17 +264,18 @@ func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y":
 		selected := m.selectedPendingSkills()
 		result, err := m.Actions.DeleteSelected(selected, deleteConfirmationFor(selected))
-		if err != nil {
-			m.fail(err)
-			return m, nil
-		}
 		for _, skill := range result.Skills {
 			m.removeSkillFromModel(skill)
 		}
-		if len(result.Skills) == 1 {
+		status := actionResultStatus("deleted", result)
+		if err != nil {
+			m.complete(actionFailureStatus(status, err))
+			return m, nil
+		}
+		if len(result.Skills) == 1 && len(result.Missing) == 0 {
 			m.complete("deleted " + result.Skills[0].Name)
 		} else {
-			m.complete(fmt.Sprintf("deleted %d installs", len(result.Skills)))
+			m.complete(status)
 		}
 	case "n", "N", "esc":
 		m.cancel("delete cancelled")
@@ -719,6 +717,36 @@ func (m Model) selectedFinding() (analysis.Finding, bool) {
 		}
 	}
 	return analysis.Finding{}, false
+}
+
+func actionResultStatus(action string, result fsactions.Result) string {
+	completed := len(result.Paths)
+	stale := len(result.Missing)
+	parts := make([]string, 0, 2)
+	if completed > 0 {
+		parts = append(parts, fmt.Sprintf("%s %d %s", action, completed, installWord(completed)))
+	}
+	if stale > 0 {
+		parts = append(parts, fmt.Sprintf("removed %d stale %s from inventory", stale, installWord(stale)))
+	}
+	if len(parts) == 0 {
+		return action + " 0 installs"
+	}
+	return strings.Join(parts, "; ")
+}
+
+func actionFailureStatus(completed string, err error) string {
+	if completed == "" || strings.HasSuffix(completed, " 0 installs") {
+		return "error: " + err.Error()
+	}
+	return completed + "; error: " + err.Error()
+}
+
+func installWord(count int) string {
+	if count == 1 {
+		return "install"
+	}
+	return "installs"
 }
 
 func (m *Model) removeSkillFromModel(removed inventory.Skill) {

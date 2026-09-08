@@ -46,7 +46,12 @@ func TestDashboardInventoryUsesCachedIndex(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cachedSkills := []inventory.Skill{{ID: "cached", Name: "cached", Root: "/missing-root", EncounteredPath: "/missing-root/cached", Kind: inventory.KindDirectory}}
+	cachedRoot := t.TempDir()
+	cachedPath := filepath.Join(cachedRoot, "cached")
+	if err := os.Mkdir(cachedPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cachedSkills := []inventory.Skill{{ID: "cached", Name: "cached", Root: cachedRoot, EncounteredPath: cachedPath, Kind: inventory.KindDirectory}}
 	cachedFindings := []analysis.Finding{{ID: "tokens:cached", Type: analysis.FindingHighTokenCost, Severity: 3, Title: "cached", Skills: cachedSkills, Reasons: []string{"cached finding"}}}
 	if err := state.ReplaceIndex(db, cachedSkills, cachedFindings); err != nil {
 		t.Fatal(err)
@@ -61,6 +66,85 @@ func TestDashboardInventoryUsesCachedIndex(t *testing.T) {
 	}
 	if len(skills) != 1 || skills[0].Name != "cached" || len(findings) != 1 || findings[0].ID != "tokens:cached" {
 		t.Fatalf("dashboard did not load cached inventory: skills=%#v findings=%#v", skills, findings)
+	}
+}
+
+func TestDashboardInventoryPrunesExternallyDeletedCachedInstallAcrossRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".agents", "skills")
+	skillPath := filepath.Join(root, "stale")
+	writeSkill(t, skillPath, "stale", "cached fixture")
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := config.Default()
+	cfg.SetupComplete = true
+	cfg.ActiveAgents = []string{"pi"}
+	cfg.TrustRoot(root)
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: []string{root}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.ReplaceIndex(db, report.Skills, analysis.Analyze(report.Skills, analysis.Options{})); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(skillPath); err != nil {
+		t.Fatal(err)
+	}
+
+	opts := &cliOptions{stateDir: stateDir, configPath: configPath}
+	for restart := 1; restart <= 2; restart++ {
+		skills, findings, err := loadDashboardInventory(opts, inventoryLoadOptions{})
+		if err != nil {
+			t.Fatalf("restart %d: %v", restart, err)
+		}
+		if len(skills) != 0 || len(findings) != 0 {
+			t.Fatalf("restart %d retained stale cache: skills=%#v findings=%#v", restart, skills, findings)
+		}
+	}
+}
+
+func TestDashboardInventoryRescansAfterEmptyCacheWhenInstallAppears(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".agents", "skills")
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := config.Default()
+	cfg.SetupComplete = true
+	cfg.ActiveAgents = []string{"pi"}
+	cfg.TrustRoot(root)
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.ReplaceIndex(db, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, filepath.Join(root, "new-skill"), "new-skill", "installed outside unlearn")
+
+	skills, _, err := loadDashboardInventory(&cliOptions{stateDir: stateDir, configPath: configPath}, inventoryLoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || skills[0].Name != "new-skill" {
+		t.Fatalf("dashboard did not rescan after empty cache: %#v", skills)
 	}
 }
 

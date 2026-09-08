@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
@@ -9,6 +11,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/llm"
+	"github.com/mblarsen/unlearn/internal/state"
 )
 
 type ActionService interface {
@@ -54,6 +57,7 @@ func (NoopActionService) DraftMerge(skills []inventory.Skill) (llm.DraftResult, 
 type ConfigActionService struct {
 	ConfigPath    string
 	Config        config.Config
+	IndexPath     string
 	QuarantineDir string
 	LLMCacheDir   string
 }
@@ -80,12 +84,34 @@ func (s *ConfigActionService) AllowWrite(root string) error {
 
 func (s *ConfigActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
 	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
-	return mgr.QuarantineSelected(skills, true)
+	result, actionErr := mgr.QuarantineSelected(skills, true)
+	return result, errors.Join(actionErr, s.reconcileRemoved(result.Skills))
 }
 
 func (s *ConfigActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
 	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
-	return mgr.DeleteSelected(skills, confirmation)
+	result, actionErr := mgr.DeleteSelected(skills, confirmation)
+	return result, errors.Join(actionErr, s.reconcileRemoved(result.Skills))
+}
+
+func (s *ConfigActionService) reconcileRemoved(removed []inventory.Skill) error {
+	if s.IndexPath == "" || len(removed) == 0 {
+		return nil
+	}
+	db, err := state.OpenIndex(s.IndexPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	skills, findings, err := state.LoadInventoryCache(db)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	skills, findings = state.RemoveInventorySkills(skills, findings, removed)
+	return state.ReplaceIndex(db, skills, findings)
 }
 
 func (s *ConfigActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {

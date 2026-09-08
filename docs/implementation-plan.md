@@ -173,6 +173,16 @@ Initial v1 implementation is complete enough for fixture/temp-root validation an
 - [x] Report skills installed only in inactive harness roots as cleanup candidates.
 - [x] Cover agent catalog, config, setup, duplicate semantics, and inactive-root findings with tests.
 
+## QA fix — stale destructive-action inventory
+
+- [x] Reconcile externally deleted install paths when loading the dashboard cache and persist the pruned inventory.
+- [x] Treat already-missing delete/quarantine targets as stale inventory, not destructive-action failures.
+- [x] Track completed targets incrementally so partial batch failures update the model and SQLite index without hiding the error.
+- [x] Keep write checks ahead of batch mutation and continue deleting symlink entries without following their targets.
+- [x] Confirm a quarantine source is absent before classifying an `ENOENT` as stale.
+- [x] Treat an empty dashboard cache as a rescan signal so later external installs remain discoverable.
+- [x] Cover all-missing, mixed, normal multi-delete, partial failure, symlink safety, model feedback, and persisted restart behavior with temporary fixtures.
+
 ## QA notes — 2026-05-17 UI/UX cleanup
 
 Manual deterministic render QA used a temporary in-repo harness with fixture-only roots under `/tmp/unlearn-qa`; no real installed skills or agent configs were scanned or modified. Fixture shape: 11 logical skills (`macos-calendar`, `macos-notes`, `macos-reminders`, `fastmail`, `mcp2cli`, `wrangler`, `ui-ux-pro-max`, `frontend-design`, `work-on-ticket`, `improve-codebase-architecture`, `self-improving-agent`) with two installs each, high token ranges, high activation risk, and generic broad descriptions. Render checks covered setup at ~90×25, findings dashboard at ~90×25, grouped skill inventory at ~90×25, and wider inventory at ~120×35.
