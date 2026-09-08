@@ -154,6 +154,13 @@ Initial v1 implementation is complete enough for fixture/temp-root validation an
 - [x] Surface derived history evidence in dashboard finding and skill details.
 - [x] Cover progress, cancellation, CLI scan output, and dashboard history surfacing with tests.
 
+## QA fix — missing persisted history sources
+
+- [x] Skip configured or discovered history sources that disappear before scanning.
+- [x] Keep explicit missing paths and non-missing source errors fatal.
+- [x] Preserve cached positive evidence on ordinary loads, ignore it on forced rescans, and suppress unseen findings when source coverage is incomplete.
+- [x] Report skipped history paths without reading or storing raw session content.
+
 ## Issue #1 — harness-aware roots
 
 - [x] Use `vercel-labs/skills/src/agents.ts` as the source reference for supported agent skill roots.

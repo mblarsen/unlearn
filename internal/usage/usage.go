@@ -3,6 +3,7 @@ package usage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -45,13 +46,16 @@ type Options struct {
 }
 
 // Result contains derived usage evidence keyed by normalized skill name and an
-// enriched skill slice. It intentionally contains only grades, source paths, and
-// last-seen timestamps; raw history excerpts are neither exposed nor persisted.
+// enriched skill slice. MissingSources identifies incomplete scan coverage so
+// callers do not interpret absent evidence as proof that a skill is unused. The
+// result intentionally contains only grades, source paths, and last-seen
+// timestamps; raw history excerpts are neither exposed nor persisted.
 type Result struct {
-	Evidence analysis.UsageEvidence
-	Sources  map[string][]string
-	LastSeen map[string]time.Time
-	Skills   []inventory.Skill
+	Evidence       analysis.UsageEvidence
+	Sources        map[string][]string
+	LastSeen       map[string]time.Time
+	Skills         []inventory.Skill
+	MissingSources []string
 }
 
 // DiscoverPiJSONL returns likely Pi JSONL history files without reading their
@@ -74,7 +78,7 @@ func DiscoverSQLite(roots []string) ([]string, error) {
 // cached derived evidence, merges the best evidence per skill, and attaches the
 // result to inventory skills.
 func Load(opts Options) (Result, error) {
-	jsonlPaths, sqlitePaths, err := selectedSources(opts)
+	jsonlPaths, sqlitePaths, explicitPaths, err := selectedSources(opts)
 	if err != nil {
 		return Result{}, err
 	}
@@ -100,11 +104,14 @@ func Load(opts Options) (Result, error) {
 	total := len(jsonlPaths) + len(sqlitePaths)
 	for index, path := range jsonlPaths {
 		reportProgress(opts.Progress, Progress{Step: "history", Current: index + 1, Total: total, Detail: filepath.Base(path)})
-		evidence, err := evidenceForPath(db, path, names, opts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
+		evidence, missing, err := evidenceForPath(db, path, names, opts, explicitPaths[path], func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return jsonlAdapter.ScanWithOptions(path, names, scanOpts)
 		})
 		if err != nil {
 			return Result{}, err
+		}
+		if missing {
+			result.MissingSources = appendUnique(result.MissingSources, path)
 		}
 		merge(evidence)
 	}
@@ -112,15 +119,22 @@ func Load(opts Options) (Result, error) {
 	sqliteAdapter := history.SQLiteAdapter{}
 	for index, path := range sqlitePaths {
 		reportProgress(opts.Progress, Progress{Step: "history", Current: len(jsonlPaths) + index + 1, Total: total, Detail: filepath.Base(path)})
-		evidence, err := evidenceForPath(db, path, names, opts, func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
+		evidence, missing, err := evidenceForPath(db, path, names, opts, explicitPaths[path], func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return sqliteAdapter.ScanWithOptions(path, names, scanOpts)
 		})
 		if err != nil {
 			return Result{}, err
 		}
+		if missing {
+			result.MissingSources = appendUnique(result.MissingSources, path)
+		}
 		merge(evidence)
 	}
-	reportProgress(opts.Progress, Progress{Step: "history", Detail: fmt.Sprintf("%d file(s), %d matching skills", total, len(result.Evidence)), Done: true})
+	detail := fmt.Sprintf("%d file(s), %d matching skills", total, len(result.Evidence))
+	if len(result.MissingSources) > 0 {
+		detail = fmt.Sprintf("%d source(s), %d unavailable, %d matching skills", total, len(result.MissingSources), len(result.Evidence))
+	}
+	reportProgress(opts.Progress, Progress{Step: "history", Detail: detail, Done: true})
 	result.Skills = Attach(opts.Skills, result.Evidence, result.Sources, result.LastSeen)
 	return result, nil
 }
@@ -131,9 +145,13 @@ func reportProgress(progress func(Progress), event Progress) {
 	}
 }
 
-func selectedSources(opts Options) ([]string, []string, error) {
+func selectedSources(opts Options) ([]string, []string, map[string]bool, error) {
 	jsonlPaths := append([]string(nil), opts.HistoryJSONL...)
 	sqlitePaths := append([]string(nil), opts.HistorySQLite...)
+	explicitPaths := map[string]bool{}
+	for _, path := range append(jsonlPaths, sqlitePaths...) {
+		explicitPaths[path] = true
+	}
 	if len(jsonlPaths) == 0 && len(sqlitePaths) == 0 && opts.Config.HistoryScan {
 		jsonlPaths = append([]string(nil), opts.Config.HistoryJSONL...)
 		sqlitePaths = append([]string(nil), opts.Config.HistorySQLite...)
@@ -141,13 +159,13 @@ func selectedSources(opts Options) ([]string, []string, error) {
 	if opts.Config.HistoryScan && len(opts.HistoryJSONL) == 0 && len(opts.HistorySQLite) == 0 {
 		discoveredSQLite, err := DiscoverSQLite(opts.TrustedRoots)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		for _, path := range discoveredSQLite {
 			sqlitePaths = appendUnique(sqlitePaths, path)
 		}
 	}
-	return jsonlPaths, sqlitePaths, nil
+	return jsonlPaths, sqlitePaths, explicitPaths, nil
 }
 
 func skillNames(skills []inventory.Skill) []string {
@@ -160,19 +178,23 @@ func skillNames(skills []inventory.Skill) []string {
 
 type historyScannerFunc func(path string, names []string, opts history.ScanOptions) ([]history.Evidence, error)
 
-func evidenceForPath(db *sql.DB, path string, names []string, opts Options, scan historyScannerFunc) ([]history.Evidence, error) {
+func evidenceForPath(db *sql.DB, path string, names []string, opts Options, explicit bool, scan historyScannerFunc) ([]history.Evidence, bool, error) {
 	info, err := os.Stat(path)
 	if err != nil {
-		return nil, err
+		if !explicit && errors.Is(err, os.ErrNotExist) {
+			return evidenceForMissingPath(db, path, opts)
+		}
+		return nil, false, err
 	}
 	now := time.Now().UTC()
 	if !opts.RescanSources {
 		status, err := state.HistoryCacheStatusForSource(db, path, info.ModTime(), opts.HistoryCacheTTL, now)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if status.Fresh {
-			return state.LoadHistoryEvidence(db, path)
+			evidence, err := state.LoadHistoryEvidence(db, path)
+			return evidence, false, err
 		}
 	}
 	historyProgress := func(progress history.ScanProgress) {
@@ -182,12 +204,23 @@ func evidenceForPath(db *sql.DB, path string, names []string, opts Options, scan
 	}
 	evidence, err := scan(path, names, history.ScanOptions{Context: opts.Context, Progress: historyProgress})
 	if err != nil {
-		return nil, err
+		if !explicit && errors.Is(err, os.ErrNotExist) {
+			return evidenceForMissingPath(db, path, opts)
+		}
+		return nil, false, err
 	}
 	if err := state.SaveHistoryEvidence(db, path, info.ModTime(), evidence); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return evidence, nil
+	return evidence, false, nil
+}
+
+func evidenceForMissingPath(db *sql.DB, path string, opts Options) ([]history.Evidence, bool, error) {
+	if opts.RescanSources {
+		return nil, true, nil
+	}
+	evidence, err := state.LoadHistoryEvidence(db, path)
+	return evidence, true, err
 }
 
 func mergeEvidence(usage analysis.UsageEvidence, sources map[string][]string, lastSeen map[string]time.Time, evidence []history.Evidence) {

@@ -3,6 +3,8 @@ package unlearn
 import (
 	"bytes"
 	"database/sql"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -329,6 +331,56 @@ func TestAuditHistoryJSONLAddsUnseenFindings(t *testing.T) {
 	}
 	if !strings.Contains(string(cfg), "history_scan = true") || !strings.Contains(string(cfg), historyPath) {
 		t.Fatalf("history opt-in/paths not persisted:\n%s", cfg)
+	}
+}
+
+func TestAuditConfiguredMissingHistoryWarnsWithoutUnseenFindings(t *testing.T) {
+	for _, rescan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rescan=%t", rescan), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			root := t.TempDir()
+			writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+			missingPath := filepath.Join(t.TempDir(), "deleted-session.jsonl")
+			configPath := filepath.Join(t.TempDir(), "config.toml")
+			cfg := config.Default()
+			cfg.SetupComplete = true
+			cfg.HistoryScan = true
+			cfg.HistoryJSONL = []string{missingPath}
+			cfg.TrustRoot(root)
+			if err := cfg.Save(configPath); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"audit", "--root", root, "--state-dir", t.TempDir(), "--config", configPath}
+			if rescan {
+				args = append(args, "--rescan-sources")
+			}
+			var out bytes.Buffer
+			cmd := newRootCmd(&out)
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("audit failed for stale configured history: %v", err)
+			}
+			got := out.String()
+			if !strings.Contains(got, "History source is no longer available") || !strings.Contains(got, missingPath) {
+				t.Fatalf("missing history diagnostic not printed:\n%s", got)
+			}
+			if !strings.Contains(got, "unseen: 0") {
+				t.Fatalf("incomplete history must not declare skills unseen:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestAuditExplicitMissingHistoryStillFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+	missingPath := filepath.Join(t.TempDir(), "explicit-missing.jsonl")
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"audit", "--root", root, "--trust-root", root, "--history-jsonl", missingPath, "--state-dir", t.TempDir(), "--config", filepath.Join(t.TempDir(), "config.toml")})
+	if err := cmd.Execute(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("explicit missing history error=%v", err)
 	}
 }
 

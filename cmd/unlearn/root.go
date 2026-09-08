@@ -66,6 +66,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			printWarnings(cmd.ErrOrStderr(), opts.warnings)
 			paths, err := pathsFromOptions(opts)
 			if err != nil {
 				return err
@@ -561,8 +562,15 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	if skills == nil {
 		skills = report.Skills
 	}
+	usageEvidence := usageResult.Evidence
+	if len(usageResult.MissingSources) > 0 {
+		usageEvidence = nil
+		for _, path := range usageResult.MissingSources {
+			opts.warnings = append(opts.warnings, fmt.Sprintf("History source is no longer available; skipped: %s", path))
+		}
+	}
 	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: "duplicates, conflicts, keywords, safety findings"})
-	analysisOpts := analysis.Options{UsageEvidence: usageResult.Evidence, Progress: func(event analysis.ProgressEvent) {
+	analysisOpts := analysis.Options{UsageEvidence: usageEvidence, Progress: func(event analysis.ProgressEvent) {
 		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
 	}}
 	var recorder *recordingAnalyzer
@@ -582,7 +590,7 @@ func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) (
 	if err != nil {
 		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM analysis did not complete; continuing with available findings. Details: %v", err))
 		if len(findings) == 0 {
-			findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usageResult.Evidence})
+			findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usageEvidence})
 		}
 	}
 	if recorder != nil {
