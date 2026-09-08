@@ -22,8 +22,11 @@ type Manager struct {
 }
 
 type Result struct {
-	Skills []inventory.Skill
-	Paths  []string
+	// Skills contains installs that no longer exist at their encountered paths,
+	// whether this action removed them or found them already absent.
+	Skills  []inventory.Skill
+	Paths   []string
+	Missing []inventory.Skill
 }
 
 type DeleteConfirmation struct {
@@ -42,12 +45,18 @@ func (m Manager) QuarantineSelected(skills []inventory.Skill, confirm bool) (Res
 	if missing, ok := FirstMissingWrite(m.Config, skills); ok {
 		return Result{}, fmt.Errorf("%w: %s", ErrWritePermissionRequired, missing.Root)
 	}
-	result := Result{Skills: append([]inventory.Skill(nil), skills...)}
+	result := Result{}
 	for _, skill := range skills {
 		dest, err := m.Quarantine(skill, true)
-		if err != nil {
-			return result, err
+		if errors.Is(err, os.ErrNotExist) {
+			result.Skills = append(result.Skills, skill)
+			result.Missing = append(result.Missing, skill)
+			continue
 		}
+		if err != nil {
+			return result, fmt.Errorf("quarantine %s: %w", skill.EncounteredPath, err)
+		}
+		result.Skills = append(result.Skills, skill)
 		result.Paths = append(result.Paths, dest)
 	}
 	return result, nil
@@ -66,21 +75,40 @@ func (m Manager) DeleteSelected(skills []inventory.Skill, confirmation DeleteCon
 	if confirmation.BatchToken != BatchDeleteConfirmation(skills) {
 		return Result{}, ErrConfirmationRequired
 	}
-	result := Result{Skills: append([]inventory.Skill(nil), skills...)}
+	result := Result{}
 	for _, skill := range skills {
-		if err := removeSkillPath(skill.EncounteredPath); err != nil {
-			return result, err
+		missing, err := removeSkillPathIfPresent(skill.EncounteredPath)
+		if err != nil {
+			return result, fmt.Errorf("delete %s: %w", skill.EncounteredPath, err)
 		}
-		result.Paths = append(result.Paths, skill.EncounteredPath)
+		result.Skills = append(result.Skills, skill)
+		if missing {
+			result.Missing = append(result.Missing, skill)
+		} else {
+			result.Paths = append(result.Paths, skill.EncounteredPath)
+		}
 	}
 	return result, nil
 }
 
 func (m Manager) deleteSingleSelected(skill inventory.Skill, typedName string) (Result, error) {
-	if err := DeleteActive(skill, m.Config, typedName); err != nil {
+	if !m.Config.CanWrite(skill.Root) {
+		return Result{}, ErrWritePermissionRequired
+	}
+	if typedName != skill.Name {
+		return Result{}, fmt.Errorf("active skill deletion requires typing %q", skill.Name)
+	}
+	missing, err := removeSkillPathIfPresent(skill.EncounteredPath)
+	if err != nil {
 		return Result{}, err
 	}
-	return Result{Skills: []inventory.Skill{skill}, Paths: []string{skill.EncounteredPath}}, nil
+	result := Result{Skills: []inventory.Skill{skill}}
+	if missing {
+		result.Missing = []inventory.Skill{skill}
+	} else {
+		result.Paths = []string{skill.EncounteredPath}
+	}
+	return result, nil
 }
 
 func (m Manager) Quarantine(skill inventory.Skill, confirm bool) (string, error) {
@@ -237,14 +265,22 @@ func DeleteQuarantined(path string, confirm bool) error {
 }
 
 func removeSkillPath(path string) error {
+	_, err := removeSkillPathIfPresent(path)
+	return err
+}
+
+func removeSkillPathIfPresent(path string) (bool, error) {
 	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return true, nil
+	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	if info.IsDir() && info.Mode()&os.ModeSymlink == 0 {
-		return os.RemoveAll(path)
+		return false, os.RemoveAll(path)
 	}
-	return os.Remove(path)
+	return false, os.Remove(path)
 }
 
 func safeName(name string) string {

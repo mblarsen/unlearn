@@ -75,7 +75,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err != nil {
 				return err
 			}
-			service := &tui.ConfigActionService{ConfigPath: paths.ConfigPath, Config: cfg, QuarantineDir: paths.QuarantineDir, LLMCacheDir: paths.LLMCacheDir}
+			service := &tui.ConfigActionService{ConfigPath: paths.ConfigPath, Config: cfg, IndexPath: paths.IndexPath, QuarantineDir: paths.QuarantineDir, LLMCacheDir: paths.LLMCacheDir}
 			program := tea.NewProgram(tui.NewWithActions(skills, findings, service), tea.WithOutput(out), tea.WithAltScreen())
 			_, err = program.Run()
 			return err
@@ -386,7 +386,17 @@ func loadDashboardInventory(opts *cliOptions, loadOpts inventoryLoadOptions) ([]
 		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: "local dashboard index"})
 		skills, findings, err := state.LoadInventoryCache(db)
 		if err == nil {
-			reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: fmt.Sprintf("%d skills, %d findings", len(skills), len(findings)), Done: true})
+			skills, findings, missing := state.ReconcileMissingPaths(skills, findings)
+			if len(missing) > 0 {
+				if err := state.ReplaceIndex(db, skills, findings); err != nil {
+					return nil, nil, err
+				}
+			}
+			detail := fmt.Sprintf("%d skills, %d findings", len(skills), len(findings))
+			if len(missing) > 0 {
+				detail += fmt.Sprintf("; removed %d stale installs", len(missing))
+			}
+			reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: detail, Done: true})
 			return skills, findings, nil
 		}
 	}

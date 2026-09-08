@@ -255,6 +255,38 @@ func TestDeleteSelectedRequiresTypedNameForSingleInstall(t *testing.T) {
 	}
 }
 
+func TestDeleteSelectedChecksEveryWritePermissionBeforeBatchMutation(t *testing.T) {
+	writableRoot := t.TempDir()
+	blockedRoot := t.TempDir()
+	first := filepath.Join(writableRoot, "first")
+	second := filepath.Join(blockedRoot, "second")
+	for _, path := range []string{first, second} {
+		if err := os.Mkdir(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(writableRoot)
+	mgr := Manager{Config: cfg}
+	skills := []inventory.Skill{
+		{Name: "first", Root: writableRoot, EncounteredPath: first},
+		{Name: "second", Root: blockedRoot, EncounteredPath: second},
+	}
+
+	result, err := mgr.DeleteSelected(skills, DeleteConfirmation{BatchToken: BatchDeleteConfirmation(skills)})
+	if !errors.Is(err, ErrWritePermissionRequired) {
+		t.Fatalf("expected write permission error, got %v", err)
+	}
+	if len(result.Skills) != 0 {
+		t.Fatalf("result=%#v", result)
+	}
+	for _, path := range []string{first, second} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("permission failure mutated %s: %v", path, err)
+		}
+	}
+}
+
 func TestDeleteSelectedRequiresBatchConfirmationForMultipleInstalls(t *testing.T) {
 	root := t.TempDir()
 	one := filepath.Join(root, "one")
@@ -287,6 +319,110 @@ func TestDeleteSelectedRequiresBatchConfirmationForMultipleInstalls(t *testing.T
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("install still exists at %s, err=%v", path, err)
 		}
+	}
+}
+
+func TestDeleteSelectedReconcilesAllMissingInstalls(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{Config: cfg}
+	skills := []inventory.Skill{
+		{Name: "one", Root: root, EncounteredPath: filepath.Join(root, "one")},
+		{Name: "two", Root: root, EncounteredPath: filepath.Join(root, "two")},
+	}
+
+	result, err := mgr.DeleteSelected(skills, DeleteConfirmation{BatchToken: BatchDeleteConfirmation(skills)})
+	if err != nil {
+		t.Fatalf("missing installs should reconcile without failing: %v", err)
+	}
+	if len(result.Skills) != 2 {
+		t.Fatalf("reconciled skills=%d want 2", len(result.Skills))
+	}
+}
+
+func TestDeleteSelectedHandlesMixedExistingAndMissingInstalls(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "existing")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{Config: cfg}
+	skills := []inventory.Skill{
+		{Name: "existing", Root: root, EncounteredPath: existing},
+		{Name: "missing", Root: root, EncounteredPath: filepath.Join(root, "missing")},
+	}
+
+	result, err := mgr.DeleteSelected(skills, DeleteConfirmation{BatchToken: BatchDeleteConfirmation(skills)})
+	if err != nil {
+		t.Fatalf("mixed delete should reconcile missing install: %v", err)
+	}
+	if len(result.Skills) != 2 {
+		t.Fatalf("reconciled skills=%d want 2", len(result.Skills))
+	}
+	if _, err := os.Lstat(existing); !os.IsNotExist(err) {
+		t.Fatalf("existing install was not deleted: %v", err)
+	}
+}
+
+func TestDeleteSelectedReportsOnlyCompletedSkillsOnPartialFailure(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	if err := os.Mkdir(first, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	blockingFile := filepath.Join(root, "not-a-directory")
+	if err := os.WriteFile(blockingFile, []byte("fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{Config: cfg}
+	skills := []inventory.Skill{
+		{Name: "first", Root: root, EncounteredPath: first},
+		{Name: "blocked", Root: root, EncounteredPath: filepath.Join(blockingFile, "blocked")},
+	}
+
+	result, err := mgr.DeleteSelected(skills, DeleteConfirmation{BatchToken: BatchDeleteConfirmation(skills)})
+	if err == nil {
+		t.Fatal("expected second install to fail")
+	}
+	if len(result.Skills) != 1 || result.Skills[0].Name != "first" {
+		t.Fatalf("completed skills=%v want first only", result.Skills)
+	}
+	if _, err := os.Lstat(first); !os.IsNotExist(err) {
+		t.Fatalf("first install should remain deleted: %v", err)
+	}
+	if _, err := os.Stat(blockingFile); err != nil {
+		t.Fatalf("failure must not remove unrelated file: %v", err)
+	}
+}
+
+func TestDeleteSelectedRemovesSymlinkWithoutDeletingTarget(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "linked")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	skill := inventory.Skill{Name: "linked", Root: root, EncounteredPath: link, IsSymlink: true, ResolvedPath: target}
+	mgr := Manager{Config: cfg}
+
+	if _, err := mgr.DeleteSelected([]inventory.Skill{skill}, DeleteConfirmation{TypedName: skill.Name}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); !os.IsNotExist(err) {
+		t.Fatalf("symlink still exists: %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("symlink target was affected: %v", err)
 	}
 }
 
