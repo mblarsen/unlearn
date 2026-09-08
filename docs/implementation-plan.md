@@ -179,6 +179,8 @@ Initial v1 implementation is complete enough for fixture/temp-root validation an
 - [x] Treat already-missing delete/quarantine targets as stale inventory, not destructive-action failures.
 - [x] Track completed targets incrementally so partial batch failures update the model and SQLite index without hiding the error.
 - [x] Keep write checks ahead of batch mutation and continue deleting symlink entries without following their targets.
+- [x] Confirm a quarantine source is absent before classifying an `ENOENT` as stale.
+- [x] Treat an empty dashboard cache as a rescan signal so later external installs remain discoverable.
 - [x] Cover all-missing, mixed, normal multi-delete, partial failure, symlink safety, model feedback, and persisted restart behavior with temporary fixtures.
 
 ## QA notes — 2026-05-17 UI/UX cleanup

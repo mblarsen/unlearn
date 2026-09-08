@@ -19,6 +19,7 @@ var ErrRenameNameRequired = errors.New("rename requires a new name")
 type Manager struct {
 	Config        config.Config
 	QuarantineDir string
+	RenamePath    func(oldPath, newPath string) error
 }
 
 type Result struct {
@@ -49,9 +50,11 @@ func (m Manager) QuarantineSelected(skills []inventory.Skill, confirm bool) (Res
 	for _, skill := range skills {
 		dest, err := m.Quarantine(skill, true)
 		if errors.Is(err, os.ErrNotExist) {
-			result.Skills = append(result.Skills, skill)
-			result.Missing = append(result.Missing, skill)
-			continue
+			if _, sourceErr := os.Lstat(skill.EncounteredPath); errors.Is(sourceErr, os.ErrNotExist) {
+				result.Skills = append(result.Skills, skill)
+				result.Missing = append(result.Missing, skill)
+				continue
+			}
 		}
 		if err != nil {
 			return result, fmt.Errorf("quarantine %s: %w", skill.EncounteredPath, err)
@@ -123,7 +126,11 @@ func (m Manager) Quarantine(skill inventory.Skill, confirm bool) (string, error)
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return "", err
 	}
-	if err := os.Rename(skill.EncounteredPath, dest); err != nil {
+	renamePath := m.RenamePath
+	if renamePath == nil {
+		renamePath = os.Rename
+	}
+	if err := renamePath(skill.EncounteredPath, dest); err != nil {
 		return "", err
 	}
 	return dest, nil

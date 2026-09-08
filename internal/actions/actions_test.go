@@ -98,6 +98,50 @@ func TestQuarantineSelectedMovesEverySelectedInstall(t *testing.T) {
 	}
 }
 
+func TestQuarantineSelectedDoesNotReconcileDestinationENOENT(t *testing.T) {
+	root := t.TempDir()
+	skillPath := filepath.Join(root, "demo")
+	if err := os.Mkdir(skillPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	mgr := Manager{
+		Config:        cfg,
+		QuarantineDir: filepath.Join(t.TempDir(), "quarantine"),
+		RenamePath: func(_, destination string) error {
+			return &os.PathError{Op: "rename", Path: destination, Err: os.ErrNotExist}
+		},
+	}
+
+	result, err := mgr.QuarantineSelected([]inventory.Skill{{Name: "demo", Root: root, EncounteredPath: skillPath}}, true)
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("destination ENOENT must remain visible, got %v", err)
+	}
+	if len(result.Skills) != 0 || len(result.Missing) != 0 {
+		t.Fatalf("existing source was incorrectly reconciled: %#v", result)
+	}
+	if _, err := os.Lstat(skillPath); err != nil {
+		t.Fatalf("source must remain present: %v", err)
+	}
+}
+
+func TestQuarantineSelectedReconcilesMissingSource(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Default()
+	cfg.AllowWrite(root)
+	skill := inventory.Skill{Name: "demo", Root: root, EncounteredPath: filepath.Join(root, "missing")}
+	mgr := Manager{Config: cfg, QuarantineDir: filepath.Join(t.TempDir(), "quarantine")}
+
+	result, err := mgr.QuarantineSelected([]inventory.Skill{skill}, true)
+	if err != nil {
+		t.Fatalf("missing source should reconcile: %v", err)
+	}
+	if len(result.Skills) != 1 || len(result.Missing) != 1 {
+		t.Fatalf("result=%#v", result)
+	}
+}
+
 func TestQuarantineAndRestoreFixture(t *testing.T) {
 	root := t.TempDir()
 	skillPath := filepath.Join(root, "demo")

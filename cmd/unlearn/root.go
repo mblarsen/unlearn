@@ -385,7 +385,7 @@ func loadDashboardInventory(opts *cliOptions, loadOpts inventoryLoadOptions) ([]
 		defer db.Close()
 		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: "local dashboard index"})
 		skills, findings, err := state.LoadInventoryCache(db)
-		if err == nil {
+		if err == nil && (len(skills) > 0 || len(findings) > 0) {
 			skills, findings, missing := state.ReconcileMissingPaths(skills, findings)
 			if len(missing) > 0 {
 				if err := state.ReplaceIndex(db, skills, findings); err != nil {

@@ -114,6 +114,40 @@ func TestDashboardInventoryPrunesExternallyDeletedCachedInstallAcrossRestart(t *
 	}
 }
 
+func TestDashboardInventoryRescansAfterEmptyCacheWhenInstallAppears(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	root := filepath.Join(home, ".agents", "skills")
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	cfg := config.Default()
+	cfg.SetupComplete = true
+	cfg.ActiveAgents = []string{"pi"}
+	cfg.TrustRoot(root)
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.ReplaceIndex(db, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	writeSkill(t, filepath.Join(root, "new-skill"), "new-skill", "installed outside unlearn")
+
+	skills, _, err := loadDashboardInventory(&cliOptions{stateDir: stateDir, configPath: configPath}, inventoryLoadOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(skills) != 1 || skills[0].Name != "new-skill" {
+		t.Fatalf("dashboard did not rescan after empty cache: %#v", skills)
+	}
+}
+
 func TestDashboardInventoryIgnoresLegacyDuplicateCache(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
