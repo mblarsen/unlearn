@@ -254,6 +254,7 @@ func TestSortFindingsUsesUserRelevantOrder(t *testing.T) {
 		{Type: FindingHighTokenCost, Title: "tokens"},
 		{Type: FindingConflict, Title: "conflict"},
 		{Type: FindingOverlap, Title: "overlap"},
+		{Type: FindingSkillQuality, Title: "quality"},
 	}
 	SortFindings(findings)
 	want := []FindingType{
@@ -265,6 +266,7 @@ func TestSortFindingsUsesUserRelevantOrder(t *testing.T) {
 		FindingBroadActivation,
 		FindingBroken,
 		FindingInactiveRoot,
+		FindingSkillQuality,
 	}
 	for i, typ := range want {
 		if findings[i].Type != typ {
@@ -308,6 +310,38 @@ func TestAnalyzeWithLLMMergesDuplicateOverlapPairs(t *testing.T) {
 	}
 }
 
+func TestAnalyzeWithLLMAddsAdvisorySkillQualityFindings(t *testing.T) {
+	skills := []inventory.Skill{{Name: "broad-skill", Description: "Use for anything", ContentHash: "hash-a", SupportRefs: []inventory.SupportRef{{Mention: "all docs", Path: "docs/", Tokens: 5000}}}}
+	findings, err := AnalyzeWithLLM(context.Background(), skills, Options{LLMAnalyzer: fakeAnalyzer{quality: map[string]llm.SkillQualityResult{
+		"hash-a": {Issues: []llm.SkillQualityIssue{{IssueType: "vague_description", Reason: "description does not say when to use it", Recommendation: "name the concrete workflow", Provider: "test", Model: "fake"}}, Provider: "test", Model: "fake", ContentHash: "hash-a"},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	quality := findingsOfType(findings, FindingSkillQuality)
+	if len(quality) != 1 {
+		t.Fatalf("expected one quality finding, got %#v", findings)
+	}
+	if quality[0].Severity != 4 || !strings.Contains(quality[0].Reasons[0], "LLM-assisted advisory skill-quality") || !strings.Contains(quality[0].Reasons[0], "vague_description") {
+		t.Fatalf("unexpected quality finding: %#v", quality[0])
+	}
+}
+
+func TestAnalyzeWithLLMQualityFailureKeepsDeterministicFindings(t *testing.T) {
+	skills := []inventory.Skill{
+		{Name: "same", ID: "a", ContentHash: "h1", ActiveAgents: []string{"pi"}},
+		{Name: "same", ID: "b", ContentHash: "h1", ActiveAgents: []string{"pi"}},
+	}
+	findings, err := AnalyzeWithLLM(context.Background(), skills, Options{LLMAnalyzer: fakeAnalyzer{qualityErr: context.Canceled}})
+	if err == nil {
+		t.Fatal("expected advisory quality error")
+	}
+	assertHasType(t, findings, FindingDuplicate)
+	if countType(findings, FindingSkillQuality) != 0 {
+		t.Fatalf("failed quality pass should not emit quality findings: %#v", findings)
+	}
+}
+
 func TestOverlapClustersDenseConnectedComponents(t *testing.T) {
 	skills := []inventory.Skill{
 		{Name: "react-a11y", Description: "React frontend accessibility aria keyboard", Body: "dashboard semantic focus", ContentHash: "a"},
@@ -338,7 +372,9 @@ func TestOverlapDoesNotCreateBroadTransitiveBridgeClusters(t *testing.T) {
 }
 
 type fakeAnalyzer struct {
-	overlaps []llm.SemanticOverlap
+	overlaps   []llm.SemanticOverlap
+	quality    map[string]llm.SkillQualityResult
+	qualityErr error
 }
 
 func (a fakeAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (llm.GeneratedSummary, error) {
@@ -347,6 +383,16 @@ func (a fakeAnalyzer) Summarize(ctx context.Context, name, deterministicSummary,
 
 func (a fakeAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.GeneratedSummary) ([]llm.SemanticOverlap, error) {
 	return a.overlaps, nil
+}
+
+func (a fakeAnalyzer) LintSkillQuality(ctx context.Context, request llm.SkillQualityRequest) (llm.SkillQualityResult, error) {
+	if a.qualityErr != nil {
+		return llm.SkillQualityResult{}, a.qualityErr
+	}
+	if result, ok := a.quality[request.ContentHash]; ok {
+		return result, nil
+	}
+	return llm.SkillQualityResult{Issues: []llm.SkillQualityIssue{}, Provider: "test", Model: "fake", ContentHash: request.ContentHash}, nil
 }
 
 func countType(findings []Finding, typ FindingType) int {

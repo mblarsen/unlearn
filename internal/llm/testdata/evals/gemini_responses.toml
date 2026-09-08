@@ -1,0 +1,26 @@
+# Static Gemini text fixtures. Tests wrap these strings in httptest responses,
+# so normal validation never needs a real API key or network.
+
+[summary]
+name = "browser-helper"
+deterministic_summary = "Control browser pages and screenshots with Playwright automation."
+content_hash = "hash-browser-helper"
+response_text = "Browser screenshot automation"
+expected_summary = "Browser screenshot automation"
+model = "gemini-test"
+
+[overlap]
+response_text = '''{"overlaps":[{"skill_names":["agent-browser","playwriter"],"reason":"both automate browser interaction"}]}'''
+
+[[overlap.expected_groups]]
+skill_names = ["agent-browser", "playwriter"]
+reason = "both automate browser interaction"
+
+[invalid_overlap]
+expected_attempts = 3
+expected_error_contains = "invalid semantic-overlap JSON after 3 attempts"
+responses = [
+  "not json",
+  '''{"overlaps":[{"skill_names":["agent-browser","playwriter"]''',
+  "```json\n{\"overlaps\":\n```",
+]

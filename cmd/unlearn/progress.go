@@ -144,6 +144,8 @@ func progressLabel(step string) string {
 		return "Generate Gemini summaries"
 	case "llm-overlap":
 		return "Find semantic overlaps"
+	case "llm-quality":
+		return "Review skill quality"
 	default:
 		return step
 	}

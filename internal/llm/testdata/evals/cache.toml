@@ -1,0 +1,32 @@
+# Cache eval fixture. The overlap cache key is a golden value for the current
+# cache-key inputs (version, names, content hashes, provider/model, summaries).
+
+[[summaries]]
+name = "alpha"
+summary = "Browser screenshot automation"
+provider = "gemini"
+model = "gemini-test"
+content_hash = "hash-alpha"
+
+[[summaries]]
+name = "beta"
+summary = "Browser navigation automation"
+provider = "gemini"
+model = "gemini-test"
+content_hash = "hash-beta"
+
+[expected]
+overlap_cache_key = "88e4048cd022b79891a34623d0907d91be78f25f5c2110c5acae6e5d77fe5e9a"
+
+[[cached_overlaps]]
+skill_names = ["alpha", "beta"]
+reason = "both automate browser workflows"
+provider = "gemini"
+model = "gemini-test"
+
+[summary_cache]
+name = "cached-skill"
+summary = "Cached cleanup label"
+provider = "gemini"
+model = "gemini-test"
+content_hash = "hash/with unsafe chars"

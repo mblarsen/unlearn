@@ -58,6 +58,33 @@ func TestGeminiAnalyzerSummarizeFallsBackFromVeryLongResponse(t *testing.T) {
 	}
 }
 
+func TestGeminiAnalyzerGenerateMergedSkillDraft(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req geminiGenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		prompt := req.Contents[0].Parts[0].Text
+		if !strings.Contains(prompt, "preview-only") || !strings.Contains(prompt, "Return only plain markdown") || !strings.Contains(prompt, "alpha") || !strings.Contains(prompt, "beta") {
+			t.Fatalf("draft prompt missing constraints or selected skills: %s", prompt)
+		}
+		if req.GenerationConfig.MaxOutputTokens < 4096 {
+			t.Fatalf("draft token budget too small: %d", req.GenerationConfig.MaxOutputTokens)
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"---\nname: merged-alpha-beta\ndescription: Combined alpha beta workflows\n---\n\n# Merged"}]}}]}`))
+	}))
+	defer server.Close()
+
+	analyzer := GeminiAnalyzer{APIKey: "test-key", Model: "gemini-test", BaseURL: server.URL, Client: server.Client()}
+	result, err := analyzer.GenerateMergedSkillDraft(context.Background(), DraftRequest{Skills: []DraftSkill{{Name: "alpha", Body: "alpha body"}, {Name: "beta", Body: "beta body"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Markdown, "merged-alpha-beta") || result.Provider != "gemini" || result.Model != "gemini-test" || result.PromptVersion != DraftPromptVersion {
+		t.Fatalf("unexpected draft result: %#v", result)
+	}
+}
+
 func TestGeminiAnalyzerFindOverlapsParsesJSON(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var req geminiGenerateRequest
@@ -104,6 +131,44 @@ func TestGeminiAnalyzerFindOverlapsRetriesTruncatedJSON(t *testing.T) {
 	}
 	if attempts != 3 || len(overlaps) != 1 || overlaps[0].Reason != "same purpose" {
 		t.Fatalf("attempts=%d overlaps=%#v", attempts, overlaps)
+	}
+}
+
+func TestGeminiAnalyzerLintSkillQualityParsesJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req geminiGenerateRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		prompt := req.Contents[0].Parts[0].Text
+		if req.GenerationConfig.ResponseMimeType != "application/json" {
+			t.Fatalf("expected JSON mode, got %#v", req.GenerationConfig)
+		}
+		for _, want := range []string{"advisory lint only", "Allowed issue_type values", "overly_broad_trigger", "support_refs"} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("prompt missing %q:\n%s", want, prompt)
+			}
+		}
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"findings\":[{\"issue_type\":\"overly_broad_trigger\",\"reason\":\"trigger catches every coding task\",\"recommendation\":\"limit activation to UI review requests\"}]}"}]}}]}`))
+	}))
+	defer server.Close()
+
+	analyzer := GeminiAnalyzer{APIKey: "test-key", Model: "gemini-test", BaseURL: server.URL, Client: server.Client()}
+	result, err := analyzer.LintSkillQuality(context.Background(), SkillQualityRequest{Name: "alpha", Description: "Use before any task", Body: "Body", ContentHash: "hash-a", SupportRefs: []SkillQualitySupportRef{{Path: "docs/all.md", Tokens: 5000}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Provider != "gemini" || result.Model != "gemini-test" || result.ContentHash != "hash-a" || len(result.Issues) != 1 {
+		t.Fatalf("unexpected quality result: %#v", result)
+	}
+	if result.Issues[0].IssueType != "overly_broad_trigger" || result.Issues[0].Provider != "gemini" || result.Issues[0].Model != "gemini-test" {
+		t.Fatalf("unexpected quality issue: %#v", result.Issues[0])
+	}
+}
+
+func TestParseGeminiSkillQualityResponseRejectsInvalidJSON(t *testing.T) {
+	if _, err := parseGeminiSkillQualityResponse("not json"); err == nil {
+		t.Fatal("expected parse error")
 	}
 }
 

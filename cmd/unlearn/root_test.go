@@ -3,6 +3,8 @@ package unlearn
 import (
 	"bytes"
 	"database/sql"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -332,6 +334,56 @@ func TestAuditHistoryJSONLAddsUnseenFindings(t *testing.T) {
 	}
 }
 
+func TestAuditConfiguredMissingHistoryWarnsWithoutUnseenFindings(t *testing.T) {
+	for _, rescan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rescan=%t", rescan), func(t *testing.T) {
+			t.Setenv("HOME", t.TempDir())
+			root := t.TempDir()
+			writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+			missingPath := filepath.Join(t.TempDir(), "deleted-session.jsonl")
+			configPath := filepath.Join(t.TempDir(), "config.toml")
+			cfg := config.Default()
+			cfg.SetupComplete = true
+			cfg.HistoryScan = true
+			cfg.HistoryJSONL = []string{missingPath}
+			cfg.TrustRoot(root)
+			if err := cfg.Save(configPath); err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"audit", "--root", root, "--state-dir", t.TempDir(), "--config", configPath}
+			if rescan {
+				args = append(args, "--rescan-sources")
+			}
+			var out bytes.Buffer
+			cmd := newRootCmd(&out)
+			cmd.SetArgs(args)
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("audit failed for stale configured history: %v", err)
+			}
+			got := out.String()
+			if !strings.Contains(got, "History source is no longer available") || !strings.Contains(got, missingPath) {
+				t.Fatalf("missing history diagnostic not printed:\n%s", got)
+			}
+			if !strings.Contains(got, "unseen: 0") {
+				t.Fatalf("incomplete history must not declare skills unseen:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestAuditExplicitMissingHistoryStillFails(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+	missingPath := filepath.Join(t.TempDir(), "explicit-missing.jsonl")
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"audit", "--root", root, "--trust-root", root, "--history-jsonl", missingPath, "--state-dir", t.TempDir(), "--config", filepath.Join(t.TempDir(), "config.toml")})
+	if err := cmd.Execute(); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("explicit missing history error=%v", err)
+	}
+}
+
 func TestScanPrintsHistoryProgressAndIndexesEvidence(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	root := t.TempDir()
@@ -559,6 +611,10 @@ func TestAuditWithLLMPrintsProgressToErr(t *testing.T) {
 			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"overlaps\":[]}"}]}}]}`))
 			return
 		}
+		if strings.Contains(string(body), "Review one AI agent skill file") {
+			_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{\"findings\":[]}"}]}}]}`))
+			return
+		}
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Short summary."}]}}]}`))
 	}))
 	defer server.Close()
@@ -573,13 +629,26 @@ func TestAuditWithLLMPrintsProgressToErr(t *testing.T) {
 		t.Fatal(err)
 	}
 	progress := errOut.String()
-	for _, want := range []string{"Scan skill roots", "Run deterministic checks", "Generate Gemini summaries", "Find semantic overlaps"} {
+	for _, want := range []string{"Scan skill roots", "Run deterministic checks", "Generate Gemini summaries", "Find semantic overlaps", "Review skill quality"} {
 		if !strings.Contains(progress, want) {
 			t.Fatalf("progress output missing %q:\n%s", want, progress)
 		}
 	}
 	if strings.Contains(out.String(), "Generate Gemini summaries") {
 		t.Fatalf("progress leaked to stdout:\n%s", out.String())
+	}
+}
+
+func TestPrintAuditShowsSkillQualityAdvisoryCount(t *testing.T) {
+	skills := []inventory.Skill{{Name: "alpha", Root: "/one"}}
+	findings := []analysis.Finding{{ID: "skill-quality:alpha", Type: analysis.FindingSkillQuality, Severity: 4, Title: "alpha", Skills: skills, Reasons: []string{"LLM-assisted advisory skill-quality: vague_description — too broad Recommendation: be specific (test/fake)"}}}
+	var out bytes.Buffer
+	printAudit(&out, skills, findings, nil)
+	got := out.String()
+	for _, want := range []string{"skill-quality: 1", "LLM-assisted advisory recommendations only", "safe fixes ignore them"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("audit output missing %q:\n%s", want, got)
+		}
 	}
 }
 

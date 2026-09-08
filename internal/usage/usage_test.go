@@ -2,8 +2,11 @@ package usage
 
 import (
 	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -46,6 +49,189 @@ func TestLoadMergesBestEvidenceAndAttachesToSkills(t *testing.T) {
 	if result.Skills[0].HistoryLastSeenAt.IsZero() {
 		t.Fatalf("alpha last-seen timestamp was not attached")
 	}
+}
+
+func TestLoadSkipsMissingConfiguredJSONLAndScansSurvivor(t *testing.T) {
+	dir := t.TempDir()
+	missingPath := filepath.Join(dir, "deleted-session.jsonl")
+	survivingPath := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(survivingPath, []byte(`{"message":"read skills/alpha/SKILL.md"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.HistoryScan = true
+	cfg.HistoryJSONL = []string{missingPath, survivingPath}
+
+	result, err := Load(Options{
+		Config:          cfg,
+		Paths:           testStatePaths(t),
+		Skills:          []inventory.Skill{{Name: "alpha"}},
+		HistoryCacheTTL: time.Hour,
+		RescanSources:   true,
+	})
+	if err != nil {
+		t.Fatalf("configured history should tolerate a deleted source: %v", err)
+	}
+	if result.Evidence["alpha"] != "strong" {
+		t.Fatalf("surviving source was not scanned: %v", result.Evidence)
+	}
+}
+
+func TestLoadConfiguredMissingSources(t *testing.T) {
+	for _, rescan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("rescan=%t", rescan), func(t *testing.T) {
+			dir := t.TempDir()
+			jsonlPath := filepath.Join(dir, "deleted-session.jsonl")
+			sqlitePath := filepath.Join(dir, "deleted-session.db")
+			cfg := config.Default()
+			cfg.HistoryScan = true
+			cfg.HistoryJSONL = []string{jsonlPath}
+			cfg.HistorySQLite = []string{sqlitePath}
+
+			result, err := Load(Options{
+				Config:          cfg,
+				Paths:           testStatePaths(t),
+				Skills:          []inventory.Skill{{Name: "alpha"}},
+				HistoryCacheTTL: time.Hour,
+				RescanSources:   rescan,
+			})
+			if err != nil {
+				t.Fatalf("configured history should tolerate deleted sources: %v", err)
+			}
+			if !reflect.DeepEqual(result.MissingSources, []string{jsonlPath, sqlitePath}) {
+				t.Fatalf("missing sources=%v", result.MissingSources)
+			}
+			if len(result.Evidence) != 0 {
+				t.Fatalf("unexpected evidence from missing sources: %v", result.Evidence)
+			}
+		})
+	}
+}
+
+func TestLoadToleratesDiscoveredSQLiteRemovalBeforeScan(t *testing.T) {
+	root := t.TempDir()
+	sqlitePath := writeUsageSQLite(t, filepath.Join(root, "history"), "use the alpha skill")
+	cfg := config.Default()
+	cfg.HistoryScan = true
+	removed := false
+
+	result, err := Load(Options{
+		Config:          cfg,
+		Paths:           testStatePaths(t),
+		Skills:          []inventory.Skill{{Name: "alpha"}},
+		TrustedRoots:    []string{root},
+		HistoryCacheTTL: time.Hour,
+		Progress: func(progress Progress) {
+			if !removed && progress.Step == "history" && !progress.Done {
+				removed = true
+				if err := os.Remove(sqlitePath); err != nil {
+					t.Fatal(err)
+				}
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("discovery-to-scan removal should be tolerated: %v", err)
+	}
+	if !removed || !reflect.DeepEqual(result.MissingSources, []string{sqlitePath}) {
+		t.Fatalf("race was not exercised: removed=%t missing=%v", removed, result.MissingSources)
+	}
+}
+
+func TestLoadMissingConfiguredSourceUsesCacheUnlessForced(t *testing.T) {
+	dir := t.TempDir()
+	jsonlPath := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(jsonlPath, []byte(`{"message":"read skills/alpha/SKILL.md"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	paths := testStatePaths(t)
+	skills := []inventory.Skill{{Name: "alpha"}}
+	if _, err := Load(Options{Config: config.Default(), Paths: paths, Skills: skills, HistoryJSONL: []string{jsonlPath}, HistoryCacheTTL: time.Hour}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(jsonlPath); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.HistoryScan = true
+	cfg.HistoryJSONL = []string{jsonlPath}
+
+	cached, err := Load(Options{Config: cfg, Paths: paths, Skills: skills, HistoryCacheTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cached.Evidence["alpha"] != "strong" || cached.Skills[0].HistoryEvidence != "strong" {
+		t.Fatalf("ordinary load should retain derived cached evidence: %#v", cached)
+	}
+	if !reflect.DeepEqual(cached.MissingSources, []string{jsonlPath}) {
+		t.Fatalf("cached missing sources=%v", cached.MissingSources)
+	}
+
+	forced, err := Load(Options{Config: cfg, Paths: paths, Skills: skills, HistoryCacheTTL: time.Hour, RescanSources: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(forced.Evidence) != 0 {
+		t.Fatalf("forced rescan must not reuse cached evidence: %v", forced.Evidence)
+	}
+	if !reflect.DeepEqual(forced.MissingSources, []string{jsonlPath}) {
+		t.Fatalf("forced missing sources=%v", forced.MissingSources)
+	}
+}
+
+func TestLoadMissingExplicitSourceStillFails(t *testing.T) {
+	for _, source := range []struct {
+		name string
+		set  func(*Options, string)
+	}{
+		{name: "jsonl", set: func(opts *Options, path string) { opts.HistoryJSONL = []string{path} }},
+		{name: "sqlite", set: func(opts *Options, path string) { opts.HistorySQLite = []string{path} }},
+	} {
+		t.Run(source.name, func(t *testing.T) {
+			missingPath := filepath.Join(t.TempDir(), "explicit-missing."+source.name)
+			opts := Options{Config: config.Default(), Paths: testStatePaths(t), Skills: []inventory.Skill{{Name: "alpha"}}, HistoryCacheTTL: time.Hour}
+			source.set(&opts, missingPath)
+			_, err := Load(opts)
+			if !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("explicit missing source error=%v", err)
+			}
+		})
+	}
+}
+
+func TestLoadConfiguredSourceDoesNotMaskNonMissingErrors(t *testing.T) {
+	t.Run("wrong JSONL file type", func(t *testing.T) {
+		dir := t.TempDir()
+		cfg := config.Default()
+		cfg.HistoryScan = true
+		cfg.HistoryJSONL = []string{dir}
+
+		_, err := Load(Options{Config: cfg, Paths: testStatePaths(t), Skills: []inventory.Skill{{Name: "alpha"}}, HistoryCacheTTL: time.Hour})
+		if err == nil {
+			t.Fatal("configured directory passed as JSONL source should fail")
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("non-missing source error was misclassified: %v", err)
+		}
+	})
+
+	t.Run("corrupt SQLite", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "corrupt.db")
+		if err := os.WriteFile(path, []byte("not a SQLite database"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg := config.Default()
+		cfg.HistoryScan = true
+		cfg.HistorySQLite = []string{path}
+
+		_, err := Load(Options{Config: cfg, Paths: testStatePaths(t), Skills: []inventory.Skill{{Name: "alpha"}}, HistoryCacheTTL: time.Hour})
+		if err == nil {
+			t.Fatal("corrupt configured SQLite source should fail")
+		}
+		if errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("corrupt source error was misclassified: %v", err)
+		}
+	})
 }
 
 func TestLoadUsesFreshCachedEvidenceWithoutRawRescan(t *testing.T) {
