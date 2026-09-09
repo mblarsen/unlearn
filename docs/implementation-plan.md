@@ -225,4 +225,11 @@ Interactive QA extended the original dashboard interaction plan. The implemented
 - [x] Wrap selected install paths and provenance, with Page Up/Page Down access when a selected path exceeds the picker viewport.
 - [x] Cover 80×24, 120×40, 200×60, narrow, short, long-list, and long-path renders with fixture-only tests.
 
+## Architecture refactor — deep picker module
+
+- [x] Move cursor navigation, marked selection, selected-row scrolling, resize, and bounded rendering behind one picker interface.
+- [x] Use the picker module for install, restore, and batch-root flows while keeping install selection precedence in `actions.ResolveSelection`.
+- [x] Preserve the fixed modal option tail and make every part of a long selected path reachable with PgUp/PgDn.
+- [x] Test picker behavior through its interface and retain dashboard viewport regression coverage.
+
 Relevant commits: `0d8c029`, `b291529`, `99099c6`, `b9b9eff`, `0054000`, `f62bb1a`, `424c699`, `8058fc6`, `fd055a6`, `7ac6b68`.

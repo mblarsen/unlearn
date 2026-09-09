@@ -12,6 +12,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/llm"
+	"github.com/mblarsen/unlearn/internal/tui/picker"
 	"github.com/mblarsen/unlearn/internal/ui"
 )
 
@@ -68,30 +69,28 @@ type Model struct {
 	Width        int
 	Height       int
 
-	State             InteractionState
-	PendingAction     PendingAction
-	PendingSkill      inventory.Skill
-	PendingSkills     []inventory.Skill
-	PendingFinding    analysis.Finding
-	InstallCursor     int
-	InstallSelections map[int]bool
-	RestoreCursor     int
-	RestoreChoices    []string
-	BatchRootCursor   int
-	BatchRootChoices  []fsactions.BatchRootChoice
-	PickerScroll      int
-	Input             string
-	Message           string
-	Status            string
-	RenamePreview     fsactions.RenamePreview
-	DraftCursor       int
-	DraftScroll       int
-	DraftChoices      []draftSkillChoice
-	DraftSelections   map[int]bool
-	DraftPreview      string
-	DraftProvider     string
-	DraftModel        string
-	draftLifecycle    draftLifecycle
+	State            InteractionState
+	PendingAction    PendingAction
+	PendingSkill     inventory.Skill
+	PendingSkills    []inventory.Skill
+	PendingFinding   analysis.Finding
+	InstallPicker    picker.Model
+	RestorePicker    picker.Model
+	RestoreChoices   []string
+	BatchRootPicker  picker.Model
+	BatchRootChoices []fsactions.BatchRootChoice
+	Input            string
+	Message          string
+	Status           string
+	RenamePreview    fsactions.RenamePreview
+	DraftCursor      int
+	DraftScroll      int
+	DraftChoices     []draftSkillChoice
+	DraftSelections  map[int]bool
+	DraftPreview     string
+	DraftProvider    string
+	DraftModel       string
+	draftLifecycle   draftLifecycle
 }
 
 type draftSkillChoice struct {
@@ -298,115 +297,69 @@ func (m Model) updateInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateRestoreSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "j", "down":
-		if m.RestoreCursor < len(m.RestoreChoices)-1 {
-			m.RestoreCursor++
-			m.PickerScroll = 0
-		}
-	case "k", "up":
-		if m.RestoreCursor > 0 {
-			m.RestoreCursor--
-			m.PickerScroll = 0
-		}
-	case "pgdown":
-		m.PickerScroll++
-	case "pgup":
-		m.PickerScroll = max(0, m.PickerScroll-1)
-	case "enter":
-		if len(m.RestoreChoices) == 0 {
+	switch m.RestorePicker.Handle(msg.String()) {
+	case picker.Submit:
+		selection := m.RestorePicker.Selection()
+		if !selection.HasChoice {
 			m.cancel("no quarantined skills")
 			return m, nil
 		}
-		dest, err := m.Actions.Restore(m.RestoreChoices[m.RestoreCursor], m.PendingSkill.Root)
+		name := m.RestoreChoices[selection.Cursor]
+		dest, err := m.Actions.Restore(name, m.PendingSkill.Root)
 		if err != nil {
 			m.fail(err)
 		} else {
-			m.complete(fmt.Sprintf("restored %s -> %s", m.RestoreChoices[m.RestoreCursor], dest))
+			m.complete(fmt.Sprintf("restored %s -> %s", name, dest))
 		}
-	case "esc", "q":
+	case picker.Cancel:
 		m.cancel("restore cancelled")
 	}
 	return m, nil
 }
 
 func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	skills := m.pendingInstallChoices()
-	maxCursor := len(skills) - 1
-	if m.canActOnAllInstalls() {
-		maxCursor = len(skills)
-	}
-	switch msg.String() {
-	case "j", "down":
-		if m.InstallCursor < maxCursor {
-			m.InstallCursor++
-			m.PickerScroll = 0
-		}
-	case "k", "up":
-		if m.InstallCursor > 0 {
-			m.InstallCursor--
-			m.PickerScroll = 0
-		}
-	case "pgdown":
-		m.PickerScroll++
-	case "pgup":
-		m.PickerScroll = max(0, m.PickerScroll-1)
-	case " ":
-		if m.InstallCursor < len(skills) {
-			if m.InstallSelections == nil {
-				m.InstallSelections = map[int]bool{}
-			}
-			m.InstallSelections[m.InstallCursor] = !m.InstallSelections[m.InstallCursor]
-		}
-	case "enter":
-		selected, err := fsactions.ResolveSelection(fsactions.SelectionInput{
-			Kind:     destructiveKind(m.PendingAction),
-			Choices:  skills,
-			Cursor:   m.InstallCursor,
-			Marked:   m.InstallSelections,
-			AllowAll: true,
-		})
-		if err != nil {
-			m.cancel(err.Error())
-			return m, nil
-		}
-		m.PendingSkills = selected
-		m.PendingSkill = selected[0]
-		m.continuePendingWithSelectedSkills()
-	case "esc", "q":
+	switch m.InstallPicker.Handle(msg.String()) {
+	case picker.Cancel:
 		m.cancel("action cancelled")
+		return m, nil
+	case picker.Submit:
+		// Domain selection precedence remains in actions.ResolveSelection.
+	default:
+		return m, nil
 	}
+	selection := m.InstallPicker.Selection()
+	selected, err := fsactions.ResolveSelection(fsactions.SelectionInput{
+		Kind:     destructiveKind(m.PendingAction),
+		Choices:  m.pendingInstallChoices(),
+		Cursor:   selection.Cursor,
+		Marked:   selection.Marked,
+		AllowAll: true,
+	})
+	if err != nil {
+		m.cancel(err.Error())
+		return m, nil
+	}
+	m.PendingSkills = selected
+	m.PendingSkill = selected[0]
+	m.continuePendingWithSelectedSkills()
 	return m, nil
 }
 
 func (m Model) updateBatchRootSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "j", "down":
-		if m.BatchRootCursor < len(m.BatchRootChoices)-1 {
-			m.BatchRootCursor++
-			m.PickerScroll = 0
-		}
-	case "k", "up":
-		if m.BatchRootCursor > 0 {
-			m.BatchRootCursor--
-			m.PickerScroll = 0
-		}
-	case "pgdown":
-		m.PickerScroll++
-	case "pgup":
-		m.PickerScroll = max(0, m.PickerScroll-1)
-	case "enter":
-		if len(m.BatchRootChoices) == 0 {
+	switch m.BatchRootPicker.Handle(msg.String()) {
+	case picker.Submit:
+		selection := m.BatchRootPicker.Selection()
+		if !selection.HasChoice {
 			m.cancel("no duplicate root selected")
 			return m, nil
 		}
-		choice := m.BatchRootChoices[m.BatchRootCursor]
+		choice := m.BatchRootChoices[selection.Cursor]
 		m.PendingAction = ActionQuarantine
 		m.PendingSkills = append([]inventory.Skill(nil), choice.Skills...)
 		m.PendingSkill = choice.Skills[0]
 		m.Message = fmt.Sprintf("Quarantine duplicate installs from %s", choice.Root)
 		m.continuePendingWithSelectedSkills()
-	case "esc", "q":
+	case picker.Cancel:
 		m.cancel("batch cleanup cancelled")
 	}
 	return m, nil
@@ -517,7 +470,7 @@ func (m *Model) beginSkillAction(action PendingAction) {
 		if finding, ok := m.selectedFinding(); ok && len(finding.Skills) > 1 {
 			m.PendingFinding = finding
 			m.PendingSkill = inventory.Skill{}
-			m.InstallCursor = m.clampedDetailCursor(finding)
+			m.InstallPicker = m.newInstallPicker(m.clampedDetailCursor(finding))
 			m.State = StateSelectInstall
 			m.Message = fmt.Sprintf("Choose the exact %s install to %s", finding.Title, actionVerb(action))
 			return
@@ -525,7 +478,7 @@ func (m *Model) beginSkillAction(action PendingAction) {
 		if group, ok := m.selectedSkillGroup(); ok && len(group.Skills) > 1 {
 			m.PendingFinding = analysis.Finding{Title: group.Name, Skills: group.Skills}
 			m.PendingSkill = inventory.Skill{}
-			m.InstallCursor = 0
+			m.InstallPicker = m.newInstallPicker(0)
 			m.State = StateSelectInstall
 			m.Message = fmt.Sprintf("Choose the exact %s install to %s", group.Name, actionVerb(action))
 			return
@@ -597,7 +550,11 @@ func (m *Model) beginBatchRootAction() {
 	}
 	m.PendingAction = ActionQuarantine
 	m.BatchRootChoices = choices
-	m.BatchRootCursor = 0
+	labels := make([]string, 0, len(choices))
+	for _, choice := range choices {
+		labels = append(labels, fmt.Sprintf("%s · %d duplicate installs", choice.Root, len(choice.Skills)))
+	}
+	m.BatchRootPicker = picker.New(labels, picker.Config{})
 	m.State = StateSelectBatchRoot
 	m.Message = "Choose a root to quarantine duplicate installs from"
 }
@@ -629,7 +586,7 @@ func (m *Model) beginRestoreAction() {
 	}
 	m.PendingSkill = skill
 	m.RestoreChoices = choices
-	m.RestoreCursor = 0
+	m.RestorePicker = picker.New(choices, picker.Config{EmptyLabel: "No quarantined skills found"})
 	m.State = StateSelectRestore
 	m.Message = fmt.Sprintf("Restore quarantined skill into %s", skill.Root)
 }
@@ -836,13 +793,11 @@ func (m *Model) resetInteraction() {
 	m.PendingSkill = inventory.Skill{}
 	m.PendingSkills = nil
 	m.PendingFinding = analysis.Finding{}
-	m.InstallCursor = 0
-	m.InstallSelections = nil
-	m.RestoreCursor = 0
-	m.BatchRootCursor = 0
+	m.InstallPicker = picker.Model{}
+	m.RestorePicker = picker.Model{}
+	m.BatchRootPicker = picker.Model{}
 	m.BatchRootChoices = nil
 	m.RestoreChoices = nil
-	m.PickerScroll = 0
 	m.Input = ""
 	m.Message = ""
 	m.RenamePreview = fsactions.RenamePreview{}
@@ -1136,35 +1091,13 @@ func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 		}
 	}
 	if m.State == StateSelectRestore {
-		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, m.RestoreChoices, m.RestoreCursor, width)
-		if len(rows) == 0 {
-			rows = []string{theme.Muted.Render("  No quarantined skills found")}
-		}
-		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · PgUp/PgDn scroll · enter select"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
+		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · PgUp/PgDn scroll · enter select"), m.RestorePicker, theme, width, height)
 	}
 	if m.State == StateSelectBatchRoot {
-		labels := make([]string, 0, len(m.BatchRootChoices))
-		for _, choice := range m.BatchRootChoices {
-			labels = append(labels, fmt.Sprintf("%s · %d duplicate installs", choice.Root, len(choice.Skills)))
-		}
-		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, labels, m.BatchRootCursor, width)
-		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · PgUp/PgDn scroll · enter select"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
+		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · PgUp/PgDn scroll · enter select"), m.BatchRootPicker, theme, width, height)
 	}
 	if m.State == StateSelectInstall {
-		choices := m.pendingInstallChoices()
-		labels := make([]string, 0, len(choices)+1)
-		for i, skill := range choices {
-			mark := "[ ]"
-			if m.InstallSelections[i] {
-				mark = "[x]"
-			}
-			labels = append(labels, mark+" "+installChoiceLabel(skill))
-		}
-		if m.canActOnAllInstalls() {
-			labels = append(labels, fmt.Sprintf("All %d installs", len(choices)))
-		}
-		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, labels, m.InstallCursor, width)
-		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · space mark · PgUp/PgDn scroll · enter"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
+		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · space mark · PgUp/PgDn scroll · enter"), m.InstallPicker, theme, width, height)
 	}
 	if m.State == StateSelectDraftSkills {
 		lines = append(lines, m.renderDraftSkillPicker(theme, width, height-len(lines)-3)...)
@@ -1492,90 +1425,10 @@ func fitLinesPreservingTail(lines []string, height, tailHeight int) []string {
 	return append(head, lines[tailStart:]...)
 }
 
-func appendPickerWindow(lines []string, instruction string, rows []string, selectedLine, selectedHeight, scroll, height int) []string {
+func appendPickerWindow(lines []string, instruction string, model picker.Model, theme ui.Theme, width, height int) []string {
 	lines = append(lines, "", instruction)
-	rowHeight := max(1, height-len(lines)-3)
-	return append(lines, windowSelectedLines(rows, rowHeight, selectedLine, selectedHeight, scroll)...)
-}
-
-func renderStringChoiceRows(theme ui.Theme, labels []string, cursor, width int) ([]string, int, int) {
-	rows := make([]string, 0, len(labels))
-	selectedLine := 0
-	selectedHeight := 0
-	for i, label := range labels {
-		prefix := "  "
-		style := theme.Row
-		if i != cursor {
-			rows = append(rows, style.Render(ui.Truncate(prefix+label, width)))
-			continue
-		}
-		prefix = "▸ "
-		style = theme.SelectedRow.Width(width)
-		selectedLine = len(rows)
-		for _, line := range wrapPreservingText(prefix+label, width) {
-			rows = append(rows, style.Render(line))
-			selectedHeight++
-			prefix = "  "
-		}
-	}
-	return rows, selectedLine, selectedHeight
-}
-
-func windowSelectedLines(lines []string, height, selectedLine, selectedHeight, scroll int) []string {
-	if height <= 0 || len(lines) <= height {
-		return ui.FitLines(lines, height)
-	}
-	selectedEnd := min(len(lines), selectedLine+max(1, selectedHeight))
-	showAbove := selectedLine > 0 || scroll > 0
-	showBelow := selectedEnd < len(lines)
-	contentHeight := height
-	if showAbove {
-		contentHeight--
-	}
-	if showBelow {
-		contentHeight--
-	}
-	contentHeight = max(1, contentHeight)
-
-	if selectedHeight > contentHeight {
-		maxScroll := max(0, selectedHeight-contentHeight)
-		scroll = min(max(0, scroll), maxScroll)
-		showAbove = selectedLine > 0 || scroll > 0
-		showBelow = selectedLine+scroll+contentHeight < len(lines)
-		contentHeight = height
-		if showAbove {
-			contentHeight--
-		}
-		if showBelow {
-			contentHeight--
-		}
-		contentHeight = max(1, contentHeight)
-		maxScroll = max(0, selectedHeight-contentHeight)
-		scroll = min(scroll, maxScroll)
-		start := selectedLine + scroll
-		end := min(selectedEnd, start+contentHeight)
-		return addWindowIndicators(lines[start:end], showAbove, end < len(lines), height)
-	}
-
-	contextHeight := max(0, contentHeight-selectedHeight)
-	before := min(selectedLine, contextHeight/2)
-	after := min(len(lines)-selectedEnd, contextHeight-before)
-	before = min(selectedLine, contextHeight-after)
-	start := selectedLine - before
-	end := selectedEnd + after
-	return addWindowIndicators(lines[start:end], start > 0, end < len(lines), height)
-}
-
-func addWindowIndicators(content []string, above, below bool, height int) []string {
-	out := make([]string, 0, height)
-	if above {
-		out = append(out, "… above")
-	}
-	out = append(out, content...)
-	if below && len(out) < height {
-		out = append(out, "… more")
-	}
-	return out
+	model.Resize(width, max(1, height-len(lines)-3))
+	return append(lines, model.View(theme)...)
 }
 
 func wrapPreservingText(value string, width int) []string {
@@ -1674,6 +1527,19 @@ func (m Model) pendingTargetText() string {
 
 func (m Model) canActOnAllInstalls() bool {
 	return fsactions.AllowsAllInstalls(destructiveKind(m.PendingAction), m.pendingInstallChoices())
+}
+
+func (m Model) newInstallPicker(cursor int) picker.Model {
+	choices := m.pendingInstallChoices()
+	labels := make([]string, 0, len(choices))
+	for _, skill := range choices {
+		labels = append(labels, installChoiceLabel(skill))
+	}
+	config := picker.Config{Cursor: cursor, MultiSelect: true}
+	if m.canActOnAllInstalls() {
+		config.ExtraChoice = fmt.Sprintf("All %d installs", len(choices))
+	}
+	return picker.New(labels, config)
 }
 
 func deleteConfirmationFor(skills []inventory.Skill) fsactions.DeleteConfirmation {
