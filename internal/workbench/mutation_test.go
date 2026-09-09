@@ -102,7 +102,8 @@ func TestExecuteRenameReparsesIdentityMetadataAndSupportsSequentialRename(t *tes
 	if err := os.WriteFile(primary, []byte("---\nname: old\ndescription: fixture\n---\n\n# Old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old, err := scanExactInstall(root, oldPath)
+	owners := map[string]inventory.RootOwnership{root: {ActiveAgents: []string{"pi"}, InactiveAgents: []string{"codex"}}}
+	old, err := scanExactInstall(root, oldPath, owners)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,14 +113,14 @@ func TestExecuteRenameReparsesIdentityMetadataAndSupportsSequentialRename(t *tes
 	cfg.AllowWrite(root)
 	module := Module{Config: cfg, IndexPath: indexPath}
 
-	first := module.Execute(Request{Kind: Rename, Authorized: true, Snapshot: inventorysnapshot.Snapshot{Skills: []inventory.Skill{old}, Findings: []analysis.Finding{finding}}, Targets: []inventory.Skill{old}, NewName: "alpha"})
+	first := module.Execute(Request{Kind: Rename, Authorized: true, Snapshot: inventorysnapshot.Snapshot{Skills: []inventory.Skill{old}, Findings: []analysis.Finding{finding}}, Targets: []inventory.Skill{old}, NewName: "alpha", RootOwnerships: owners})
 	if err := first.Err(); err != nil {
 		t.Fatal(err)
 	}
 	if first.Renamed == nil || first.Renamed.ID == "" || first.Renamed.ID == old.ID || first.Renamed.ContentHash == old.ContentHash {
 		t.Fatalf("first rename did not rebuild identity and content metadata: %#v", first.Renamed)
 	}
-	fresh, err := scanExactInstall(root, filepath.Join(root, "alpha"))
+	fresh, err := scanExactInstall(root, filepath.Join(root, "alpha"), owners)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,6 +128,9 @@ func TestExecuteRenameReparsesIdentityMetadataAndSupportsSequentialRename(t *tes
 	got.ScannedAt, want.ScannedAt = want.ScannedAt, want.ScannedAt
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("renamed snapshot differs from fresh scan:\n got=%#v\nwant=%#v", got, want)
+	}
+	if !first.Renamed.RootKnown || !reflect.DeepEqual(first.Renamed.ActiveAgents, []string{"pi"}) || !reflect.DeepEqual(first.Renamed.InactiveAgents, []string{"codex"}) {
+		t.Fatalf("rename lost root ownership: %#v", first.Renamed)
 	}
 	if len(first.Snapshot.Findings) != 0 {
 		t.Fatalf("rename retained stale finding: %#v", first.Snapshot.Findings)
@@ -146,6 +150,9 @@ func TestExecuteRenameReparsesIdentityMetadataAndSupportsSequentialRename(t *tes
 	persisted := loadSnapshot(t, indexPath)
 	if len(persisted.Skills) != 1 || persisted.Skills[0].ID != second.Renamed.ID || persisted.Skills[0].ContentHash != second.Renamed.ContentHash {
 		t.Fatalf("persisted=%#v", persisted)
+	}
+	if !persisted.Skills[0].RootKnown || !reflect.DeepEqual(persisted.Skills[0].ActiveAgents, []string{"pi"}) || !reflect.DeepEqual(persisted.Skills[0].InactiveAgents, []string{"codex"}) {
+		t.Fatalf("persisted rename lost root ownership: %#v", persisted.Skills[0])
 	}
 }
 

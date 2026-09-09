@@ -5,6 +5,7 @@ package workbench
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/config"
@@ -45,6 +46,7 @@ type Request struct {
 	NewName         string
 	RestoreName     string
 	DestinationRoot string
+	RootOwnerships  map[string]inventory.RootOwnership
 }
 
 // Failure preserves whether filesystem mutation, reconciliation, or persistence
@@ -134,7 +136,7 @@ func (m Module) Execute(request Request) Outcome {
 			outcome.addFailure(FilesystemPhase, err)
 			break
 		}
-		renamed, scanErr := scanExactInstall(request.Targets[0].Root, preview.NewPath)
+		renamed, scanErr := scanExactInstall(request.Targets[0].Root, preview.NewPath, requestOwnerships(request, request.Targets[0]))
 		if scanErr != nil {
 			outcome.addFailure(ReconciliationPhase, scanErr)
 			outcome.RecoveryRequired = true
@@ -150,7 +152,7 @@ func (m Module) Execute(request Request) Outcome {
 			break
 		}
 		outcome.Paths = []string{dest}
-		restored, scanErr := scanExactInstall(request.DestinationRoot, dest)
+		restored, scanErr := scanExactInstall(request.DestinationRoot, dest, requestOwnerships(request, inventory.Skill{Root: request.DestinationRoot}))
 		if scanErr != nil {
 			outcome.addFailure(ReconciliationPhase, scanErr)
 			outcome.RecoveryRequired = true
@@ -204,8 +206,29 @@ func (o *Outcome) addFailure(phase Phase, err error) {
 	}
 }
 
-func scanExactInstall(root, path string) (inventory.Skill, error) {
-	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: []string{root}})
+func requestOwnerships(request Request, target inventory.Skill) map[string]inventory.RootOwnership {
+	owners := make(map[string]inventory.RootOwnership, len(request.RootOwnerships)+1)
+	for root, ownership := range request.RootOwnerships {
+		owners[filepath.Clean(root)] = ownership
+	}
+	root := filepath.Clean(target.Root)
+	if _, ok := owners[root]; ok {
+		return owners
+	}
+	for _, skill := range request.Snapshot.Skills {
+		if filepath.Clean(skill.Root) == root && skill.RootKnown {
+			owners[root] = inventory.RootOwnership{ActiveAgents: append([]string(nil), skill.ActiveAgents...), InactiveAgents: append([]string(nil), skill.InactiveAgents...)}
+			return owners
+		}
+	}
+	if target.RootKnown {
+		owners[root] = inventory.RootOwnership{ActiveAgents: append([]string(nil), target.ActiveAgents...), InactiveAgents: append([]string(nil), target.InactiveAgents...)}
+	}
+	return owners
+}
+
+func scanExactInstall(root, path string, owners map[string]inventory.RootOwnership) (inventory.Skill, error) {
+	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: []string{root}, RootOwnerships: owners})
 	if err != nil {
 		return inventory.Skill{}, err
 	}
