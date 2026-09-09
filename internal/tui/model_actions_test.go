@@ -12,6 +12,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
+	"github.com/mblarsen/unlearn/internal/review"
 	"github.com/mblarsen/unlearn/internal/workbench"
 )
 
@@ -21,6 +22,7 @@ type fakeActionService struct {
 	ignored          []string
 	quarantined      []string
 	quarantinedRoot  []string
+	quarantineErr    error
 	deleted          []string
 	deletedRoot      []string
 	renamed          []string
@@ -33,6 +35,8 @@ type fakeActionService struct {
 	draftMarkdown    string
 	draftErr         error
 	draftSelected    []string
+	reviewState      review.State
+	reviewSaves      int
 }
 
 func (f *fakeActionService) KeepSkill(skill inventory.Skill) error {
@@ -69,6 +73,9 @@ func (f *fakeActionService) Mutate(request workbench.Request) workbench.Outcome 
 			outcome.Paths = append(outcome.Paths, "/quarantine/"+skill.Name)
 		}
 		outcome.Snapshot = inventorysnapshot.Remove(outcome.Snapshot, outcome.Removed)
+		if f.quarantineErr != nil {
+			outcome.Failures = append(outcome.Failures, workbench.Failure{Phase: workbench.FilesystemPhase, Err: f.quarantineErr})
+		}
 	case workbench.Delete:
 		f.deleteTypedName = request.Confirmation.TypedName
 		f.deleteBatchToken = request.Confirmation.BatchToken
@@ -113,6 +120,14 @@ func (f *fakeActionService) PreviewRename(skill inventory.Skill, newName string)
 }
 func (f *fakeActionService) QuarantinedSkills() ([]string, error) {
 	return append([]string(nil), f.quarantinedList...), nil
+}
+func (f *fakeActionService) GuidedReviewState() (review.State, []string) {
+	return f.reviewState, append([]string(nil), f.kept...)
+}
+func (f *fakeActionService) SaveGuidedReviewState(state review.State) error {
+	f.reviewState = state
+	f.reviewSaves++
+	return nil
 }
 func (f *fakeActionService) DraftMerge(_ context.Context, skills []inventory.Skill) (llm.DraftResult, error) {
 	f.draftSelected = nil

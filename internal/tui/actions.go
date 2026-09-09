@@ -10,6 +10,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
+	"github.com/mblarsen/unlearn/internal/review"
 	"github.com/mblarsen/unlearn/internal/workbench"
 )
 
@@ -22,6 +23,8 @@ type ActionService interface {
 	PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview
 	QuarantinedSkills() ([]string, error)
 	DraftMerge(ctx context.Context, skills []inventory.Skill) (llm.DraftResult, error)
+	GuidedReviewState() (review.State, []string)
+	SaveGuidedReviewState(state review.State) error
 }
 
 type NoopActionService struct{}
@@ -49,6 +52,10 @@ func (NoopActionService) PreviewRename(skill inventory.Skill, newName string) fs
 	return fsactions.PreviewRename(skill, newName)
 }
 func (NoopActionService) QuarantinedSkills() ([]string, error) { return nil, nil }
+func (NoopActionService) GuidedReviewState() (review.State, []string) {
+	return review.State{}, nil
+}
+func (NoopActionService) SaveGuidedReviewState(review.State) error { return nil }
 func (NoopActionService) DraftMerge(_ context.Context, skills []inventory.Skill) (llm.DraftResult, error) {
 	return llm.DraftResult{}, fmt.Errorf("LLM merged-draft generation is not configured for this dashboard")
 }
@@ -69,6 +76,15 @@ func (s *ConfigActionService) KeepSkill(skill inventory.Skill) error {
 
 func (s *ConfigActionService) IgnoreFinding(finding analysis.Finding) error {
 	s.Config.IgnoreFinding(finding.ID, "ignored from dashboard")
+	return s.save()
+}
+
+func (s *ConfigActionService) GuidedReviewState() (review.State, []string) {
+	return s.Config.GuidedReview, append([]string(nil), s.Config.Keep.Skills...)
+}
+
+func (s *ConfigActionService) SaveGuidedReviewState(state review.State) error {
+	s.Config.GuidedReview = state
 	return s.save()
 }
 

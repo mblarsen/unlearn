@@ -14,6 +14,7 @@ import (
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
+	"github.com/mblarsen/unlearn/internal/review"
 	"github.com/mblarsen/unlearn/internal/tui/picker"
 	"github.com/mblarsen/unlearn/internal/ui"
 	"github.com/mblarsen/unlearn/internal/workbench"
@@ -24,6 +25,7 @@ type ViewMode int
 const (
 	ViewFindings ViewMode = iota
 	ViewSkills
+	ViewGuidedReview
 )
 
 type Density int
@@ -80,33 +82,35 @@ type Model struct {
 	Width            int
 	Height           int
 
-	State            InteractionState
-	PendingAction    PendingAction
-	PendingSkill     inventory.Skill
-	PendingSkills    []inventory.Skill
-	PendingFinding   analysis.Finding
-	InstallPicker    picker.Model
-	RestorePicker    picker.Model
-	RestoreChoices   []string
-	BatchRootPicker  picker.Model
-	BatchRootChoices []fsactions.BatchRootChoice
-	Input            string
-	Message          string
-	Status           string
-	StatusError      bool
-	StatusRecovery   string
-	StatusContext    InteractionState
-	FeedbackScroll   int
-	RenamePreview    fsactions.RenamePreview
-	DraftCursor      int
-	DraftScroll      int
-	DraftChoices     []draftSkillChoice
-	DraftSelections  map[int]bool
-	DraftPreview     string
-	DraftProvider    string
-	DraftModel       string
-	draftLifecycle   draftLifecycle
-	Discovery        discoveryState
+	State                       InteractionState
+	PendingAction               PendingAction
+	PendingSkill                inventory.Skill
+	PendingSkills               []inventory.Skill
+	PendingFinding              analysis.Finding
+	InstallPicker               picker.Model
+	RestorePicker               picker.Model
+	RestoreChoices              []string
+	BatchRootPicker             picker.Model
+	BatchRootChoices            []fsactions.BatchRootChoice
+	Input                       string
+	Message                     string
+	Status                      string
+	StatusError                 bool
+	StatusRecovery              string
+	StatusContext               InteractionState
+	FeedbackScroll              int
+	RenamePreview               fsactions.RenamePreview
+	DraftCursor                 int
+	DraftScroll                 int
+	DraftChoices                []draftSkillChoice
+	DraftSelections             map[int]bool
+	DraftPreview                string
+	DraftProvider               string
+	DraftModel                  string
+	draftLifecycle              draftLifecycle
+	Discovery                   discoveryState
+	GuidedReview                review.Session
+	guidedReviewDecisionPending bool
 }
 
 type draftSkillChoice struct {
@@ -159,6 +163,9 @@ type draftMergeResultMsg struct {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.Mode == ViewGuidedReview {
+		return m.updateGuidedReview(msg)
+	}
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
 		return m, tea.Quit
@@ -220,6 +227,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.beginDraftMergeAction()
 	case "d":
 		m.beginDiscovery()
+	case "v":
+		m.beginGuidedReview()
 	}
 	return m, nil
 }
@@ -316,6 +325,12 @@ func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y":
 		outcome := m.Actions.Mutate(workbench.Request{Kind: workbench.Quarantine, Authorized: true, Snapshot: m.snapshot(), Targets: m.selectedPendingSkills()})
 		m.applyMutationOutcome(outcome)
+		if m.guidedReviewDecisionPending && (len(outcome.Removed) > 0 || len(outcome.Missing) > 0) {
+			if err := m.recordGuidedReviewDecision(review.ActionQuarantine); err != nil {
+				m.fail(fmt.Errorf("quarantine changed the install but review progress was not saved: %w", err))
+				return m, nil
+			}
+		}
 		status := actionResultStatus("quarantined", outcome)
 		if err := outcome.Err(); err != nil {
 			m.complete(actionFailureStatus(status, err))
@@ -701,6 +716,10 @@ func (m *Model) ignoreSelectedFinding() {
 }
 
 func (m *Model) selectedSkill() (inventory.Skill, bool) {
+	if m.Mode == ViewGuidedReview {
+		item, ok := m.GuidedReview.Current()
+		return item.Target, ok
+	}
 	if m.itemCount() == 0 {
 		return inventory.Skill{}, false
 	}
@@ -843,6 +862,7 @@ func (m *Model) resetInteraction() {
 	m.DraftPreview = ""
 	m.DraftProvider = ""
 	m.DraftModel = ""
+	m.guidedReviewDecisionPending = false
 }
 
 func (m *Model) complete(status string) {
@@ -900,6 +920,8 @@ func (m Model) View() string {
 	body := ""
 	if m.State != StateNormal {
 		body = m.renderModalBody(theme, width, bodyHeight)
+	} else if m.Mode == ViewGuidedReview {
+		body = m.renderGuidedReview(theme, width, bodyHeight)
 	} else {
 		left := theme.Panel.Width(leftWidth - 2).Height(bodyHeight - 2).Render(m.renderList(theme, leftWidth-4, bodyHeight-2))
 		right := theme.Panel.Width(rightWidth - 2).Height(bodyHeight - 2).Render(m.renderDetails(theme, rightWidth-4, bodyHeight-2))
@@ -939,8 +961,11 @@ func renderMinimumSizeGate(theme ui.Theme, width, height int) string {
 
 func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 	mode := "findings"
-	if m.Mode == ViewSkills {
+	switch m.Mode {
+	case ViewSkills:
 		mode = "skills"
+	case ViewGuidedReview:
+		mode = "guided review"
 	}
 	title := theme.AppTitle.Render("unlearn") + theme.Muted.Render("  cleanup workbench")
 	density := "compact"
@@ -1412,7 +1437,11 @@ func (m Model) renderKeybar(theme ui.Theme, width int) string {
 		return theme.Keybar.Width(limit).Render(ui.Truncate(renderKeyParts(theme, parts, contentLimit), contentLimit))
 	}
 
-	reserved := renderKeyParts(theme, []keyPart{{"?", "help"}, {"q", "quit"}}, contentLimit)
+	reservedParts := []keyPart{{"?", "help"}, {"q", "quit"}}
+	if m.Mode == ViewGuidedReview {
+		reservedParts = []keyPart{{"?", "help"}}
+	}
+	reserved := renderKeyParts(theme, reservedParts, contentLimit)
 	leftLimit := max(0, contentLimit-lipgloss.Width(reserved)-2)
 	left := renderKeyParts(theme, parts, leftLimit)
 	line := reserved
@@ -1482,6 +1511,9 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"↑↓/jk", "scroll"}, {"pgup/pgdown", "page"}, {"esc", "close"}, {"x", "dismiss"}}
 		}
 	}
+	if m.Mode == ViewGuidedReview {
+		return []keyPart{{"k", "keep"}, {"q", "quarantine"}, {"l", "revisit later"}, {"esc", "back"}}
+	}
 	parts := []keyPart{{"↑↓/jk", "move"}}
 	if m.Mode == ViewFindings {
 		parts = append(parts, keyPart{"s", "skills"})
@@ -1494,15 +1526,22 @@ func (m Model) keyParts() []keyPart {
 	} else {
 		parts = append(parts, keyPart{"enter", "story"})
 	}
-	parts = append(parts, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"m", "draft merge"})
+	parts = append(parts, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"m", "draft merge"}, keyPart{"v", "guided review"})
 	return parts
 }
 
 func (m Model) itemCount() int {
-	if m.Mode == ViewFindings {
+	switch m.Mode {
+	case ViewFindings:
 		return len(m.Findings)
+	case ViewSkills:
+		return len(m.SkillGroups)
+	case ViewGuidedReview:
+		if _, ok := m.GuidedReview.Current(); ok {
+			return 1
+		}
 	}
-	return len(m.SkillGroups)
+	return 0
 }
 
 func fitLinesPreservingTail(lines []string, height, tailHeight int) []string {
