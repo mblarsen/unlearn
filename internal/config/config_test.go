@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mblarsen/unlearn/internal/collections"
 	"github.com/mblarsen/unlearn/internal/review"
 )
 
@@ -41,6 +42,7 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 		Scope:     []review.ScopeItem{{ID: "item-1", FindingID: "unseen:alpha", SkillName: "alpha", InstallPath: "/tmp/skills/alpha"}},
 		Decisions: []review.Decision{{ItemID: "item-1", Action: review.ActionRevisit}},
 	}
+	cfg.Collections = []collections.Collection{{Name: "Frontend", Members: []collections.Member{{SkillName: "alpha", InstallPath: "/tmp/skills/alpha"}}}}
 	if err := cfg.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -65,5 +67,8 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	}
 	if len(loaded.GuidedReview.Scope) != 1 || len(loaded.GuidedReview.Decisions) != 1 || loaded.GuidedReview.Decisions[0].Action != review.ActionRevisit {
 		t.Fatalf("guided review did not round-trip: %#v", loaded.GuidedReview)
+	}
+	if len(loaded.Collections) != 1 || len(loaded.Collections[0].Members) != 1 || loaded.Collections[0].Members[0].InstallPath != "/tmp/skills/alpha" {
+		t.Fatalf("collections did not round-trip: %#v", loaded.Collections)
 	}
 }

@@ -190,6 +190,25 @@ func (m Model) renderHelp(theme ui.Theme, width int) []string {
 		viewKey = "f"
 		viewLabel = "findings"
 	}
+	if m.Mode == ViewCollections {
+		lines := []string{
+			theme.Badge.Render("COLLECTIONS HELP"),
+			"",
+			theme.Section.Render("Navigation"),
+			theme.Key.Render("↑↓/jk") + " move  " + theme.Key.Render("tab") + " focus collections or members  " + theme.Key.Render("f") + " back",
+			"",
+			theme.Section.Render("Organization only"),
+			theme.Key.Render("n") + " new  " + theme.Key.Render("r") + " rename  " + theme.Key.Render("ctrl+d") + " delete collection",
+			theme.Key.Render("a") + " add exact install  " + theme.Key.Render("x") + " remove member  " + theme.Key.Render("s") + " suggest",
+			"",
+			theme.Muted.Render("Collection actions do not install, activate, delete, or change agent access."),
+			theme.Muted.Render("Press esc or ? to close help."),
+		}
+		for i, line := range lines {
+			lines[i] = ui.Truncate(line, width)
+		}
+		return lines
+	}
 	lines := []string{
 		theme.Badge.Render(title),
 		"",
@@ -212,7 +231,7 @@ func (m Model) renderHelp(theme ui.Theme, width int) []string {
 	lines = append(lines,
 		"",
 		theme.Section.Render("Other"),
-		theme.Key.Render("d")+" discover by task  "+theme.Key.Render("v")+" guided review",
+		theme.Key.Render("d")+" discover by task  "+theme.Key.Render("v")+" guided review  "+theme.Key.Render("c")+" collections",
 		theme.Key.Render("m")+" draft merge  "+theme.Key.Render("q")+" quit",
 		"",
 		theme.Muted.Render("Press esc or ? to close help."),
