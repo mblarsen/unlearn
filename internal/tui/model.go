@@ -45,6 +45,7 @@ const (
 	StateSelectDraftSkills
 	StateGeneratingDraft
 	StatePreviewDraft
+	StateHelp
 )
 
 type PendingAction int
@@ -82,6 +83,8 @@ type Model struct {
 	Input            string
 	Message          string
 	Status           string
+	StatusError      bool
+	StatusRecovery   string
 	RenamePreview    fsactions.RenamePreview
 	DraftCursor      int
 	DraftScroll      int
@@ -138,6 +141,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
 		return m, tea.Quit
+	case "?":
+		m.State = StateHelp
+	case "x":
+		m.dismissStatus()
 	case "j", "down":
 		if m.Cursor < m.itemCount()-1 {
 			m.Cursor++
@@ -210,10 +217,20 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDraftGeneration(msg)
 	case StatePreviewDraft:
 		return m.updateDraftPreview(msg)
+	case StateHelp:
+		return m.updateHelp(msg)
 	default:
 		m.resetInteraction()
 		return m, nil
 	}
+}
+
+func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "?", "esc", "q":
+		m.State = StateNormal
+	}
+	return m, nil
 }
 
 func (m Model) updateWriteGate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -385,7 +402,7 @@ func (m Model) updateDraftSkillSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		selected := m.selectedDraftSkills()
 		if len(selected) < 2 {
-			m.Status = "select at least two skills for a merged draft"
+			m.setStatus("select at least two skills for a merged draft")
 			return m, nil
 		}
 		m.PendingSkills = selected
@@ -412,7 +429,7 @@ func (m Model) handleDraftMergeResult(msg draftMergeResultMsg) Model {
 		return m
 	}
 	if msg.Err != nil {
-		m.cancel("merge draft unavailable: " + msg.Err.Error())
+		m.fail(fmt.Errorf("merge draft unavailable: %w", msg.Err))
 		return m
 	}
 	m.PendingSkills = append([]inventory.Skill(nil), msg.Skills...)
@@ -486,7 +503,7 @@ func (m *Model) beginSkillAction(action PendingAction) {
 	}
 	skill, ok := m.selectedSkill()
 	if !ok {
-		m.Status = "no skill selected"
+		m.setStatus("no skill selected")
 		return
 	}
 	m.PendingSkill = skill
@@ -530,7 +547,7 @@ func (m *Model) submitInput() {
 	switch m.State {
 	case StateInputRename:
 		if strings.TrimSpace(m.Input) == "" {
-			m.Status = "rename requires a new name"
+			m.setStatus("rename requires a new name")
 			return
 		}
 		m.RenamePreview = m.Actions.PreviewRename(m.PendingSkill, m.Input)
@@ -545,7 +562,7 @@ func (m *Model) submitInput() {
 func (m *Model) beginBatchRootAction() {
 	choices := m.duplicateRootChoices()
 	if len(choices) == 0 {
-		m.Status = "no duplicate roots to batch clean"
+		m.setStatus("no duplicate roots to batch clean")
 		return
 	}
 	m.PendingAction = ActionQuarantine
@@ -562,7 +579,7 @@ func (m *Model) beginBatchRootAction() {
 func (m *Model) beginDraftMergeAction() {
 	choices, preselected := m.draftSkillChoices()
 	if len(choices) == 0 {
-		m.Status = "no skills available for merge draft"
+		m.setStatus("no skills available for merge draft")
 		return
 	}
 	m.DraftChoices = choices
@@ -576,7 +593,7 @@ func (m *Model) beginDraftMergeAction() {
 func (m *Model) beginRestoreAction() {
 	skill, ok := m.selectedSkill()
 	if !ok {
-		m.Status = "select a destination skill/root before restore"
+		m.setStatus("select a destination skill/root before restore")
 		return
 	}
 	choices, err := m.Actions.QuarantinedSkills()
@@ -594,31 +611,31 @@ func (m *Model) beginRestoreAction() {
 func (m *Model) keepSelected() {
 	skill, ok := m.selectedSkill()
 	if !ok {
-		m.Status = "no skill selected"
+		m.setStatus("no skill selected")
 		return
 	}
 	if err := m.Actions.KeepSkill(skill); err != nil {
 		m.fail(err)
 		return
 	}
-	m.Status = "kept " + skill.Name
+	m.setStatus("kept " + skill.Name)
 }
 
 func (m *Model) ignoreSelectedFinding() {
 	if m.Mode != ViewFindings || len(m.Findings) == 0 {
-		m.Status = "ignore finding is only available in findings view"
+		m.setStatus("ignore finding is only available in findings view")
 		return
 	}
 	finding, ok := m.selectedFinding()
 	if !ok {
-		m.Status = "no finding selected"
+		m.setStatus("no finding selected")
 		return
 	}
 	if err := m.Actions.IgnoreFinding(finding); err != nil {
 		m.fail(err)
 		return
 	}
-	m.Status = "ignored " + finding.Title
+	m.setStatus("ignored " + finding.Title)
 }
 
 func (m *Model) selectedSkill() (inventory.Skill, bool) {
@@ -812,17 +829,17 @@ func (m *Model) resetInteraction() {
 
 func (m *Model) complete(status string) {
 	m.resetInteraction()
-	m.Status = status
+	m.setStatus(status)
 }
 
 func (m *Model) cancel(status string) {
 	m.resetInteraction()
-	m.Status = status
+	m.setStatus(status)
 }
 
 func (m *Model) fail(err error) {
 	m.resetInteraction()
-	m.Status = "error: " + err.Error()
+	m.setStatus("error: " + err.Error())
 }
 
 const (
@@ -838,7 +855,12 @@ func (m Model) View() string {
 	}
 	headerHeight := 2
 	keybarHeight := 1
-	bodyHeight := height - headerHeight - keybarHeight
+	feedbackLines := []string(nil)
+	if m.State != StateHelp {
+		feedbackLines = m.renderFeedback(theme, width)
+	}
+	feedbackHeight := len(feedbackLines)
+	bodyHeight := height - headerHeight - feedbackHeight - keybarHeight
 	if bodyHeight < 8 {
 		bodyHeight = 8
 	}
@@ -864,7 +886,12 @@ func (m Model) View() string {
 		body = lipgloss.JoinHorizontal(lipgloss.Top, left, " ", right)
 	}
 	keybar := m.renderKeybar(theme, width)
-	return lipgloss.JoinVertical(lipgloss.Left, header, body, keybar)
+	parts := []string{header}
+	if feedbackHeight > 0 {
+		parts = append(parts, strings.Join(feedbackLines, "\n"))
+	}
+	parts = append(parts, body, keybar)
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 func (m Model) dimensions() (int, int) {
@@ -906,9 +933,6 @@ func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 		theme.Badge.Render(mode),
 		theme.Badge.Render(density),
 	}
-	if m.Status != "" {
-		stats = append(stats, theme.Status.Render(ui.Truncate(m.Status, max(10, width/4))))
-	}
 	line := padBetween(title, lipgloss.JoinHorizontal(lipgloss.Center, stats...), width)
 	sep := theme.Muted.Render(strings.Repeat("─", max(0, width)))
 	return strings.Join(ui.PadLines([]string{ui.Truncate(line, width), sep}, height), "\n")
@@ -917,7 +941,16 @@ func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 func (m Model) renderList(theme ui.Theme, width, height int) string {
 	lines := []string{theme.PanelTitle.Render(m.listTitle())}
 	if m.itemCount() == 0 {
-		lines = append(lines, "", theme.Muted.Render("No items yet"))
+		if m.Mode == ViewFindings {
+			lines = append(lines, "", theme.Section.Render("No cleanup findings"))
+			if len(m.Skills) > 0 {
+				lines = append(lines, theme.Muted.Render("s skills · browse the inventory"))
+			} else {
+				lines = append(lines, theme.Muted.Render("Run unlearn scan to build the inventory."))
+			}
+		} else {
+			lines = append(lines, "", theme.Section.Render("No skills found"), theme.Muted.Render("Run unlearn scan to discover installed skills."))
+		}
 		return strings.Join(ui.PadLines(lines, height), "\n")
 	}
 	if m.Mode == ViewFindings {
@@ -1056,25 +1089,10 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 }
 
 func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
-	label := "CONFIRM ACTION"
-	if m.State == StateSelectInstall {
-		label = "CHOOSE EXACT INSTALL"
+	if m.State == StateHelp {
+		return m.renderHelp(theme, width)
 	}
-	if m.State == StateSelectRestore {
-		label = "RESTORE SKILL"
-	}
-	if m.State == StateSelectBatchRoot {
-		label = "BATCH DUPLICATES BY ROOT"
-	}
-	if m.State == StateSelectDraftSkills {
-		label = "DRAFT MERGED SKILL"
-	}
-	if m.State == StateGeneratingDraft {
-		label = "GENERATING MERGE DRAFT"
-	}
-	if m.State == StatePreviewDraft {
-		label = "READ-ONLY MERGE DRAFT"
-	}
+	label := interactionTitle(m.State, len(m.selectedPendingSkills()))
 	lines := []string{theme.BadgeWarn.Render(label), ""}
 	messageLines := strings.Split(m.Message, "\n")
 	if len(messageLines) > 0 && strings.TrimSpace(messageLines[0]) != "" {
@@ -1344,35 +1362,46 @@ func findingBadge(theme ui.Theme, typ analysis.FindingType) string {
 }
 
 func (m Model) renderKeybar(theme ui.Theme, width int) string {
+	limit := max(1, width-2)
+	contentLimit := max(1, limit-2)
 	parts := m.keyParts()
-	limit := width - 2
+	if m.State != StateNormal {
+		return theme.Keybar.Width(limit).Render(ui.Truncate(renderKeyParts(theme, parts, contentLimit), contentLimit))
+	}
+
+	reserved := renderKeyParts(theme, []keyPart{{"?", "help"}, {"q", "quit"}}, contentLimit)
+	leftLimit := max(0, contentLimit-lipgloss.Width(reserved)-2)
+	left := renderKeyParts(theme, parts, leftLimit)
+	line := reserved
+	if left != "" {
+		line = padBetween(left, reserved, contentLimit)
+	}
+	return theme.Keybar.Width(limit).Render(ui.Truncate(line, contentLimit))
+}
+
+func renderKeyParts(theme ui.Theme, parts []keyPart, limit int) string {
 	var out []string
 	used := 0
-	hidden := false
-	for _, part := range parts {
+	for i, part := range parts {
 		rendered := theme.Key.Render(part.Key) + " " + part.Label
-		separator := "  "
-		if len(out) == 0 {
-			separator = ""
+		separator := ""
+		if len(out) > 0 {
+			separator = "  "
 		}
-		partWidth := lipgloss.Width(separator + rendered)
-		if used+partWidth > limit {
-			hidden = true
+		if used+lipgloss.Width(separator+rendered) > limit {
+			ellipsis := theme.Muted.Render("  …")
+			for lipgloss.Width(strings.Join(out, "")+ellipsis) > limit && len(out) > 1 {
+				out = out[:len(out)-1]
+			}
+			if i < len(parts) && lipgloss.Width(strings.Join(out, "")+ellipsis) <= limit {
+				out = append(out, ellipsis)
+			}
 			break
 		}
 		out = append(out, separator+rendered)
-		used += partWidth
+		used += lipgloss.Width(separator + rendered)
 	}
-	line := strings.Join(out, "")
-	if hidden {
-		ellipsis := theme.Muted.Render("  …")
-		for lipgloss.Width(line+ellipsis) > limit && len(out) > 1 {
-			out = out[:len(out)-1]
-			line = strings.Join(out, "")
-		}
-		line += ellipsis
-	}
-	return theme.Keybar.Width(limit).Render(ui.Truncate(line, limit))
+	return strings.Join(out, "")
 }
 
 type keyPart struct{ Key, Label string }
@@ -1381,7 +1410,7 @@ func (m Model) keyParts() []keyPart {
 	if m.State != StateNormal {
 		switch m.State {
 		case StateWriteGate, StateConfirmQuarantine, StateConfirmDelete, StatePreviewRename:
-			return []keyPart{{"y", "confirm"}, {"n", "cancel"}, {"esc", "back"}}
+			return []keyPart{{"y", confirmationLabel(m.State)}, {"n", "cancel"}, {"esc", "back"}}
 		case StateSelectInstall:
 			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "select"}, {"esc", "cancel"}}
 		case StateSelectRestore:
@@ -1396,15 +1425,21 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"↑↓/jk", "scroll"}, {"esc", "close"}}
 		case StateInputRename:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
+		case StateHelp:
+			return []keyPart{{"esc", "close"}, {"?", "close"}}
 		}
 	}
 	parts := []keyPart{{"↑↓/jk", "move"}}
 	if m.Mode == ViewFindings {
-		parts = append(parts, keyPart{"s", "skills"}, keyPart{"ctrl+g", "ignore"})
+		parts = append(parts, keyPart{"s", "skills"})
 	} else {
 		parts = append(parts, keyPart{"f", "findings"})
 	}
-	parts = append(parts, keyPart{"m", "draft merge"}, keyPart{"ctrl+k", "keep"}, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"q", "quit"})
+	parts = append(parts, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+k", "keep"})
+	if m.Mode == ViewFindings {
+		parts = append(parts, keyPart{"ctrl+g", "ignore"})
+	}
+	parts = append(parts, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"m", "draft merge"})
 	return parts
 }
 
@@ -1565,7 +1600,7 @@ func destructiveKind(action PendingAction) fsactions.DestructiveKind {
 func optionLineForState(theme ui.Theme, state InteractionState) string {
 	switch state {
 	case StateWriteGate, StateConfirmQuarantine, StateConfirmDelete, StatePreviewRename:
-		return theme.Key.Render("y") + " confirm  " + theme.Key.Render("n") + " cancel  " + theme.Key.Render("esc") + " back"
+		return theme.Key.Render("y") + " " + confirmationLabel(state) + "  " + theme.Key.Render("n") + " cancel  " + theme.Key.Render("esc") + " back"
 	case StateSelectInstall:
 		return theme.Key.Render("enter") + " select highlighted install  " + theme.Key.Render("esc") + " cancel"
 	case StateSelectRestore:
