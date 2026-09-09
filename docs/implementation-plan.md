@@ -147,6 +147,22 @@ Point 1 implementation sequence:
 3. Replace TUI-side and state-side reconciliation algorithms with the returned snapshot; retain compatible cache reconciliation for the audit module owner.
 4. Run focused tests, all Go tests, build, and `mise check`; record cross-branch integration work before completion.
 
+## Feature 1 — task-based skill discovery
+
+This feature answers “What helps me do this?” from the installed skill inventory.
+
+Decisions and test seams:
+
+- [x] Add one `internal/discovery` module with a small deterministic search interface.
+- [x] Test search behavior through that interface with real inventory values and existing overlap findings.
+- [x] Match only observed skill names and descriptions. Do not infer capabilities from a score.
+- [x] Show exact install paths, known agent access, and derived invocation evidence as separate facts.
+- [x] Label weak and empty results. Describe gaps only as no observed matching installed skill.
+- [x] Add a dashboard flow for query, edit, results, inspect, back, resize, and contextual help.
+- [x] Reserve `d` for discovery. Keep existing dashboard commands usable.
+- [x] Add `unlearn discover <task>` as a read-only CLI equivalent.
+- [x] Validate Unicode input, deterministic order, overlap labels, and supported viewport sizes.
+
 ## Current focus
 
 ### Architecture refactor — deep audit orchestration

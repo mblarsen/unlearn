@@ -194,7 +194,7 @@ func (m Model) renderHelp(theme ui.Theme, width int) []string {
 	lines = append(lines,
 		"",
 		theme.Section.Render("Other"),
-		theme.Key.Render("m")+" draft merge  "+theme.Key.Render("q")+" quit",
+		theme.Key.Render("d")+" discover by task  "+theme.Key.Render("m")+" draft merge  "+theme.Key.Render("q")+" quit",
 		"",
 		theme.Muted.Render("Press esc or ? to close help."),
 	)

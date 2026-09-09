@@ -134,6 +134,10 @@ For usage status, `unlearn` counts strong and medium evidence as used. Weak evid
 
 A scanner for a specific agent history format. JSONL adapters stream records and search for evidence of actual invocation. SQLite adapters inspect known or declared tables and scan text-like columns for actual invocation signals. History adapters should store derived evidence by default, not raw conversation excerpts.
 
+### Task-based discovery
+
+A local search that matches a natural-language task against observed installed skill names and descriptions. Results show matched fields, exact installs, known agent access, and invocation evidence as separate facts. A match does not activate a skill or prove that it can complete the task. A gap means that no matching installed skill was observed. It is not proof that no suitable skill exists.
+
 ### Extracted skill summary
 
 A deterministic explanation of what a skill does, derived from its frontmatter and body content without LLM interpretation. Extracted summaries provide the trustworthy baseline.
