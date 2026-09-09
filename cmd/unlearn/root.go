@@ -135,6 +135,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	}
 	addSharedFlags(scan, opts)
 	root.AddCommand(scan)
+	root.AddCommand(newDiscoverCmd(out, opts))
 
 	restore := &cobra.Command{
 		Use:   "restore <skill>",

@@ -49,6 +49,9 @@ const (
 	StateGeneratingDraft
 	StatePreviewDraft
 	StateSkillStory
+	StateDiscoveryQuery
+	StateDiscoveryResults
+	StateDiscoveryInspect
 	StateHelp
 	StateFeedback
 )
@@ -103,6 +106,7 @@ type Model struct {
 	DraftProvider    string
 	DraftModel       string
 	draftLifecycle   draftLifecycle
+	Discovery        discoveryState
 }
 
 type draftSkillChoice struct {
@@ -214,6 +218,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.beginBatchRootAction()
 	case "m":
 		m.beginDraftMergeAction()
+	case "d":
+		m.beginDiscovery()
 	}
 	return m, nil
 }
@@ -248,6 +254,8 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDraftPreview(msg)
 	case StateSkillStory:
 		return m.updateSkillStory(msg)
+	case StateDiscoveryQuery, StateDiscoveryResults, StateDiscoveryInspect:
+		return m.updateDiscovery(msg)
 	case StateHelp:
 		return m.updateHelp(msg)
 	case StateFeedback:
@@ -1065,8 +1073,15 @@ func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 }
 
 func (m Model) renderModalBody(theme ui.Theme, width, height int) string {
+	modalWidth, contentWidth, contentHeight := modalContentDimensions(width, height, m.State)
+	lines := m.renderInteraction(theme, contentWidth, contentHeight)
+	modal := theme.Modal.Width(modalWidth - 2).Render(strings.Join(fitLinesPreservingTail(lines, contentHeight, 3), "\n"))
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
+}
+
+func modalContentDimensions(width, height int, state InteractionState) (int, int, int) {
 	modalWidth := width - 16
-	if m.State == StatePreviewDraft && width > 100 {
+	if state == StatePreviewDraft && width > 100 {
 		modalWidth = width - 10
 	}
 	if modalWidth > 110 {
@@ -1075,11 +1090,7 @@ func (m Model) renderModalBody(theme ui.Theme, width, height int) string {
 	if modalWidth < 52 {
 		modalWidth = width - 4
 	}
-	contentWidth := modalWidth - 6
-	contentHeight := max(1, height-4)
-	lines := m.renderInteraction(theme, contentWidth, contentHeight)
-	modal := theme.Modal.Width(modalWidth - 2).Render(strings.Join(fitLinesPreservingTail(lines, contentHeight, 3), "\n"))
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
+	return modalWidth, max(1, modalWidth-6), max(1, height-4)
 }
 
 func (m Model) renderDetails(theme ui.Theme, width, height int) string {
@@ -1103,6 +1114,9 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 	if m.State == StateSkillStory {
 		return m.renderSkillStory(theme, width, height)
+	}
+	if m.State == StateDiscoveryQuery || m.State == StateDiscoveryResults || m.State == StateDiscoveryInspect {
+		return m.renderDiscovery(theme, width, height)
 	}
 	if m.State == StateHelp {
 		return m.renderHelp(theme, width)
@@ -1454,6 +1468,12 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"↑↓/jk", "scroll"}, {"esc", "close"}}
 		case StateSkillStory:
 			return []keyPart{{"↑↓/jk", "scroll"}, {"pgup/pgdown", "page"}, {"esc", "back"}}
+		case StateDiscoveryQuery:
+			return []keyPart{{"type", "task"}, {"enter", "search"}, {"esc", "back"}}
+		case StateDiscoveryResults:
+			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "inspect"}, {"e", "edit"}, {"esc", "back"}}
+		case StateDiscoveryInspect:
+			return []keyPart{{"↑↓/jk", "scroll"}, {"e", "edit"}, {"esc", "results"}}
 		case StateInputRename:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		case StateHelp:
@@ -1468,7 +1488,7 @@ func (m Model) keyParts() []keyPart {
 	} else {
 		parts = append(parts, keyPart{"f", "findings"})
 	}
-	parts = append(parts, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+k", "keep"})
+	parts = append(parts, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+k", "keep"}, keyPart{"d", "discover"})
 	if m.Mode == ViewFindings {
 		parts = append(parts, keyPart{"ctrl+g", "ignore"})
 	} else {

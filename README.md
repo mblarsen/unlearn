@@ -45,6 +45,7 @@ Known default global roots are derived from the active agent harnesses selected 
   - broken symlinks/references
 - Skill inventory view with logical skills consolidated across installs.
 - Per-skill story with exact install locations, source clues, copy differences, and opt-in derived usage evidence.
+- Task-based discovery with local deterministic matches, reasons, exact installs, and known agent access.
 - `SKILL.md` frontmatter/body parsing.
 - Standalone markdown skill support.
 - Symlink-aware inventory.
@@ -157,6 +158,12 @@ unlearn scan
 Refresh the local SQLite index.
 
 ```bash
+unlearn discover "review a pull request"
+```
+
+Find installed skills whose observed names or descriptions match a task. The command does not activate skills.
+
+```bash
 unlearn restore <skill> --to-root <root>
 ```
 
@@ -178,6 +185,7 @@ s                skill inventory
 f                findings
 r                compact/rich density
 enter            open the selected skill story in the skill inventory
+d                discover skills by task
 tab              next focused install
 shift+tab        previous focused install
 q                quit
