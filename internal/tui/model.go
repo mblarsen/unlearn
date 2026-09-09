@@ -1073,8 +1073,15 @@ func (m Model) renderSkillRows(theme ui.Theme, width, height int) []string {
 }
 
 func (m Model) renderModalBody(theme ui.Theme, width, height int) string {
+	modalWidth, contentWidth, contentHeight := modalContentDimensions(width, height, m.State)
+	lines := m.renderInteraction(theme, contentWidth, contentHeight)
+	modal := theme.Modal.Width(modalWidth - 2).Render(strings.Join(fitLinesPreservingTail(lines, contentHeight, 3), "\n"))
+	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
+}
+
+func modalContentDimensions(width, height int, state InteractionState) (int, int, int) {
 	modalWidth := width - 16
-	if m.State == StatePreviewDraft && width > 100 {
+	if state == StatePreviewDraft && width > 100 {
 		modalWidth = width - 10
 	}
 	if modalWidth > 110 {
@@ -1083,11 +1090,7 @@ func (m Model) renderModalBody(theme ui.Theme, width, height int) string {
 	if modalWidth < 52 {
 		modalWidth = width - 4
 	}
-	contentWidth := modalWidth - 6
-	contentHeight := max(1, height-4)
-	lines := m.renderInteraction(theme, contentWidth, contentHeight)
-	modal := theme.Modal.Width(modalWidth - 2).Render(strings.Join(fitLinesPreservingTail(lines, contentHeight, 3), "\n"))
-	return lipgloss.Place(width, height, lipgloss.Center, lipgloss.Center, modal)
+	return modalWidth, max(1, modalWidth-6), max(1, height-4)
 }
 
 func (m Model) renderDetails(theme ui.Theme, width, height int) string {

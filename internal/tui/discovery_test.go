@@ -118,6 +118,7 @@ func TestDashboardDiscoveryKeepsLongResultsAndInstallPathsReachable(t *testing.T
 			EncounteredPath: fmt.Sprintf("/tmp/root/%s/final-skill-%02d", strings.Repeat("long-segment/", 12), i),
 		}
 		if i == 24 {
+			skill.Description = "Test browser accessibility " + strings.Repeat("abcdefgh ", 600)
 			skill.RootKnown = true
 			skill.ActiveAgents = []string{longAgent}
 		}
@@ -142,7 +143,7 @@ func TestDashboardDiscoveryKeepsLongResultsAndInstallPathsReachable(t *testing.T
 	m = updated.(Model)
 	seenPathEnd := false
 	seenAgentEnd := false
-	for range 80 {
+	for range 250 {
 		view := m.View()
 		assertViewportBounds(t, view, 80, 18)
 		seenPathEnd = seenPathEnd || strings.Contains(view, "final-skill-24")

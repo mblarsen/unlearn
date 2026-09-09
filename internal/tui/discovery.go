@@ -118,11 +118,12 @@ func (m Model) renderDiscovery(theme ui.Theme, width, height int) []string {
 
 func (m Model) renderDiscoveryResults(theme ui.Theme, width, height int) []string {
 	result := m.Discovery.Result
-	lines := []string{theme.Badge.Render("DISCOVERY RESULTS")}
-	for _, line := range wrapPreservingText("Task: "+result.Query, width) {
-		lines = append(lines, theme.Muted.Render(line))
+	taskWidth := max(0, width-lipgloss.Width("Task: "))
+	lines := []string{
+		theme.Badge.Render("DISCOVERY RESULTS"),
+		theme.Muted.Render("Task: " + visibleDiscoveryInput(result.Query, taskWidth)),
+		"",
 	}
-	lines = append(lines, "")
 	if len(result.Matches) == 0 {
 		lines = append(lines, theme.Section.Render(result.Message), "", theme.Muted.Render("Press e to edit the task or esc to return to the dashboard."))
 		return truncateLines(lines, width)
@@ -210,9 +211,10 @@ func appendWrappedDiscoveryFact(lines []string, style lipgloss.Style, value stri
 }
 
 func (m Model) discoveryContentDimensions() (int, int) {
-	modalWidth := min(max(72, m.Width-16), 112)
-	bodyHeight := max(10, m.Height-3)
-	return max(1, modalWidth-6), max(1, bodyHeight-4)
+	width, height := m.dimensions()
+	bodyHeight := max(8, height-3)
+	_, contentWidth, contentHeight := modalContentDimensions(width, bodyHeight, m.State)
+	return contentWidth, contentHeight
 }
 
 func installAccess(install discovery.Install) string {
