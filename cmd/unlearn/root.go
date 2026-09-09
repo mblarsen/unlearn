@@ -81,7 +81,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 				return err
 			}
 			service := &tui.ConfigActionService{ConfigPath: paths.ConfigPath, Config: cfg, IndexPath: paths.IndexPath, QuarantineDir: paths.QuarantineDir, LLMCacheDir: paths.LLMCacheDir, DraftGenerator: tui.NewDraftGeneratorFromEnv(paths.LLMCacheDir)}
-			program := tea.NewProgram(tui.NewWithActionsAndCoverage(skills, findings, service, coverage), tea.WithOutput(out), tea.WithAltScreen())
+			program := tea.NewProgram(tui.NewWithActionsAndCoverage(skills, findings, service, coverage).WithStartupWarnings(opts.warnings), tea.WithOutput(out), tea.WithAltScreen())
 			_, err = program.Run()
 			return err
 		},

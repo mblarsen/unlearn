@@ -25,8 +25,8 @@ func TestGeminiAnalyzerSummarizeCallsGenerateContent(t *testing.T) {
 		if !strings.Contains(prompt, "Skill name: alpha") || !strings.Contains(prompt, "at most 12 words") || !strings.Contains(prompt, "Do not restate the description verbatim") {
 			t.Fatalf("prompt missing short-summary constraints: %#v", req)
 		}
-		if req.GenerationConfig.MaxOutputTokens > 64 {
-			t.Fatalf("summary token budget should stay short, got %d", req.GenerationConfig.MaxOutputTokens)
+		if req.GenerationConfig.MaxOutputTokens != 8192 {
+			t.Fatalf("thinking model needs answer and reasoning budget, got %d", req.GenerationConfig.MaxOutputTokens)
 		}
 		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"Handles alpha workflows."}]}}]}`))
 	}))

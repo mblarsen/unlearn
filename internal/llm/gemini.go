@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -217,7 +218,33 @@ func (a GeminiAnalyzer) GenerateMergedSkillDraft(ctx context.Context, request Dr
 	return DraftResult{Markdown: markdown, Provider: "gemini", Model: a.model(), PromptVersion: request.PromptVersion}, nil
 }
 
+type geminiIncompleteError struct {
+	Reason string
+	Budget int
+}
+
+func (e *geminiIncompleteError) Error() string {
+	return fmt.Sprintf("Gemini review incomplete: finish reason %s (output budget %d)", e.Reason, e.Budget)
+}
+
 func (a GeminiAnalyzer) generateText(ctx context.Context, prompt string, maxTokens int, jsonMode bool) (string, error) {
+	// Thinking models share the output budget with reasoning. Tiny label budgets
+	// can run out before any answer is produced.
+	if strings.HasPrefix(strings.TrimPrefix(a.model(), "models/"), "gemini-3") {
+		maxTokens = max(maxTokens, 8192)
+	}
+	for attempt := 0; attempt < 3; attempt++ {
+		text, err := a.generateTextAttempt(ctx, prompt, maxTokens, jsonMode)
+		var incomplete *geminiIncompleteError
+		if !errors.As(err, &incomplete) || incomplete.Reason != "MAX_TOKENS" || attempt == 2 {
+			return text, err
+		}
+		maxTokens = min(maxTokens*2, 32768)
+	}
+	panic("unreachable")
+}
+
+func (a GeminiAnalyzer) generateTextAttempt(ctx context.Context, prompt string, maxTokens int, jsonMode bool) (string, error) {
 	if strings.TrimSpace(a.APIKey) == "" {
 		return "", fmt.Errorf("missing Gemini API key")
 	}
@@ -260,14 +287,24 @@ func (a GeminiAnalyzer) generateText(ctx context.Context, prompt string, maxToke
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return "", err
 	}
+	if decoded.PromptFeedback.BlockReason != "" {
+		return "", fmt.Errorf("Gemini blocked the request: %s", decoded.PromptFeedback.BlockReason)
+	}
 	for _, candidate := range decoded.Candidates {
+		if candidate.FinishReason != "" && candidate.FinishReason != "STOP" {
+			return "", &geminiIncompleteError{Reason: candidate.FinishReason, Budget: maxTokens}
+		}
+		var text strings.Builder
 		for _, part := range candidate.Content.Parts {
-			if strings.TrimSpace(part.Text) != "" {
-				return part.Text, nil
+			if !part.Thought {
+				text.WriteString(part.Text)
 			}
 		}
+		if strings.TrimSpace(text.String()) != "" {
+			return text.String(), nil
+		}
 	}
-	return "", fmt.Errorf("gemini response contained no text")
+	return "", fmt.Errorf("Gemini response contained no answer text")
 }
 
 func (a GeminiAnalyzer) endpoint() string {
@@ -341,7 +378,8 @@ type geminiContent struct {
 }
 
 type geminiPart struct {
-	Text string `json:"text"`
+	Text    string `json:"text"`
+	Thought bool   `json:"thought,omitempty"`
 }
 
 type geminiGenerationConfig struct {
@@ -352,8 +390,12 @@ type geminiGenerationConfig struct {
 
 type geminiGenerateResponse struct {
 	Candidates []struct {
-		Content geminiContent `json:"content"`
+		Content      geminiContent `json:"content"`
+		FinishReason string        `json:"finishReason"`
 	} `json:"candidates"`
+	PromptFeedback struct {
+		BlockReason string `json:"blockReason"`
+	} `json:"promptFeedback"`
 }
 
 func ptrFloat64(value float64) *float64 { return &value }
