@@ -141,6 +141,16 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 ## Current focus
 
+### Architecture refactor — deep audit orchestration
+
+- [x] Add one `internal/audit` interface that accepts scan policy/context and returns inventory, findings, typed evidence coverage, skipped roots, and diagnostics.
+- [x] Derive unseen-finding eligibility from coverage inside the audit module; callers must not use nullable evidence maps as policy.
+- [x] Preserve trusted-root selection, explicit history opt-in/privacy, derived-evidence caching, progress, cancellation, LLM fallback, and generated summaries.
+- [x] Move dashboard snapshot cache preference/refresh behavior behind the audit interface without adding filesystem or SQLite ports.
+- [x] Inject only the true-external LLM analyzer; test the interface with temporary roots, real SQLite, and a controlled analyzer.
+- [x] Replace CLI orchestration tests with audit-interface regression coverage, then keep CLI behavior checks focused on output and persisted opt-ins.
+- [x] Run `go test ./...`, `go build ./...`, and `mise run check` before completion.
+
 Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis now has minimal Gemini REST support for cached summaries, semantic-overlap groups, and preview-only merged-skill draft generation behind `--with-llm`/setup opt-in plus `GEMINI_API_KEY`/`GOOGLE_API_KEY`, but richer provider selection remains future work; Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, SQLite history scanning covers explicit database paths plus bounded discovery under configured scan roots, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
 
 ## Priority 4 — preview-only merged skill drafts
