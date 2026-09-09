@@ -42,3 +42,8 @@ The story must show observed facts and explicit evidence limits. It must not inf
 - [x] `go test -race ./internal/story ./internal/tui ./cmd/unlearn -count=1`
 - [x] `go build .`
 - [x] `mise run check`
+
+## Review resolution
+
+- [x] Align Page Up and Page Down steps with rows available between scroll indicators.
+- [x] Verify complete marker coverage forward and backward, including a mid-story resize.

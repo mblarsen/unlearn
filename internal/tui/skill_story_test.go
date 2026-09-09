@@ -110,3 +110,57 @@ func TestSkillStoryViewportMatrix(t *testing.T) {
 		})
 	}
 }
+
+func TestSkillStoryPagingDoesNotSkipContentForwardBackwardOrAfterResize(t *testing.T) {
+	metadata := make(map[string]string)
+	markers := make([]string, 36)
+	for i := range markers {
+		markers[i] = fmt.Sprintf("marker-%02d", i)
+		metadata[markers[i]] = "present"
+	}
+	m := New([]inventory.Skill{
+		{Name: "alpha", EncounteredPath: "/tmp/alpha-a", Frontmatter: metadata},
+		{Name: "alpha", EncounteredPath: "/tmp/alpha-b"},
+	}, nil)
+	m.Mode = ViewSkills
+	m.Width, m.Height = 80, 18
+	updated, _ := m.Update(key("enter"))
+	m = updated.(Model)
+
+	var forward strings.Builder
+	for {
+		forward.WriteString(m.View())
+		before := m.StoryScroll
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+		m = updated.(Model)
+		if m.StoryScroll == before {
+			break
+		}
+	}
+	assertStoryMarkersSeen(t, forward.String(), markers)
+
+	updated, _ = m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = updated.(Model)
+	assertViewportBounds(t, m.View(), 120, 24)
+
+	var backward strings.Builder
+	for {
+		backward.WriteString(m.View())
+		before := m.StoryScroll
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+		m = updated.(Model)
+		if m.StoryScroll == before {
+			break
+		}
+	}
+	assertStoryMarkersSeen(t, backward.String(), markers)
+}
+
+func assertStoryMarkersSeen(t *testing.T, rendered string, markers []string) {
+	t.Helper()
+	for _, marker := range markers {
+		if !strings.Contains(rendered, marker) {
+			t.Errorf("paged story skipped %q", marker)
+		}
+	}
+}

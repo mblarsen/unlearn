@@ -151,11 +151,12 @@ func (m Model) skillStoryScrollMetrics() (int, int) {
 	contentHeight := max(1, height-7)
 	lines := renderSkillStoryContent(ui.DefaultTheme(), story.Build(group.Skills, story.Coverage(m.EvidenceCoverage)), contentWidth)
 	available := max(1, contentHeight-3)
-	pageSize := available
-	if len(lines) > available {
-		pageSize = max(1, available-1)
+	if len(lines) <= available {
+		return 0, available
 	}
-	return max(0, len(lines)-pageSize), pageSize
+	lastWindowHeight := max(1, available-1)
+	pageSize := max(1, available-2)
+	return max(0, len(lines)-lastWindowHeight), pageSize
 }
 
 func unknownIfEmpty(value string) string {
