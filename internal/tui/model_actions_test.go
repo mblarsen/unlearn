@@ -247,8 +247,9 @@ func TestDashboardTabFocusesDuplicateInstallDefaultAction(t *testing.T) {
 	}
 	updated, _ = m.Update(key("ctrl+d"))
 	m = updated.(Model)
-	if m.State != StateSelectInstall || m.InstallCursor != 1 {
-		t.Fatalf("expected action chooser to focus detail-selected install, state=%v cursor=%d", m.State, m.InstallCursor)
+	selection := m.InstallPicker.Selection()
+	if m.State != StateSelectInstall || selection.Cursor != 1 {
+		t.Fatalf("expected action chooser to focus detail-selected install, state=%v cursor=%d", m.State, selection.Cursor)
 	}
 }
 

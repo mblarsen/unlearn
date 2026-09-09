@@ -10,6 +10,7 @@ import (
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/tui/picker"
 )
 
 func TestInstallPickerKeepsCursorAndOptionsVisibleForLongLists(t *testing.T) {
@@ -22,6 +23,7 @@ func TestInstallPickerKeepsCursorAndOptionsVisibleForLongLists(t *testing.T) {
 	m.State = StateSelectInstall
 	m.PendingAction = ActionDelete
 	m.PendingFinding = m.Findings[0]
+	m.InstallPicker = m.newInstallPicker(0)
 	m.Width, m.Height = 80, 24
 	for range len(skills) - 1 {
 		updated, _ := m.Update(key("j"))
@@ -65,7 +67,6 @@ func TestInstallPickerCanReachEveryLineOfSelectedLongPath(t *testing.T) {
 				updated, _ = m.Update(key("j"))
 				m = updated.(Model)
 			}
-
 			seen := map[string]bool{}
 			for range 50 {
 				view := m.View()
@@ -111,10 +112,15 @@ func assertViewportBounds(t *testing.T, view string, width, height int) {
 func TestRestoreAndBatchPickersFollowCursor(t *testing.T) {
 	m := New(nil, nil)
 	m.Width, m.Height = 80, 24
+	var batchLabels []string
 	for i := 0; i < 30; i++ {
 		m.RestoreChoices = append(m.RestoreChoices, fmt.Sprintf("quarantined-skill-%02d", i))
-		m.BatchRootChoices = append(m.BatchRootChoices, fsactions.BatchRootChoice{Root: fmt.Sprintf("/tmp/fixtures/very-long-root-%02d", i), Skills: []inventory.Skill{{Name: "alpha"}}})
+		choice := fsactions.BatchRootChoice{Root: fmt.Sprintf("/tmp/fixtures/very-long-root-%02d", i), Skills: []inventory.Skill{{Name: "alpha"}}}
+		m.BatchRootChoices = append(m.BatchRootChoices, choice)
+		batchLabels = append(batchLabels, fmt.Sprintf("%s · %d duplicate installs", choice.Root, len(choice.Skills)))
 	}
+	m.RestorePicker = picker.New(m.RestoreChoices, picker.Config{})
+	m.BatchRootPicker = picker.New(batchLabels, picker.Config{})
 
 	m.State = StateSelectRestore
 	for range 29 {
@@ -124,7 +130,7 @@ func TestRestoreAndBatchPickersFollowCursor(t *testing.T) {
 	if view := m.View(); !strings.Contains(view, "quarantined-skill-29") || !strings.Contains(view, "Options") {
 		t.Fatalf("restore picker did not follow cursor:\n%s", view)
 	}
-	m.State, m.BatchRootCursor = StateSelectBatchRoot, 0
+	m.State = StateSelectBatchRoot
 	for range 29 {
 		updated, _ := m.Update(key("j"))
 		m = updated.(Model)
