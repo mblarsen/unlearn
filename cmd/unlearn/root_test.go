@@ -366,7 +366,7 @@ func TestAuditConfiguredMissingHistoryWarnsWithoutUnseenFindings(t *testing.T) {
 				t.Fatalf("audit failed for stale configured history: %v", err)
 			}
 			got := out.String()
-			if !strings.Contains(got, "History source is no longer available") || !strings.Contains(got, missingPath) {
+			if !strings.Contains(got, "Stopped tracking missing history source") || !strings.Contains(got, missingPath) {
 				t.Fatalf("missing history diagnostic not printed:\n%s", got)
 			}
 			if !strings.Contains(got, "unseen: 0") {
