@@ -10,7 +10,9 @@ import (
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
+	"github.com/mblarsen/unlearn/internal/workbench"
 )
 
 type fakeActionService struct {
@@ -56,42 +58,61 @@ func (f *fakeActionService) AllowWrite(root string) error {
 	f.writeRoots[root] = true
 	return nil
 }
-func (f *fakeActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
-	result := fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}
-	for _, skill := range skills {
-		f.quarantined = append(f.quarantined, skill.Name)
-		f.quarantinedRoot = append(f.quarantinedRoot, skill.Root)
-		result.Paths = append(result.Paths, "/quarantine/"+skill.Name)
+func (f *fakeActionService) Mutate(request workbench.Request) workbench.Outcome {
+	outcome := workbench.Outcome{Snapshot: request.Snapshot.Clone()}
+	switch request.Kind {
+	case workbench.Quarantine:
+		outcome.Removed = append([]inventory.Skill(nil), request.Targets...)
+		for _, skill := range request.Targets {
+			f.quarantined = append(f.quarantined, skill.Name)
+			f.quarantinedRoot = append(f.quarantinedRoot, skill.Root)
+			outcome.Paths = append(outcome.Paths, "/quarantine/"+skill.Name)
+		}
+		outcome.Snapshot = inventorysnapshot.Remove(outcome.Snapshot, outcome.Removed)
+	case workbench.Delete:
+		f.deleteTypedName = request.Confirmation.TypedName
+		f.deleteBatchToken = request.Confirmation.BatchToken
+		result := fsactions.Result{Skills: append([]inventory.Skill(nil), request.Targets...)}
+		for _, skill := range request.Targets {
+			f.deleted = append(f.deleted, skill.Name)
+			f.deletedRoot = append(f.deletedRoot, skill.Root)
+			result.Paths = append(result.Paths, skill.EncounteredPath)
+		}
+		if f.deleteResult.Skills != nil || f.deleteErr != nil {
+			result = f.deleteResult
+		}
+		outcome.Removed = result.Skills
+		outcome.Missing = result.Missing
+		outcome.Paths = result.Paths
+		outcome.Snapshot = inventorysnapshot.Remove(outcome.Snapshot, outcome.Removed)
+		if f.deleteErr != nil {
+			outcome.Failures = append(outcome.Failures, workbench.Failure{Phase: workbench.FilesystemPhase, Err: f.deleteErr})
+		}
+	case workbench.Rename:
+		skill := request.Targets[0]
+		f.renamed = append(f.renamed, skill.Name+":"+request.NewName)
+		preview := fsactions.PreviewRename(skill, request.NewName)
+		outcome.RenamePreview = preview
+		renamed := skill
+		renamed.ID = skill.ID + "-renamed"
+		renamed.Name = request.NewName
+		renamed.EncounteredPath = preview.NewPath
+		outcome.Snapshot = inventorysnapshot.Replace(outcome.Snapshot, skill, renamed)
+	case workbench.Restore:
+		f.restored = append(f.restored, request.RestoreName+":"+request.DestinationRoot)
+		path := request.DestinationRoot + "/" + request.RestoreName
+		outcome.Paths = []string{path}
+		restored := inventory.Skill{Name: request.RestoreName, Root: request.DestinationRoot, EncounteredPath: path}
+		outcome.Restored = &restored
+		outcome.Snapshot = inventorysnapshot.Add(outcome.Snapshot, restored)
 	}
-	return result, nil
-}
-func (f *fakeActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
-	f.deleteTypedName = confirmation.TypedName
-	f.deleteBatchToken = confirmation.BatchToken
-	result := fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}
-	for _, skill := range skills {
-		f.deleted = append(f.deleted, skill.Name)
-		f.deletedRoot = append(f.deletedRoot, skill.Root)
-		result.Paths = append(result.Paths, skill.EncounteredPath)
-	}
-	if f.deleteResult.Skills != nil || f.deleteErr != nil {
-		return f.deleteResult, f.deleteErr
-	}
-	return result, nil
+	return outcome
 }
 func (f *fakeActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
 	return fsactions.PreviewRename(skill, newName)
 }
-func (f *fakeActionService) Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error) {
-	f.renamed = append(f.renamed, skill.Name+":"+newName)
-	return fsactions.PreviewRename(skill, newName), nil
-}
 func (f *fakeActionService) QuarantinedSkills() ([]string, error) {
 	return append([]string(nil), f.quarantinedList...), nil
-}
-func (f *fakeActionService) Restore(name string, destRoot string) (string, error) {
-	f.restored = append(f.restored, name+":"+destRoot)
-	return destRoot + "/" + name, nil
 }
 func (f *fakeActionService) DraftMerge(_ context.Context, skills []inventory.Skill) (llm.DraftResult, error) {
 	f.draftSelected = nil

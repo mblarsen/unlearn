@@ -11,9 +11,11 @@ import (
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
 	"github.com/mblarsen/unlearn/internal/tui/picker"
 	"github.com/mblarsen/unlearn/internal/ui"
+	"github.com/mblarsen/unlearn/internal/workbench"
 )
 
 type ViewMode int
@@ -287,17 +289,15 @@ func (m Model) updateWriteGate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
-		result, err := m.Actions.QuarantineSelected(m.selectedPendingSkills())
-		for _, skill := range result.Skills {
-			m.removeSkillFromModel(skill)
-		}
-		status := actionResultStatus("quarantined", result)
-		if err != nil {
+		outcome := m.Actions.Mutate(workbench.Request{Kind: workbench.Quarantine, Authorized: true, Snapshot: m.snapshot(), Targets: m.selectedPendingSkills()})
+		m.applyMutationOutcome(outcome)
+		status := actionResultStatus("quarantined", outcome)
+		if err := outcome.Err(); err != nil {
 			m.complete(actionFailureStatus(status, err))
 			return m, nil
 		}
-		if len(result.Skills) == 1 && len(result.Paths) == 1 {
-			m.complete(fmt.Sprintf("quarantined %s -> %s", result.Skills[0].Name, result.Paths[0]))
+		if len(outcome.Removed) == 1 && len(outcome.Paths) == 1 {
+			m.complete(fmt.Sprintf("quarantined %s -> %s", outcome.Removed[0].Name, outcome.Paths[0]))
 		} else {
 			m.complete(status)
 		}
@@ -311,17 +311,15 @@ func (m Model) updateDeleteConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "y", "Y":
 		selected := m.selectedPendingSkills()
-		result, err := m.Actions.DeleteSelected(selected, deleteConfirmationFor(selected))
-		for _, skill := range result.Skills {
-			m.removeSkillFromModel(skill)
-		}
-		status := actionResultStatus("deleted", result)
-		if err != nil {
+		outcome := m.Actions.Mutate(workbench.Request{Kind: workbench.Delete, Authorized: true, Snapshot: m.snapshot(), Targets: selected, Confirmation: deleteConfirmationFor(selected)})
+		m.applyMutationOutcome(outcome)
+		status := actionResultStatus("deleted", outcome)
+		if err := outcome.Err(); err != nil {
 			m.complete(actionFailureStatus(status, err))
 			return m, nil
 		}
-		if len(result.Skills) == 1 && len(result.Missing) == 0 {
-			m.complete("deleted " + result.Skills[0].Name)
+		if len(outcome.Removed) == 1 && len(outcome.Missing) == 0 {
+			m.complete("deleted " + outcome.Removed[0].Name)
 		} else {
 			m.complete(status)
 		}
@@ -359,11 +357,12 @@ func (m Model) updateRestoreSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		name := m.RestoreChoices[selection.Cursor]
-		dest, err := m.Actions.Restore(name, m.PendingSkill.Root)
-		if err != nil {
+		outcome := m.Actions.Mutate(workbench.Request{Kind: workbench.Restore, Authorized: true, Snapshot: m.snapshot(), RestoreName: name, DestinationRoot: m.PendingSkill.Root})
+		m.applyMutationOutcome(outcome)
+		if err := outcome.Err(); err != nil {
 			m.fail(err)
 		} else {
-			m.complete(fmt.Sprintf("restored %s -> %s", name, dest))
+			m.complete(fmt.Sprintf("restored %s -> %s", name, outcome.Paths[0]))
 		}
 	case picker.Cancel:
 		m.cancel("restore cancelled")
@@ -502,11 +501,12 @@ func (m Model) updateRenamePreview(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.complete(m.RenamePreview.Warn + "; suggested action: quarantine")
 			return m, nil
 		}
-		preview, err := m.Actions.Rename(m.PendingSkill, m.Input)
-		if err != nil {
+		outcome := m.Actions.Mutate(workbench.Request{Kind: workbench.Rename, Authorized: true, Snapshot: m.snapshot(), Targets: []inventory.Skill{m.PendingSkill}, NewName: m.Input})
+		m.applyMutationOutcome(outcome)
+		if err := outcome.Err(); err != nil {
 			m.fail(err)
 		} else {
-			m.complete(fmt.Sprintf("renamed %s -> %s", preview.OldPath, preview.NewPath))
+			m.complete(fmt.Sprintf("renamed %s -> %s", outcome.RenamePreview.OldPath, outcome.RenamePreview.NewPath))
 		}
 	case "n", "N", "esc":
 		m.cancel("rename cancelled")
@@ -744,9 +744,9 @@ func (m Model) selectedFinding() (analysis.Finding, bool) {
 	return analysis.Finding{}, false
 }
 
-func actionResultStatus(action string, result fsactions.Result) string {
-	completed := len(result.Paths)
-	stale := len(result.Missing)
+func actionResultStatus(action string, outcome workbench.Outcome) string {
+	completed := len(outcome.Paths)
+	stale := len(outcome.Missing)
 	parts := make([]string, 0, 2)
 	if completed > 0 {
 		parts = append(parts, fmt.Sprintf("%s %d %s", action, completed, installWord(completed)))
@@ -774,61 +774,17 @@ func installWord(count int) string {
 	return "installs"
 }
 
-func (m *Model) removeSkillFromModel(removed inventory.Skill) {
-	m.Skills = removeSkill(m.Skills, removed)
+func (m Model) snapshot() inventorysnapshot.Snapshot {
+	return inventorysnapshot.Snapshot{Skills: m.Skills, Findings: m.Findings}
+}
+
+func (m *Model) applyMutationOutcome(outcome workbench.Outcome) {
+	m.Skills = outcome.Snapshot.Skills
+	m.Findings = outcome.Snapshot.Findings
 	m.SkillGroups = groupedSkills(m.Skills)
-	m.Findings = pruneFindings(m.Findings, removed)
 	if m.Cursor >= m.itemCount() {
 		m.Cursor = max(0, m.itemCount()-1)
 	}
-}
-
-func removeSkill(skills []inventory.Skill, removed inventory.Skill) []inventory.Skill {
-	out := make([]inventory.Skill, 0, len(skills))
-	for _, skill := range skills {
-		if !sameSkillInstall(skill, removed) {
-			out = append(out, skill)
-		}
-	}
-	return out
-}
-
-func pruneFindings(findings []analysis.Finding, removed inventory.Skill) []analysis.Finding {
-	out := make([]analysis.Finding, 0, len(findings))
-	for _, finding := range findings {
-		finding.Skills = removeSkill(finding.Skills, removed)
-		if keepFindingAfterRemoval(finding) {
-			out = append(out, finding)
-		}
-	}
-	return out
-}
-
-func keepFindingAfterRemoval(finding analysis.Finding) bool {
-	switch finding.Type {
-	case analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap:
-		return len(finding.Skills) > 1
-	default:
-		return len(finding.Skills) > 0
-	}
-}
-
-func sameSkillInstall(a, b inventory.Skill) bool {
-	if a.ID != "" && b.ID != "" && a.ID == b.ID {
-		return true
-	}
-	if a.EncounteredPath != "" && b.EncounteredPath != "" && a.EncounteredPath == b.EncounteredPath {
-		return true
-	}
-	if a.PrimaryPath != "" && b.PrimaryPath != "" && a.PrimaryPath == b.PrimaryPath {
-		return true
-	}
-	if !strings.EqualFold(a.Name, b.Name) || a.Root != b.Root {
-		return false
-	}
-	aPath := firstNonEmpty(a.EncounteredPath, a.PrimaryPath)
-	bPath := firstNonEmpty(b.EncounteredPath, b.PrimaryPath)
-	return aPath == "" || bPath == "" || aPath == bPath
 }
 
 func firstNonEmpty(values ...string) string {

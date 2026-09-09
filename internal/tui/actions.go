@@ -2,16 +2,15 @@ package tui
 
 import (
 	"context"
-	"database/sql"
-	"errors"
 	"fmt"
 
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
-	"github.com/mblarsen/unlearn/internal/state"
+	"github.com/mblarsen/unlearn/internal/workbench"
 )
 
 type ActionService interface {
@@ -19,12 +18,9 @@ type ActionService interface {
 	IgnoreFinding(finding analysis.Finding) error
 	FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool)
 	AllowWrite(root string) error
-	QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error)
-	DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error)
+	Mutate(request workbench.Request) workbench.Outcome
 	PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview
-	Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error)
 	QuarantinedSkills() ([]string, error)
-	Restore(name string, destRoot string) (string, error)
 	DraftMerge(ctx context.Context, skills []inventory.Skill) (llm.DraftResult, error)
 }
 
@@ -36,20 +32,23 @@ func (NoopActionService) FirstMissingWrite(skills []inventory.Skill) (inventory.
 	return inventory.Skill{}, false
 }
 func (NoopActionService) AllowWrite(root string) error { return nil }
-func (NoopActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
-	return fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}, nil
-}
-func (NoopActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
-	return fsactions.Result{Skills: append([]inventory.Skill(nil), skills...)}, nil
+func (NoopActionService) Mutate(request workbench.Request) workbench.Outcome {
+	outcome := workbench.Outcome{Snapshot: request.Snapshot.Clone()}
+	switch request.Kind {
+	case workbench.Quarantine, workbench.Delete:
+		outcome.Removed = append([]inventory.Skill(nil), request.Targets...)
+		outcome.Snapshot = inventorysnapshot.Remove(outcome.Snapshot, request.Targets)
+	case workbench.Rename:
+		if len(request.Targets) == 1 {
+			outcome.RenamePreview = fsactions.PreviewRename(request.Targets[0], request.NewName)
+		}
+	}
+	return outcome
 }
 func (NoopActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
 	return fsactions.PreviewRename(skill, newName)
 }
-func (NoopActionService) Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error) {
-	return fsactions.PreviewRename(skill, newName), nil
-}
-func (NoopActionService) QuarantinedSkills() ([]string, error)                 { return nil, nil }
-func (NoopActionService) Restore(name string, destRoot string) (string, error) { return "", nil }
+func (NoopActionService) QuarantinedSkills() ([]string, error) { return nil, nil }
 func (NoopActionService) DraftMerge(_ context.Context, skills []inventory.Skill) (llm.DraftResult, error) {
 	return llm.DraftResult{}, fmt.Errorf("LLM merged-draft generation is not configured for this dashboard")
 }
@@ -83,57 +82,18 @@ func (s *ConfigActionService) AllowWrite(root string) error {
 	return s.save()
 }
 
-func (s *ConfigActionService) QuarantineSelected(skills []inventory.Skill) (fsactions.Result, error) {
-	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
-	result, actionErr := mgr.QuarantineSelected(skills, true)
-	return result, errors.Join(actionErr, s.reconcileRemoved(result.Skills))
-}
-
-func (s *ConfigActionService) DeleteSelected(skills []inventory.Skill, confirmation fsactions.DeleteConfirmation) (fsactions.Result, error) {
-	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
-	result, actionErr := mgr.DeleteSelected(skills, confirmation)
-	return result, errors.Join(actionErr, s.reconcileRemoved(result.Skills))
-}
-
-func (s *ConfigActionService) reconcileRemoved(removed []inventory.Skill) error {
-	if s.IndexPath == "" || len(removed) == 0 {
-		return nil
-	}
-	db, err := state.OpenIndex(s.IndexPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	skills, findings, err := state.LoadInventoryCache(db)
-	if errors.Is(err, sql.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	skills, findings = state.RemoveInventorySkills(skills, findings, removed)
-	return state.ReplaceIndex(db, skills, findings)
+func (s *ConfigActionService) Mutate(request workbench.Request) workbench.Outcome {
+	module := workbench.Module{Config: s.Config, IndexPath: s.IndexPath, QuarantineDir: s.QuarantineDir}
+	return module.Execute(request)
 }
 
 func (s *ConfigActionService) PreviewRename(skill inventory.Skill, newName string) fsactions.RenamePreview {
 	return fsactions.PreviewRename(skill, newName)
 }
 
-func (s *ConfigActionService) Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error) {
-	return fsactions.Rename(skill, newName, s.Config, true)
-}
-
 func (s *ConfigActionService) QuarantinedSkills() ([]string, error) {
 	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
 	return mgr.QuarantinedSkills()
-}
-
-func (s *ConfigActionService) Restore(name string, destRoot string) (string, error) {
-	if !s.Config.CanWrite(destRoot) {
-		return "", fsactions.ErrWritePermissionRequired
-	}
-	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
-	return mgr.Restore(name, destRoot)
 }
 
 func NewDraftGeneratorFromEnv(cacheDir string) llm.DraftGenerator {

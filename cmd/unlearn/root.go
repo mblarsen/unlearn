@@ -3,6 +3,8 @@ package unlearn
 import (
 	"bufio"
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,12 +23,14 @@ import (
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
 	setupflow "github.com/mblarsen/unlearn/internal/setup"
 	"github.com/mblarsen/unlearn/internal/state"
 	"github.com/mblarsen/unlearn/internal/tui"
 	"github.com/mblarsen/unlearn/internal/ui"
 	"github.com/mblarsen/unlearn/internal/usage"
+	"github.com/mblarsen/unlearn/internal/workbench"
 	"github.com/spf13/cobra"
 )
 
@@ -137,28 +141,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		Short: "Restore a quarantined skill",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			paths, err := pathsFromOptions(opts)
-			if err != nil {
-				return err
-			}
-			destRoot := opts.restoreRoot
-			if destRoot == "" {
-				return fmt.Errorf("--to-root is required for restore in this safety-first build")
-			}
-			cfg, err := loadConfig(opts, paths)
-			if err != nil {
-				return err
-			}
-			if !cfg.CanWrite(destRoot) {
-				return fmt.Errorf("write permission required for restore root %s; pass --write-root %s", destRoot, destRoot)
-			}
-			mgr := actions.Manager{Config: cfg, QuarantineDir: paths.QuarantineDir}
-			dest, err := mgr.Restore(args[0], destRoot)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(out, "Restored %s to %s\n", args[0], dest)
-			return nil
+			return runRestore(out, opts, args[0])
 		},
 	}
 	addSharedFlags(restore, opts)
@@ -199,6 +182,55 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	root.AddCommand(setupCmd)
 
 	return root
+}
+
+func runRestore(out io.Writer, opts *cliOptions, name string) error {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return err
+	}
+	destRoot := opts.restoreRoot
+	if destRoot == "" {
+		return fmt.Errorf("--to-root is required for restore in this safety-first build")
+	}
+	cfg, err := loadConfig(opts, paths)
+	if err != nil {
+		return err
+	}
+	if !cfg.CanWrite(destRoot) {
+		return fmt.Errorf("write permission required for restore root %s; pass --write-root %s", destRoot, destRoot)
+	}
+	snapshot, err := loadMutationSnapshot(paths.IndexPath)
+	if err != nil {
+		return err
+	}
+	activeAgents, inactiveAgents := agentSelection(opts, cfg)
+	outcome := (workbench.Module{Config: cfg, IndexPath: paths.IndexPath, QuarantineDir: paths.QuarantineDir}).Execute(workbench.Request{
+		Kind:            workbench.Restore,
+		Authorized:      true,
+		Snapshot:        snapshot,
+		RestoreName:     name,
+		DestinationRoot: destRoot,
+		RootOwnerships:  inventory.RootOwnershipForAgents(activeAgents, inactiveAgents),
+	})
+	if err := outcome.Err(); err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "Restored %s to %s\n", name, outcome.Paths[0])
+	return nil
+}
+
+func loadMutationSnapshot(indexPath string) (inventorysnapshot.Snapshot, error) {
+	db, err := state.OpenIndex(indexPath)
+	if err != nil {
+		return inventorysnapshot.Snapshot{}, err
+	}
+	defer db.Close()
+	skills, findings, err := state.LoadInventoryCache(db)
+	if errors.Is(err, sql.ErrNoRows) {
+		return inventorysnapshot.Snapshot{}, nil
+	}
+	return inventorysnapshot.Snapshot{Skills: skills, Findings: findings}, err
 }
 
 type loadingResultMsg struct {

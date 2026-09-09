@@ -131,13 +131,21 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - Rich detail fields and action availability.
 - TUI model coverage.
 
-## Architecture deepening — cancellable draft lifecycle
+## Architecture deepening — 2026-05-18
 
-- [x] Inject the context-aware merged-draft generator instead of constructing it inside each request.
-- [x] Centralize draft operation start, cancellation, identity, and result acceptance behind one lifecycle implementation.
-- [x] Reject stale results when operation A completes after cancellation and operation B has started.
-- [x] Preserve content-hash caching, opt-in privacy, and read-only draft preview behavior.
-- [x] Cover controlled A-start/cancel/B-start/A-finish/B-finish ordering and run the full validation suite.
+The architecture review in `/tmp/unlearn-architecture-review.md` identified four modules to deepen. Work is split across isolated branches to avoid conflicting rewrites.
+
+- [x] **Point 1 — mutation/reconciliation:** centralize exact-install identity; execute authorized quarantine, delete, rename, and restore operations; return typed filesystem/persistence outcomes with an authoritative snapshot; persist the same snapshot; cover partial success, persistence failure, restart, rename, restore, root ownership, and symlink safeguards.
+- [x] **Point 2 — draft lifecycle:** inject the context-aware generator; centralize operation start, cancellation, identity, and result acceptance; reject stale results; preserve opt-in privacy and read-only previews; cover controlled A-cancel/B-start ordering.
+- [x] **Point 3 — audit orchestration:** move audit policy behind a typed interface; make evidence coverage control unseen-finding eligibility; preserve privacy, progress, cancellation, caching, and LLM fallback.
+- [x] **Point 4 — picker/viewport:** move picker navigation, selection, scrolling, resize, and bounded rendering behind one reusable interface; preserve viewport access and selection precedence.
+
+Point 1 implementation sequence:
+
+1. Add regression tests at the new mutation module interface for exact identity, partial batch failure, persistence failure after a filesystem change, rename, restore, restart persistence, and symlink deletion safety.
+2. Implement one workbench mutation interface that owns filesystem execution, snapshot transformation, SQLite persistence, and phase-specific diagnostics without pretending filesystem/SQLite atomicity.
+3. Replace TUI-side and state-side reconciliation algorithms with the returned snapshot; retain compatible cache reconciliation for the audit module owner.
+4. Run focused tests, all Go tests, build, and `mise check`; record cross-branch integration work before completion.
 
 ## Current focus
 
