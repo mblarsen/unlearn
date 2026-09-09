@@ -67,7 +67,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err := runFirstLaunchSetup(out, opts); err != nil {
 				return err
 			}
-			skills, findings, coverage, err := runLoadingInventory(out, opts)
+			skills, findings, coverage, review, err := runLoadingInventory(out, opts)
 			if err != nil {
 				return err
 			}
@@ -81,7 +81,10 @@ func newRootCmd(out io.Writer) *cobra.Command {
 				return err
 			}
 			service := &tui.ConfigActionService{ConfigPath: paths.ConfigPath, Config: cfg, IndexPath: paths.IndexPath, QuarantineDir: paths.QuarantineDir, LLMCacheDir: paths.LLMCacheDir, DraftGenerator: tui.NewDraftGeneratorFromEnv(paths.LLMCacheDir)}
-			program := tea.NewProgram(tui.NewWithActionsAndCoverage(skills, findings, service, coverage).WithStartupWarnings(opts.warnings), tea.WithOutput(out), tea.WithAltScreen())
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			model := tui.NewWithActionsAndCoverage(skills, findings, service, coverage).WithStartupWarnings(opts.warnings).WithBackgroundReviewContext(ctx, review)
+			program := tea.NewProgram(model, tea.WithOutput(out), tea.WithAltScreen(), tea.WithContext(ctx))
 			_, err = program.Run()
 			return err
 		},
@@ -238,6 +241,7 @@ type loadingResultMsg struct {
 	skills   []inventory.Skill
 	findings []analysis.Finding
 	coverage audit.EvidenceCoverage
+	review   *audit.BackgroundReview
 	err      error
 }
 
@@ -341,7 +345,7 @@ func tuiThemeForLoading() loadingTheme {
 	}
 }
 
-func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []analysis.Finding, audit.EvidenceCoverage, error) {
+func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []analysis.Finding, audit.EvidenceCoverage, *audit.BackgroundReview, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	updates := make(chan tea.Msg, 16)
@@ -356,29 +360,32 @@ func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []
 		if canUseDashboardCache(opts) {
 			cachePolicy = audit.SnapshotCachePrefer
 		}
-		result, err := runAudit(opts, inventoryLoadOptions{Context: ctx, Progress: sendProgress, HistoryProgress: func(progress history.ScanProgress) {
+		result, review, err := runDashboardAudit(opts, inventoryLoadOptions{Context: ctx, Progress: sendProgress, HistoryProgress: func(progress history.ScanProgress) {
 			detail := fmt.Sprintf("%s · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches)
 			if progress.Done {
 				detail = fmt.Sprintf("%s · complete · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches)
 			}
 			sendProgress(inventoryProgress{Step: "history", Detail: detail, Done: progress.Done})
 		}}, cachePolicy)
-		updates <- loadingResultMsg{skills: result.Skills, findings: result.Findings, coverage: result.EvidenceCoverage, err: err}
+		select {
+		case updates <- loadingResultMsg{skills: result.Skills, findings: result.Findings, coverage: result.EvidenceCoverage, review: review, err: err}:
+		case <-ctx.Done():
+		}
 	}()
-	program := tea.NewProgram(newLoadingModel(updates), tea.WithOutput(out), tea.WithAltScreen())
+	program := tea.NewProgram(newLoadingModel(updates), tea.WithOutput(out), tea.WithAltScreen(), tea.WithContext(ctx))
 	finalModel, err := program.Run()
 	stop()
 	if err != nil {
-		return nil, nil, audit.EvidenceUnknown, err
+		return nil, nil, audit.EvidenceUnknown, nil, err
 	}
 	loading, ok := finalModel.(loadingModel)
 	if !ok {
-		return nil, nil, audit.EvidenceUnknown, fmt.Errorf("loading returned unexpected model %T", finalModel)
+		return nil, nil, audit.EvidenceUnknown, nil, fmt.Errorf("loading returned unexpected model %T", finalModel)
 	}
 	if loading.cancelled {
-		return nil, nil, audit.EvidenceUnknown, fmt.Errorf("loading cancelled")
+		return nil, nil, audit.EvidenceUnknown, nil, fmt.Errorf("loading cancelled")
 	}
-	return loading.result.skills, loading.result.findings, loading.result.coverage, loading.result.err
+	return loading.result.skills, loading.result.findings, loading.result.coverage, loading.result.review, loading.result.err
 }
 
 func loadingProgressDetail(event inventoryProgress) string {
@@ -478,13 +485,39 @@ type inventoryLoadOptions struct {
 }
 
 func runAudit(opts *cliOptions, loadOpts inventoryLoadOptions, cachePolicy audit.SnapshotCachePolicy) (audit.Result, error) {
-	paths, err := pathsFromOptions(opts)
+	policy, err := auditPolicy(opts, loadOpts, cachePolicy)
 	if err != nil {
 		return audit.Result{}, err
 	}
-	cfg, err := loadConfig(opts, paths)
+	result, err := audit.Run(loadOpts.Context, policy)
 	if err != nil {
 		return audit.Result{}, err
+	}
+	appendAuditWarnings(opts, result)
+	return result, nil
+}
+
+func runDashboardAudit(opts *cliOptions, loadOpts inventoryLoadOptions, cachePolicy audit.SnapshotCachePolicy) (audit.Result, *audit.BackgroundReview, error) {
+	policy, err := auditPolicy(opts, loadOpts, cachePolicy)
+	if err != nil {
+		return audit.Result{}, nil, err
+	}
+	result, review, err := audit.PrepareDashboard(loadOpts.Context, policy)
+	if err != nil {
+		return audit.Result{}, nil, err
+	}
+	appendAuditWarnings(opts, result)
+	return result, review, nil
+}
+
+func auditPolicy(opts *cliOptions, loadOpts inventoryLoadOptions, cachePolicy audit.SnapshotCachePolicy) (audit.Policy, error) {
+	paths, err := pathsFromOptions(opts)
+	if err != nil {
+		return audit.Policy{}, err
+	}
+	cfg, err := loadConfig(opts, paths)
+	if err != nil {
+		return audit.Policy{}, err
 	}
 	var analyzer llm.Analyzer
 	if cfg.LLMAssisted {
@@ -492,32 +525,23 @@ func runAudit(opts *cliOptions, loadOpts inventoryLoadOptions, cachePolicy audit
 			analyzer = gemini
 		}
 	}
-	result, err := audit.Run(loadOpts.Context, audit.Policy{
-		Config:          cfg,
-		Paths:           paths,
-		Roots:           opts.roots,
-		ActiveAgents:    opts.activeAgents,
-		InactiveAgents:  opts.inactiveAgents,
-		HistoryJSONL:    opts.historyJSONL,
-		HistorySQLite:   opts.historySQLite,
-		HistoryCacheTTL: opts.historyCacheTTL,
-		RescanSources:   opts.rescanSources,
-		SnapshotCache:   cachePolicy,
-		LLMAnalyzer:     analyzer,
+	return audit.Policy{
+		Config: cfg, Paths: paths, Roots: opts.roots, ActiveAgents: opts.activeAgents, InactiveAgents: opts.inactiveAgents,
+		HistoryJSONL: opts.historyJSONL, HistorySQLite: opts.historySQLite, HistoryCacheTTL: opts.historyCacheTTL,
+		RescanSources: opts.rescanSources, SnapshotCache: cachePolicy, LLMAnalyzer: analyzer,
 		Progress: func(event audit.Progress) {
 			if loadOpts.Progress != nil {
 				loadOpts.Progress(inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
 			}
 		},
 		HistoryProgress: loadOpts.HistoryProgress,
-	})
-	if err != nil {
-		return audit.Result{}, err
-	}
+	}, nil
+}
+
+func appendAuditWarnings(opts *cliOptions, result audit.Result) {
 	for _, diagnostic := range result.Diagnostics {
 		opts.warnings = append(opts.warnings, llm.RedactDiagnostic(diagnostic.Message))
 	}
-	return result, nil
 }
 
 func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {

@@ -118,6 +118,15 @@ type Model struct {
 	GuidedReviewScroll          int
 	guidedReviewDecisionPending bool
 	CollectionUI                collectionUIState
+
+	ReviewActive      bool
+	ReviewDone        bool
+	ReviewStep        string
+	ReviewCurrent     int
+	ReviewTotal       int
+	ReviewDetail      string
+	ReviewDiagnostics []audit.Diagnostic
+	backgroundReview  *backgroundReviewLifecycle
 }
 
 type draftSkillChoice struct {
@@ -140,7 +149,12 @@ func NewWithActionsAndCoverage(skills []inventory.Skill, findings []analysis.Fin
 	return Model{Skills: skills, SkillGroups: groupedSkills(skills), Findings: findings, Actions: service, EvidenceCoverage: coverage, Mode: ViewFindings, Density: DensityCompact}
 }
 
-func (m Model) Init() tea.Cmd { return nil }
+func (m Model) Init() tea.Cmd {
+	if m.backgroundReview == nil {
+		return nil
+	}
+	return m.backgroundReview.start()
+}
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
@@ -152,12 +166,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.StoryScroll = min(m.StoryScroll, maxScroll)
 		}
 	case tea.KeyMsg:
+		if msg.String() == "ctrl+c" {
+			if m.backgroundReview != nil {
+				m.backgroundReview.stop()
+			}
+			return m, tea.Quit
+		}
 		if m.State != StateNormal {
 			return m.updateInteraction(msg)
 		}
 		return m.updateNormal(msg)
 	case draftMergeResultMsg:
 		return m.handleDraftMergeResult(msg), nil
+	case backgroundReviewMsg:
+		return m.updateBackgroundReview(msg)
 	}
 	return m, nil
 }
@@ -170,6 +192,9 @@ type draftMergeResultMsg struct {
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "e" && m.openReviewDiagnostics() {
+		return m, nil
+	}
 	if m.Mode == ViewGuidedReview {
 		return m.updateGuidedReview(msg)
 	}
@@ -177,7 +202,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateCollectionsNormal(msg)
 	}
 	switch msg.String() {
-	case "q", "ctrl+c", "esc":
+	case "q", "esc":
+		if m.backgroundReview != nil {
+			m.backgroundReview.stop()
+		}
 		return m, tea.Quit
 	case "?":
 		m.State = StateHelp
@@ -996,7 +1024,16 @@ func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 	case ViewCollections:
 		mode = "collections"
 	}
+	review := m.reviewHeaderLabel()
 	title := theme.AppTitle.Render("unlearn") + theme.Muted.Render("  cleanup workbench")
+	if review != "" {
+		title = theme.AppTitle.Render("unlearn") + "  "
+		if len(m.ReviewDiagnostics) > 0 {
+			title += theme.Warning.Render(review)
+		} else {
+			title += theme.Muted.Render(review)
+		}
+	}
 	density := "compact"
 	if m.Density == DensityRich {
 		density = "rich"
@@ -1004,8 +1041,9 @@ func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 	stats := []string{
 		theme.Badge.Render(fmt.Sprintf("%d skills", len(m.Skills))),
 		theme.BadgeWarn.Render(fmt.Sprintf("%d findings", len(m.Findings))),
-		theme.Badge.Render(mode),
-		theme.Badge.Render(density),
+	}
+	if review == "" {
+		stats = append(stats, theme.Badge.Render(mode), theme.Badge.Render(density))
 	}
 	line := padBetween(title, lipgloss.JoinHorizontal(lipgloss.Center, stats...), width)
 	sep := theme.Muted.Render(strings.Repeat("─", max(0, width)))

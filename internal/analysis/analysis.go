@@ -2,7 +2,6 @@ package analysis
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -67,24 +66,24 @@ func AnalyzeWithLLM(ctx context.Context, skills []inventory.Skill, opts Options)
 	var findings []Finding
 	findings = append(findings, duplicatesAndConflicts(skills)...)
 	findings = append(findings, overlaps(skills)...)
-	var llmErr error
-	if opts.LLMAnalyzer != nil {
-		llmFindings, err := llmOverlaps(ctx, skills, opts.LLMAnalyzer, opts.Progress)
-		if err != nil {
-			llmErr = errors.Join(llmErr, fmt.Errorf("semantic overlap: %w", err))
-		} else {
-			findings = mergeLLMOverlapFindings(findings, llmFindings)
-		}
-		qualityFindings, err := llmSkillQuality(ctx, skills, opts.LLMAnalyzer, opts.Progress)
-		if err != nil {
-			llmErr = errors.Join(llmErr, fmt.Errorf("skill quality: %w", err))
-		} else {
-			findings = append(findings, qualityFindings...)
-		}
-	}
 	findings = append(findings, brokenFindings(skills)...)
 	findings = append(findings, inactiveRootFindings(skills)...)
 	findings = append(findings, groupedSingleSkillFindings(skills, opts)...)
+	var llmErr error
+	if opts.LLMAnalyzer != nil {
+		llmErr = ReviewWithLLM(ctx, skills, opts.LLMAnalyzer, func(event LLMReviewEvent) {
+			switch event.Kind {
+			case LLMReviewProgress:
+				reportProgress(opts.Progress, event.Progress)
+			case LLMReviewFinding:
+				if event.Finding.Type == FindingOverlap {
+					findings = mergeLLMOverlapFindings(findings, []Finding{event.Finding})
+				} else {
+					findings = append(findings, event.Finding)
+				}
+			}
+		})
+	}
 	SortFindings(findings)
 	return findings, llmErr
 }

@@ -95,13 +95,14 @@ type Result struct {
 	FromSnapshotCache bool
 }
 
-const auditCacheMetadataKey = "audit-metadata-v2"
+const auditCacheMetadataKey = "audit-metadata-v3"
 
 type cacheMetadata struct {
 	EvidenceCoverage EvidenceCoverage `json:"evidence_coverage"`
 	SkippedRoots     []string         `json:"skipped_roots,omitempty"`
 	Diagnostics      []Diagnostic     `json:"diagnostics,omitempty"`
 	Provenance       cacheProvenance  `json:"provenance"`
+	ReviewComplete   bool             `json:"review_complete"`
 }
 
 type cacheProvenance struct {
@@ -140,9 +141,9 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 	}
 	selection := resolveSelection(policy)
 	if policy.SnapshotCache == SnapshotCachePrefer && !policy.RescanSources {
-		if result, ok, err := loadSnapshotCache(ctx, policy, selection.provenance); err != nil {
+		if result, ok, reviewComplete, err := loadSnapshotCache(ctx, policy, selection.provenance); err != nil {
 			return Result{}, err
-		} else if ok {
+		} else if ok && reviewComplete {
 			return result, nil
 		}
 	}
@@ -225,7 +226,7 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 	}
 
 	if policy.SnapshotCache == SnapshotCachePrefer || policy.SnapshotCache == SnapshotCacheRefresh {
-		if err := saveSnapshotCache(ctx, policy.Paths.IndexPath, result, selection.provenance); err != nil {
+		if err := saveSnapshotCache(ctx, policy.Paths.IndexPath, result, selection.provenance, analysisErr == nil); err != nil {
 			return Result{}, err
 		}
 	}
@@ -289,43 +290,43 @@ func eligibleUsageEvidence(coverage EvidenceCoverage, evidence analysis.UsageEvi
 	return evidence
 }
 
-func loadSnapshotCache(ctx context.Context, policy Policy, provenance cacheProvenance) (Result, bool, error) {
+func loadSnapshotCache(ctx context.Context, policy Policy, provenance cacheProvenance) (Result, bool, bool, error) {
 	db, err := state.OpenIndex(policy.Paths.IndexPath)
 	if err != nil {
-		return Result{}, false, err
+		return Result{}, false, false, err
 	}
 	defer db.Close()
 	report(policy.Progress, Progress{Step: "load-cache", Detail: "local dashboard index"})
 	if err := ctx.Err(); err != nil {
-		return Result{}, false, err
+		return Result{}, false, false, err
 	}
 	metadata, err := loadCacheMetadata(db)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return Result{}, false, nil
+			return Result{}, false, false, nil
 		}
-		return Result{}, false, err
+		return Result{}, false, false, err
 	}
 	if !reflect.DeepEqual(metadata.Provenance, provenance) {
-		return Result{}, false, nil
+		return Result{}, false, false, nil
 	}
 	skills, findings, err := state.LoadInventoryCache(db)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return Result{}, false, nil
+			return Result{}, false, false, nil
 		}
-		return Result{}, false, err
+		return Result{}, false, false, err
 	}
 	if len(skills) == 0 && len(findings) == 0 {
-		return Result{}, false, nil
+		return Result{}, false, false, nil
 	}
 	skills, findings, missing := state.ReconcileMissingPaths(skills, findings)
 	if len(missing) > 0 {
 		if err := state.ReplaceIndex(db, skills, findings); err != nil {
-			return Result{}, false, err
+			return Result{}, false, false, err
 		}
 		if err := saveCacheMetadata(db, metadata); err != nil {
-			return Result{}, false, err
+			return Result{}, false, false, err
 		}
 	}
 	detail := fmt.Sprintf("%d skills, %d findings", len(skills), len(findings))
@@ -334,12 +335,12 @@ func loadSnapshotCache(ctx context.Context, policy Policy, provenance cacheProve
 	}
 	report(policy.Progress, Progress{Step: "load-cache", Detail: detail, Done: true})
 	if err := ctx.Err(); err != nil {
-		return Result{}, false, err
+		return Result{}, false, false, err
 	}
-	return Result{Skills: skills, Findings: findings, SkippedRoots: metadata.SkippedRoots, EvidenceCoverage: metadata.EvidenceCoverage, Diagnostics: metadata.Diagnostics, FromSnapshotCache: true}, true, nil
+	return Result{Skills: skills, Findings: findings, SkippedRoots: metadata.SkippedRoots, EvidenceCoverage: metadata.EvidenceCoverage, Diagnostics: metadata.Diagnostics, FromSnapshotCache: true}, true, metadata.ReviewComplete, nil
 }
 
-func saveSnapshotCache(ctx context.Context, indexPath string, result Result, provenance cacheProvenance) error {
+func saveSnapshotCache(ctx context.Context, indexPath string, result Result, provenance cacheProvenance, reviewComplete bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -361,7 +362,7 @@ func saveSnapshotCache(ctx context.Context, indexPath string, result Result, pro
 			diagnostics = append(diagnostics, diagnostic)
 		}
 	}
-	return saveCacheMetadata(db, cacheMetadata{EvidenceCoverage: result.EvidenceCoverage, SkippedRoots: result.SkippedRoots, Diagnostics: diagnostics, Provenance: provenance})
+	return saveCacheMetadata(db, cacheMetadata{EvidenceCoverage: result.EvidenceCoverage, SkippedRoots: result.SkippedRoots, Diagnostics: diagnostics, Provenance: provenance, ReviewComplete: reviewComplete})
 }
 
 func loadCacheMetadata(db *sql.DB) (cacheMetadata, error) {
