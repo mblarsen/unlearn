@@ -247,7 +247,7 @@ Relevant commits: `0d8c029`, `b291529`, `99099c6`, `b9b9eff`, `0054000`, `f62bb1
 ## QA fix — persistent feedback and action discovery
 
 - [x] Show bounded status and error summaries with recovery, explicit dismissal, and a scrollable complete-details view.
-- [x] Keep prior feedback behind active dialogs, and route contextual feedback dismissal without reducing dialog height.
+- [x] Keep prior feedback behind active dialogs, route contextual dismissal, and account for wrapped provider copy in preview height.
 - [x] Reserve help and quit in the normal footer, and put cleanup actions before merge drafting.
 - [x] Add contextual help for findings and skill inventory views.
 - [x] Use consequence-specific confirmation titles and labels for destructive actions.

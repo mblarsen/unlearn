@@ -113,6 +113,16 @@ func TestPriorFeedbackDoesNotOverflowDraftPicker(t *testing.T) {
 		t.Fatalf("prior feedback should wait behind the active picker:\n%s", m.View())
 	}
 
+	m.State = StatePreviewDraft
+	m.DraftProvider = "gemini"
+	m.DraftModel = "gemini-2.5-pro"
+	m.DraftPreview = strings.Repeat("merged preview content\n", 40)
+	assertViewBounds(t, m.View(), 80, 24)
+	if strings.Contains(m.View(), "old failure") {
+		t.Fatalf("prior feedback should wait behind the draft preview:\n%s", m.View())
+	}
+
+	m.State = StateSelectDraftSkills
 	m.setStatus("select at least two skills for a merged draft")
 	if !strings.Contains(m.View(), "x dismiss") {
 		t.Fatalf("picker feedback should advertise dismissal:\n%s", m.View())
