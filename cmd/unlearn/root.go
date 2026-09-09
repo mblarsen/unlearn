@@ -204,13 +204,14 @@ func runRestore(out io.Writer, opts *cliOptions, name string) error {
 	if err != nil {
 		return err
 	}
+	activeAgents, inactiveAgents := agentSelection(opts, cfg)
 	outcome := (workbench.Module{Config: cfg, IndexPath: paths.IndexPath, QuarantineDir: paths.QuarantineDir}).Execute(workbench.Request{
 		Kind:            workbench.Restore,
 		Authorized:      true,
 		Snapshot:        snapshot,
 		RestoreName:     name,
 		DestinationRoot: destRoot,
-		RootOwnerships:  inventory.RootOwnershipForAgents(opts.activeAgents, opts.inactiveAgents),
+		RootOwnerships:  inventory.RootOwnershipForAgents(activeAgents, inactiveAgents),
 	})
 	if err := outcome.Err(); err != nil {
 		return err
