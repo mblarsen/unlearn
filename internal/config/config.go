@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/BurntSushi/toml"
+	"github.com/mblarsen/unlearn/internal/review"
 )
 
 type Config struct {
@@ -23,6 +24,7 @@ type Config struct {
 	Keep           DecisionList         `toml:"keep"`
 	IgnoreFindings map[string]string    `toml:"ignore_findings"`
 	DropCandidates DecisionList         `toml:"drop_candidates"`
+	GuidedReview   review.State         `toml:"guided_review"`
 }
 
 type RootTrust struct {

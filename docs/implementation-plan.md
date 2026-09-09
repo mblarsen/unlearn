@@ -277,6 +277,21 @@ Interactive QA extended the original dashboard interaction plan. The implemented
 
 Relevant commits: `0d8c029`, `b291529`, `99099c6`, `b9b9eff`, `0054000`, `f62bb1a`, `424c699`, `8058fc6`, `fd055a6`, `7ac6b68`.
 
+## Feature — guided maintenance review
+
+- [x] Build deterministic review items from duplicate, conflict, and opted-in unseen findings.
+- [x] Show one exact install with evidence and consequences at a time.
+- [x] Persist the active scope and keep, quarantine, or revisit decisions in TOML.
+- [x] Resume an incomplete scope and return deferred items in a new review.
+- [x] Reuse the workbench write gate, exact-target confirmation, quarantine, and SQLite reconciliation.
+- [x] Distinguish scoped completion from a clean global inventory.
+- [x] Cover empty, restart, missing, cancel, partial outcome, Unicode path, and supported viewport states.
+- [x] Keep long evidence, consequences, and paths reachable through scrolling, including with active feedback.
+- [x] Preserve feedback details, dismissal, and terminal interrupt controls in review mode.
+- [x] Keep failed TOML decisions retryable without changing saved or running logical state.
+
+See `docs/guided-maintenance-review-plan.md` for the decision record and review semantics.
+
 ## QA fix — persistent feedback and action discovery
 
 - [x] Show bounded status and error summaries with recovery, explicit dismissal, and a scrollable complete-details view.

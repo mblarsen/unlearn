@@ -3,6 +3,8 @@ package config
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/mblarsen/unlearn/internal/review"
 )
 
 func TestConfigDecisionHelpers(t *testing.T) {
@@ -35,6 +37,10 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	cfg.AllowWrite("/tmp/skills")
 	cfg.Keep.Skills = []string{"keep-me"}
 	cfg.IgnoreFindings = map[string]string{"overlap:a:b": "known"}
+	cfg.GuidedReview = review.State{
+		Scope:     []review.ScopeItem{{ID: "item-1", FindingID: "unseen:alpha", SkillName: "alpha", InstallPath: "/tmp/skills/alpha"}},
+		Decisions: []review.Decision{{ItemID: "item-1", Action: review.ActionRevisit}},
+	}
 	if err := cfg.Save(path); err != nil {
 		t.Fatal(err)
 	}
@@ -56,5 +62,8 @@ func TestConfigTrustAndWriteRoundTrip(t *testing.T) {
 	}
 	if loaded.IgnoreFindings["overlap:a:b"] != "known" {
 		t.Fatalf("ignore decisions did not round-trip: %#v", loaded.IgnoreFindings)
+	}
+	if len(loaded.GuidedReview.Scope) != 1 || len(loaded.GuidedReview.Decisions) != 1 || loaded.GuidedReview.Decisions[0].Action != review.ActionRevisit {
+		t.Fatalf("guided review did not round-trip: %#v", loaded.GuidedReview)
 	}
 }

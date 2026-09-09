@@ -164,6 +164,24 @@ func splitAtWidth(value string, width int) (string, string) {
 }
 
 func (m Model) renderHelp(theme ui.Theme, width int) []string {
+	if m.Mode == ViewGuidedReview {
+		lines := []string{
+			theme.Badge.Render("GUIDED REVIEW HELP"),
+			"",
+			theme.Section.Render("One decision at a time"),
+			theme.Key.Render("↓/j") + " scroll down  " + theme.Key.Render("↑") + " scroll up  " + theme.Key.Render("PgUp/PgDn") + " page",
+			theme.Key.Render("k") + " keep the logical skill name",
+			theme.Key.Render("q") + " quarantine this exact install after confirmation",
+			theme.Key.Render("l") + " revisit in a later review",
+			theme.Key.Render("esc") + " save progress and return to findings",
+			"",
+			theme.Muted.Render("A completed scope does not mean the global inventory is clean."),
+		}
+		for i, line := range lines {
+			lines[i] = ui.Truncate(line, width)
+		}
+		return lines
+	}
 	title := "FINDINGS HELP"
 	viewKey := "s"
 	viewLabel := "skills"
@@ -194,7 +212,8 @@ func (m Model) renderHelp(theme ui.Theme, width int) []string {
 	lines = append(lines,
 		"",
 		theme.Section.Render("Other"),
-		theme.Key.Render("d")+" discover by task  "+theme.Key.Render("m")+" draft merge  "+theme.Key.Render("q")+" quit",
+		theme.Key.Render("d")+" discover by task  "+theme.Key.Render("v")+" guided review",
+		theme.Key.Render("m")+" draft merge  "+theme.Key.Render("q")+" quit",
 		"",
 		theme.Muted.Render("Press esc or ? to close help."),
 	)
