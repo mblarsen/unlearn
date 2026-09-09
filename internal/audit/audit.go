@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -100,6 +101,30 @@ type cacheMetadata struct {
 	EvidenceCoverage EvidenceCoverage `json:"evidence_coverage"`
 	SkippedRoots     []string         `json:"skipped_roots,omitempty"`
 	Diagnostics      []Diagnostic     `json:"diagnostics,omitempty"`
+	Provenance       cacheProvenance  `json:"provenance"`
+}
+
+type cacheProvenance struct {
+	Roots          []string `json:"roots,omitempty"`
+	TrustedRoots   []string `json:"trusted_roots,omitempty"`
+	ActiveAgents   []string `json:"active_agents,omitempty"`
+	InactiveAgents []string `json:"inactive_agents,omitempty"`
+	HistoryScan    bool     `json:"history_scan"`
+	HistoryJSONL   []string `json:"history_jsonl,omitempty"`
+	HistorySQLite  []string `json:"history_sqlite,omitempty"`
+	ExplicitJSONL  []string `json:"explicit_jsonl,omitempty"`
+	ExplicitSQLite []string `json:"explicit_sqlite,omitempty"`
+	LLMAssisted    bool     `json:"llm_assisted"`
+	LLMProvider    string   `json:"llm_provider,omitempty"`
+	LLMModel       string   `json:"llm_model,omitempty"`
+}
+
+type selection struct {
+	trustedRoots   []string
+	skippedRoots   []string
+	activeAgents   []string
+	inactiveAgents []string
+	provenance     cacheProvenance
 }
 
 // Run executes one audit according to policy.
@@ -113,39 +138,30 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 	if err := policy.Paths.Ensure(); err != nil {
 		return Result{}, err
 	}
-	if policy.SnapshotCache == SnapshotCachePrefer {
-		if result, ok, err := loadSnapshotCache(policy); err != nil {
+	selection := resolveSelection(policy)
+	if policy.SnapshotCache == SnapshotCachePrefer && !policy.RescanSources {
+		if result, ok, err := loadSnapshotCache(ctx, policy, selection.provenance); err != nil {
 			return Result{}, err
 		} else if ok {
 			return result, nil
 		}
 	}
 
-	activeAgents, inactiveAgents := setupflow.SelectAgentIDs(policy.ActiveAgents, policy.InactiveAgents, policy.Config, inventory.AgentStatuses())
-	roots := append([]string(nil), policy.Roots...)
-	if len(roots) == 0 {
-		roots = inventory.RootsForAgents(append(activeAgents, inactiveAgents...))
-		if len(roots) == 0 {
-			roots = inventory.KnownGlobalRoots()
-		}
+	report(policy.Progress, Progress{Step: "scan-roots", Detail: fmt.Sprintf("%d trusted root(s), %d skipped", len(selection.trustedRoots), len(selection.skippedRoots))})
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
 	}
-	var scanRoots, skipped []string
-	for _, root := range roots {
-		if policy.Config.IsTrusted(root) {
-			scanRoots = append(scanRoots, root)
-		} else {
-			skipped = append(skipped, root)
-		}
-	}
-	report(policy.Progress, Progress{Step: "scan-roots", Detail: fmt.Sprintf("%d trusted root(s), %d skipped", len(scanRoots), len(skipped))})
-	scan, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots, RootOwnerships: inventory.RootOwnershipForAgents(activeAgents, inactiveAgents)})
+	scan, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: selection.trustedRoots, RootOwnerships: inventory.RootOwnershipForAgents(selection.activeAgents, selection.inactiveAgents)})
 	if err != nil {
 		return Result{}, err
 	}
 	report(policy.Progress, Progress{Step: "scan-roots", Detail: fmt.Sprintf("%d skill install(s)", len(scan.Skills)), Done: true})
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 
 	usageResult, err := usage.Load(usage.Options{
-		Config: policy.Config, Paths: policy.Paths, Skills: scan.Skills, TrustedRoots: scanRoots,
+		Config: policy.Config, Paths: policy.Paths, Skills: scan.Skills, TrustedRoots: selection.trustedRoots,
 		HistoryJSONL: policy.HistoryJSONL, HistorySQLite: policy.HistorySQLite,
 		HistoryCacheTTL: policy.HistoryCacheTTL, RescanSources: policy.RescanSources,
 		Context: ctx, HistoryProgress: policy.HistoryProgress,
@@ -156,13 +172,16 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 
 	coverage := evidenceCoverage(usageResult)
 	skills := usageResult.Skills
 	if skills == nil {
 		skills = scan.Skills
 	}
-	result := Result{Skills: skills, SkippedRoots: skipped, EvidenceCoverage: coverage}
+	result := Result{Skills: skills, SkippedRoots: selection.skippedRoots, EvidenceCoverage: coverage}
 	for _, path := range usageResult.MissingSources {
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{
 			Code: DiagnosticMissingHistorySource, Path: path,
@@ -171,6 +190,9 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 	}
 
 	report(policy.Progress, Progress{Step: "analysis", Detail: "duplicates, conflicts, keywords, safety findings"})
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	analysisOptions := analysis.Options{UsageEvidence: eligibleUsageEvidence(coverage, usageResult.Evidence), Progress: func(event analysis.ProgressEvent) {
 		report(policy.Progress, Progress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
 	}}
@@ -184,6 +206,9 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 		}
 	}
 	findings, analysisErr := analysis.AnalyzeWithLLM(ctx, skills, analysisOptions)
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 	if analysisErr != nil {
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{Code: DiagnosticLLMFallback, Message: fmt.Sprintf("LLM analysis did not complete; continuing with available findings. Details: %v", analysisErr)})
 		if len(findings) == 0 {
@@ -195,13 +220,56 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 	}
 	result.Findings = findings
 	report(policy.Progress, Progress{Step: "analysis", Detail: fmt.Sprintf("%d finding(s)", len(findings)), Done: true})
+	if err := ctx.Err(); err != nil {
+		return Result{}, err
+	}
 
 	if policy.SnapshotCache == SnapshotCachePrefer || policy.SnapshotCache == SnapshotCacheRefresh {
-		if err := saveSnapshotCache(policy.Paths.IndexPath, result); err != nil {
+		if err := saveSnapshotCache(ctx, policy.Paths.IndexPath, result, selection.provenance); err != nil {
 			return Result{}, err
 		}
 	}
 	return result, nil
+}
+
+func resolveSelection(policy Policy) selection {
+	activeAgents, inactiveAgents := setupflow.SelectAgentIDs(policy.ActiveAgents, policy.InactiveAgents, policy.Config, inventory.AgentStatuses())
+	roots := append([]string(nil), policy.Roots...)
+	if len(roots) == 0 {
+		roots = inventory.RootsForAgents(append(activeAgents, inactiveAgents...))
+		if len(roots) == 0 {
+			roots = inventory.KnownGlobalRoots()
+		}
+	}
+	selected := selection{activeAgents: activeAgents, inactiveAgents: inactiveAgents}
+	for _, root := range roots {
+		if policy.Config.IsTrusted(root) {
+			selected.trustedRoots = append(selected.trustedRoots, root)
+		} else {
+			selected.skippedRoots = append(selected.skippedRoots, root)
+		}
+	}
+	provider, model := analyzerIdentity(policy)
+	selected.provenance = cacheProvenance{
+		Roots: roots, TrustedRoots: selected.trustedRoots, ActiveAgents: activeAgents, InactiveAgents: inactiveAgents,
+		HistoryScan: policy.Config.HistoryScan, HistoryJSONL: policy.Config.HistoryJSONL, HistorySQLite: policy.Config.HistorySQLite,
+		ExplicitJSONL: policy.HistoryJSONL, ExplicitSQLite: policy.HistorySQLite,
+		LLMAssisted: policy.Config.LLMAssisted, LLMProvider: provider, LLMModel: model,
+	}
+	return selected
+}
+
+func analyzerIdentity(policy Policy) (string, string) {
+	if !policy.Config.LLMAssisted {
+		return "", ""
+	}
+	if policy.LLMAnalyzer == nil {
+		return "unavailable", "unavailable"
+	}
+	if identified, ok := policy.LLMAnalyzer.(llm.ProviderModel); ok {
+		return identified.ProviderName(), identified.ModelName()
+	}
+	return fmt.Sprintf("%T", policy.LLMAnalyzer), "unknown"
 }
 
 func evidenceCoverage(result usage.Result) EvidenceCoverage {
@@ -221,19 +289,25 @@ func eligibleUsageEvidence(coverage EvidenceCoverage, evidence analysis.UsageEvi
 	return evidence
 }
 
-func loadSnapshotCache(policy Policy) (Result, bool, error) {
+func loadSnapshotCache(ctx context.Context, policy Policy, provenance cacheProvenance) (Result, bool, error) {
 	db, err := state.OpenIndex(policy.Paths.IndexPath)
 	if err != nil {
 		return Result{}, false, err
 	}
 	defer db.Close()
 	report(policy.Progress, Progress{Step: "load-cache", Detail: "local dashboard index"})
+	if err := ctx.Err(); err != nil {
+		return Result{}, false, err
+	}
 	metadata, err := loadCacheMetadata(db)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Result{}, false, nil
 		}
 		return Result{}, false, err
+	}
+	if !reflect.DeepEqual(metadata.Provenance, provenance) {
+		return Result{}, false, nil
 	}
 	skills, findings, err := state.LoadInventoryCache(db)
 	if err != nil {
@@ -259,10 +333,16 @@ func loadSnapshotCache(policy Policy) (Result, bool, error) {
 		detail += fmt.Sprintf("; removed %d stale installs", len(missing))
 	}
 	report(policy.Progress, Progress{Step: "load-cache", Detail: detail, Done: true})
+	if err := ctx.Err(); err != nil {
+		return Result{}, false, err
+	}
 	return Result{Skills: skills, Findings: findings, SkippedRoots: metadata.SkippedRoots, EvidenceCoverage: metadata.EvidenceCoverage, Diagnostics: metadata.Diagnostics, FromSnapshotCache: true}, true, nil
 }
 
-func saveSnapshotCache(indexPath string, result Result) error {
+func saveSnapshotCache(ctx context.Context, indexPath string, result Result, provenance cacheProvenance) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	db, err := state.OpenIndex(indexPath)
 	if err != nil {
 		return err
@@ -271,7 +351,10 @@ func saveSnapshotCache(indexPath string, result Result) error {
 	if err := state.ReplaceIndex(db, result.Skills, result.Findings); err != nil {
 		return err
 	}
-	return saveCacheMetadata(db, cacheMetadata{EvidenceCoverage: result.EvidenceCoverage, SkippedRoots: result.SkippedRoots, Diagnostics: result.Diagnostics})
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return saveCacheMetadata(db, cacheMetadata{EvidenceCoverage: result.EvidenceCoverage, SkippedRoots: result.SkippedRoots, Diagnostics: result.Diagnostics, Provenance: provenance})
 }
 
 func loadCacheMetadata(db *sql.DB) (cacheMetadata, error) {

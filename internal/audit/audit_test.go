@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -99,6 +100,61 @@ func TestRunUsesRealSQLiteSnapshotCache(t *testing.T) {
 	}
 	if len(third.Skills) != 2 || third.FromSnapshotCache {
 		t.Fatalf("refresh did not rescan: %#v", third)
+	}
+}
+
+func TestRunPreferCacheHonorsChangedEvidencePolicyAndForcedRescan(t *testing.T) {
+	for _, forceRescan := range []bool{false, true} {
+		t.Run(fmt.Sprintf("force-rescan=%t", forceRescan), func(t *testing.T) {
+			root := t.TempDir()
+			writeSkill(t, root, "alpha", "alpha body")
+			historyPath := filepath.Join(t.TempDir(), "session.jsonl")
+			if err := os.WriteFile(historyPath, []byte(`{"message":"use alpha"}`+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg := trustedConfig(root)
+			cfg.HistoryScan = true
+			cfg.HistoryJSONL = []string{historyPath}
+			policy := Policy{Config: cfg, Paths: testPaths(t), Roots: []string{root}, SnapshotCache: SnapshotCacheRefresh}
+			first, err := Run(context.Background(), policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if first.EvidenceCoverage != EvidenceComplete {
+				t.Fatalf("initial coverage=%q", first.EvidenceCoverage)
+			}
+
+			policy.Config.HistoryScan = false
+			policy.Config.HistoryJSONL = nil
+			policy.RescanSources = forceRescan
+			policy.SnapshotCache = SnapshotCachePrefer
+			second, err := Run(context.Background(), policy)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if second.FromSnapshotCache || second.EvidenceCoverage != EvidenceUnknown {
+				t.Fatalf("revoked history policy reused cache: %#v", second)
+			}
+		})
+	}
+}
+
+func TestRunPreferCacheHonorsRevokedTrust(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "alpha", "alpha body")
+	paths := testPaths(t)
+	policy := Policy{Config: trustedConfig(root), Paths: paths, Roots: []string{root}, SnapshotCache: SnapshotCacheRefresh}
+	if _, err := Run(context.Background(), policy); err != nil {
+		t.Fatal(err)
+	}
+	delete(policy.Config.Roots, root)
+	policy.SnapshotCache = SnapshotCachePrefer
+	result, err := Run(context.Background(), policy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FromSnapshotCache || len(result.Skills) != 0 || len(result.SkippedRoots) != 1 {
+		t.Fatalf("revoked trust reused cache: %#v", result)
 	}
 }
 
@@ -203,6 +259,27 @@ func TestRunInjectsAndCachesExternalLLMWhileFallingBackDeterministically(t *test
 	}
 	if !hasDiagnostic(result.Diagnostics, DiagnosticLLMFallback) {
 		t.Fatalf("missing fallback diagnostic: %#v", result.Diagnostics)
+	}
+}
+
+func TestRunCancellationAtAnalysisSeamDoesNotPersistSnapshot(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, root, "alpha", "alpha body")
+	paths := testPaths(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	_, err := Run(ctx, Policy{
+		Config: trustedConfig(root), Paths: paths, Roots: []string{root}, SnapshotCache: SnapshotCacheRefresh,
+		Progress: func(event Progress) {
+			if event.Step == "analysis" && !event.Done {
+				cancel()
+			}
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v", err)
+	}
+	if _, err := os.Stat(paths.IndexPath); !os.IsNotExist(err) {
+		t.Fatalf("canceled audit persisted snapshot: %v", err)
 	}
 }
 
