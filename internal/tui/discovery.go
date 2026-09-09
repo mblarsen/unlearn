@@ -38,6 +38,8 @@ func (m Model) updateDiscovery(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if len(runes) > 0 {
 				m.Discovery.Query = string(runes[:len(runes)-1])
 			}
+		case tea.KeySpace:
+			m.Discovery.Query += " "
 		case tea.KeyRunes:
 			m.Discovery.Query += string(msg.Runes)
 		}
@@ -63,7 +65,8 @@ func (m Model) updateDiscovery(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case StateDiscoveryInspect:
 		match := m.selectedDiscoveryMatch()
-		maxScroll := max(0, len(m.discoveryInspectLines(ui.DefaultTheme(), match, max(20, m.Width-24)))-6)
+		contentWidth, contentHeight := m.discoveryContentDimensions()
+		maxScroll := max(0, len(m.discoveryInspectLines(ui.DefaultTheme(), match, contentWidth))-contentHeight)
 		switch msg.String() {
 		case "esc", "q":
 			m.State = StateDiscoveryResults
@@ -115,7 +118,11 @@ func (m Model) renderDiscovery(theme ui.Theme, width, height int) []string {
 
 func (m Model) renderDiscoveryResults(theme ui.Theme, width, height int) []string {
 	result := m.Discovery.Result
-	lines := []string{theme.Badge.Render("DISCOVERY RESULTS"), theme.Muted.Render(ui.Truncate("Task: "+result.Query, width)), ""}
+	lines := []string{theme.Badge.Render("DISCOVERY RESULTS")}
+	for _, line := range wrapPreservingText("Task: "+result.Query, width) {
+		lines = append(lines, theme.Muted.Render(line))
+	}
+	lines = append(lines, "")
 	if len(result.Matches) == 0 {
 		lines = append(lines, theme.Section.Render(result.Message), "", theme.Muted.Render("Press e to edit the task or esc to return to the dashboard."))
 		return truncateLines(lines, width)
@@ -159,24 +166,26 @@ func (m Model) renderDiscoveryInspect(theme ui.Theme, width, height int) []strin
 }
 
 func (m Model) discoveryInspectLines(theme ui.Theme, match discovery.Match, width int) []string {
-	lines := []string{theme.Badge.Render("SKILL MATCH"), theme.Accent.Render(match.Name), ""}
+	lines := []string{theme.Badge.Render("SKILL MATCH")}
+	for _, line := range wrapPreservingText(match.Name, width) {
+		lines = append(lines, theme.Accent.Render(line))
+	}
+	lines = append(lines, "")
 	if match.Description != "" {
 		lines = append(lines, theme.Section.Render("Observed description"))
-		for _, line := range ui.Wrap(match.Description, width) {
-			lines = append(lines, theme.Row.Render(line))
-		}
+		lines = appendWrappedDiscoveryFact(lines, theme.Row, match.Description, width)
 		lines = append(lines, "")
 	}
 	lines = append(lines, theme.Section.Render("Why it matched"))
 	for _, reason := range match.Reasons {
-		lines = append(lines, theme.Row.Render("• "+reason))
+		lines = appendWrappedDiscoveryFact(lines, theme.Row, "• "+reason, width)
 	}
 	if match.Weak {
-		lines = append(lines, theme.Muted.Render("Weak term match: only one distinctive task term matched."))
+		lines = appendWrappedDiscoveryFact(lines, theme.Muted, "Weak term match: only one distinctive task term matched.", width)
 	}
-	lines = append(lines, theme.Muted.Render("Invocation: "+match.Invocation))
+	lines = appendWrappedDiscoveryFact(lines, theme.Muted, "Invocation: "+match.Invocation, width)
 	if len(match.OverlapWith) > 0 {
-		lines = append(lines, theme.Muted.Render("Known overlap in these results: "+strings.Join(match.OverlapWith, ", ")))
+		lines = appendWrappedDiscoveryFact(lines, theme.Muted, "Known overlap in these results: "+strings.Join(match.OverlapWith, ", "), width)
 	}
 	lines = append(lines, "", theme.Section.Render("Exact installs"))
 	for _, install := range match.Installs {
@@ -184,13 +193,26 @@ func (m Model) discoveryInspectLines(theme ui.Theme, match discovery.Match, widt
 		if install.Missing {
 			status = "Missing at scan time"
 		}
-		for _, line := range wrapPreservingText("• "+install.Path, width) {
-			lines = append(lines, theme.Row.Render(line))
-		}
-		lines = append(lines, theme.Muted.Render("  "+status), theme.Muted.Render("  "+installAccess(install)))
+		lines = appendWrappedDiscoveryFact(lines, theme.Row, "• "+install.Path, width)
+		lines = appendWrappedDiscoveryFact(lines, theme.Muted, "  "+status, width)
+		lines = appendWrappedDiscoveryFact(lines, theme.Muted, "  "+installAccess(install), width)
 	}
-	lines = append(lines, "", theme.Muted.Render("A match does not activate a skill or prove that it can complete the task."))
+	lines = append(lines, "")
+	lines = appendWrappedDiscoveryFact(lines, theme.Muted, "A match does not activate a skill or prove that it can complete the task.", width)
 	return lines
+}
+
+func appendWrappedDiscoveryFact(lines []string, style lipgloss.Style, value string, width int) []string {
+	for _, line := range wrapPreservingText(value, width) {
+		lines = append(lines, style.Render(line))
+	}
+	return lines
+}
+
+func (m Model) discoveryContentDimensions() (int, int) {
+	modalWidth := min(max(72, m.Width-16), 112)
+	bodyHeight := max(10, m.Height-3)
+	return max(1, modalWidth-6), max(1, bodyHeight-4)
 }
 
 func installAccess(install discovery.Install) string {

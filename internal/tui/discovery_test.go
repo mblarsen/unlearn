@@ -61,6 +61,28 @@ func TestDashboardDiscoveryQueryResultsInspectAndBack(t *testing.T) {
 	}
 }
 
+func TestDashboardDiscoveryAcceptsRealTerminalSpaceKeys(t *testing.T) {
+	m := New([]inventory.Skill{{Name: "browser-test", Description: "Test browser accessibility", EncounteredPath: "/skills/browser"}}, nil)
+	updated, _ := m.Update(key("d"))
+	m = updated.(Model)
+	for _, msg := range []tea.KeyMsg{
+		{Type: tea.KeyRunes, Runes: []rune("test")},
+		{Type: tea.KeySpace},
+		{Type: tea.KeyRunes, Runes: []rune("browser")},
+	} {
+		updated, _ = m.Update(msg)
+		m = updated.(Model)
+	}
+	if m.Discovery.Query != "test browser" {
+		t.Fatalf("query=%q, want real terminal spaces preserved", m.Discovery.Query)
+	}
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(Model)
+	if len(m.Discovery.Result.Matches) != 1 {
+		t.Fatalf("spaced query did not find skill: %#v", m.Discovery.Result)
+	}
+}
+
 func TestDashboardDiscoveryShowsWeakAndNoMatchStates(t *testing.T) {
 	m := New([]inventory.Skill{{Name: "notes", Description: "Create local notes"}}, nil)
 	m.Width, m.Height = 80, 24
@@ -88,12 +110,18 @@ func TestDashboardDiscoveryShowsWeakAndNoMatchStates(t *testing.T) {
 
 func TestDashboardDiscoveryKeepsLongResultsAndInstallPathsReachable(t *testing.T) {
 	var skills []inventory.Skill
+	longAgent := "agent-" + strings.Repeat("long-segment-", 12) + "tail"
 	for i := 0; i < 25; i++ {
-		skills = append(skills, inventory.Skill{
+		skill := inventory.Skill{
 			Name:            fmt.Sprintf("browser-helper-%02d", i),
 			Description:     "Test browser accessibility",
 			EncounteredPath: fmt.Sprintf("/tmp/root/%s/final-skill-%02d", strings.Repeat("long-segment/", 12), i),
-		})
+		}
+		if i == 24 {
+			skill.RootKnown = true
+			skill.ActiveAgents = []string{longAgent}
+		}
+		skills = append(skills, skill)
 	}
 	m := New(skills, nil)
 	m.Width, m.Height = 80, 18
@@ -112,16 +140,18 @@ func TestDashboardDiscoveryKeepsLongResultsAndInstallPathsReachable(t *testing.T
 	}
 	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m = updated.(Model)
-	seenEnd := false
+	seenPathEnd := false
+	seenAgentEnd := false
 	for range 80 {
 		view := m.View()
 		assertViewportBounds(t, view, 80, 18)
-		seenEnd = seenEnd || strings.Contains(view, "final-skill-24")
+		seenPathEnd = seenPathEnd || strings.Contains(view, "final-skill-24")
+		seenAgentEnd = seenAgentEnd || strings.Contains(view, "tail")
 		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
 		m = updated.(Model)
 	}
-	if !seenEnd {
-		t.Fatalf("exact install path end is not reachable:\n%s", m.View())
+	if !seenPathEnd || !seenAgentEnd {
+		t.Fatalf("variable fact tails are not reachable (path=%t agent=%t):\n%s", seenPathEnd, seenAgentEnd, m.View())
 	}
 }
 
