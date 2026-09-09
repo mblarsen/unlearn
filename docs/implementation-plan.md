@@ -243,6 +243,15 @@ Interactive QA extended the original dashboard interaction plan. The implemented
 - [x] Wrap selected install paths and provenance, with Page Up/Page Down access when a selected path exceeds the picker viewport.
 - [x] Cover 80×24, 120×40, 200×60, narrow, short, long-list, and long-path renders with fixture-only tests.
 
+## Feature — inspectable skill story
+
+- [x] Add a read-only story module for exact install locations, ownership, source evidence, and explicit unknown history.
+- [x] Compare local installed copies by metadata, body, support references, and effective content.
+- [x] Pass opt-in history coverage into the dashboard without changing existing constructor defaults.
+- [x] Present derived usage at skill-name level without attributing it to one installed copy.
+- [x] Add a scrollable skill-inventory story flow with Enter, help, back, and supported viewport coverage.
+- [x] Document provenance, baseline, timestamp, and usage limits.
+
 ## Architecture refactor — deep picker module
 
 - [x] Move cursor navigation, marked selection, selected-row scrolling, resize, and bounded rendering behind one picker interface.

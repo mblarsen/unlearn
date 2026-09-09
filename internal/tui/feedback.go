@@ -178,11 +178,16 @@ func (m Model) renderHelp(theme ui.Theme, width int) []string {
 		theme.Section.Render("Navigation"),
 		theme.Key.Render("↑↓/jk") + " move  " + theme.Key.Render("tab/shift+tab") + " cycle install",
 		theme.Key.Render(viewKey) + " " + viewLabel + "  " + theme.Key.Render("r") + " density",
+	}
+	if m.Mode == ViewSkills {
+		lines = append(lines, theme.Key.Render("enter")+" open skill story")
+	}
+	lines = append(lines,
 		"",
 		theme.Section.Render("Cleanup"),
-		theme.Key.Render("ctrl+q") + " quarantine  " + theme.Key.Render("ctrl+d") + " delete  " + theme.Key.Render("ctrl+r") + " rename",
-		theme.Key.Render("ctrl+k") + " keep  " + theme.Key.Render("ctrl+u") + " restore  " + theme.Key.Render("ctrl+b") + " batch duplicates",
-	}
+		theme.Key.Render("ctrl+q")+" quarantine  "+theme.Key.Render("ctrl+d")+" delete  "+theme.Key.Render("ctrl+r")+" rename",
+		theme.Key.Render("ctrl+k")+" keep  "+theme.Key.Render("ctrl+u")+" restore  "+theme.Key.Render("ctrl+b")+" batch duplicates",
+	)
 	if m.Mode == ViewFindings {
 		lines = append(lines, theme.Key.Render("ctrl+g")+" ignore finding")
 	}

@@ -44,6 +44,7 @@ Known default global roots are derived from the active agent harnesses selected 
   - unseen skills
   - broken symlinks/references
 - Skill inventory view with logical skills consolidated across installs.
+- Per-skill story with exact install locations, source clues, copy differences, and opt-in derived usage evidence.
 - `SKILL.md` frontmatter/body parsing.
 - Standalone markdown skill support.
 - Symlink-aware inventory.
@@ -176,6 +177,7 @@ j/k or arrows    move
 s                skill inventory
 f                findings
 r                compact/rich density
+enter            open the selected skill story in the skill inventory
 tab              next focused install
 shift+tab        previous focused install
 q                quit
@@ -194,6 +196,14 @@ ctrl+b           batch duplicate cleanup by root
 ```
 
 `ctrl+g` is used for ignore because many terminals report `ctrl+i` as Tab.
+
+### Skill story evidence limits
+
+The skill story compares local installed copies. It does not fetch an upstream copy.
+
+The story labels the original source, install date, and modification status as unknown when no verified evidence exists. Filesystem timestamps do not become install dates.
+
+History scanning remains opt-in. Derived usage evidence applies to a skill name, not one installed copy. “Not observed” means that configured history sources had no matching evidence. It does not mean that the skill was never used.
 
 ## Development
 

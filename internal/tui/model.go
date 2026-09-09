@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
+	"github.com/mblarsen/unlearn/internal/audit"
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 	"github.com/mblarsen/unlearn/internal/llm"
@@ -47,6 +48,7 @@ const (
 	StateSelectDraftSkills
 	StateGeneratingDraft
 	StatePreviewDraft
+	StateSkillStory
 	StateHelp
 	StateFeedback
 )
@@ -62,16 +64,18 @@ const (
 )
 
 type Model struct {
-	Skills       []inventory.Skill
-	SkillGroups  []skillGroup
-	Findings     []analysis.Finding
-	Actions      ActionService
-	Mode         ViewMode
-	Density      Density
-	Cursor       int
-	DetailCursor int
-	Width        int
-	Height       int
+	Skills           []inventory.Skill
+	SkillGroups      []skillGroup
+	Findings         []analysis.Finding
+	Actions          ActionService
+	Mode             ViewMode
+	Density          Density
+	Cursor           int
+	DetailCursor     int
+	StoryScroll      int
+	EvidenceCoverage audit.EvidenceCoverage
+	Width            int
+	Height           int
 
 	State            InteractionState
 	PendingAction    PendingAction
@@ -107,14 +111,18 @@ type draftSkillChoice struct {
 }
 
 func New(skills []inventory.Skill, findings []analysis.Finding) Model {
-	return NewWithActions(skills, findings, NoopActionService{})
+	return NewWithActionsAndCoverage(skills, findings, NoopActionService{}, audit.EvidenceUnknown)
 }
 
 func NewWithActions(skills []inventory.Skill, findings []analysis.Finding, service ActionService) Model {
+	return NewWithActionsAndCoverage(skills, findings, service, audit.EvidenceUnknown)
+}
+
+func NewWithActionsAndCoverage(skills []inventory.Skill, findings []analysis.Finding, service ActionService, coverage audit.EvidenceCoverage) Model {
 	if service == nil {
 		service = NoopActionService{}
 	}
-	return Model{Skills: skills, SkillGroups: groupedSkills(skills), Findings: findings, Actions: service, Mode: ViewFindings, Density: DensityCompact}
+	return Model{Skills: skills, SkillGroups: groupedSkills(skills), Findings: findings, Actions: service, EvidenceCoverage: coverage, Mode: ViewFindings, Density: DensityCompact}
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -124,6 +132,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.Width = msg.Width
 		m.Height = msg.Height
+		if m.State == StateSkillStory {
+			maxScroll, _ := m.skillStoryScrollMetrics()
+			m.StoryScroll = min(m.StoryScroll, maxScroll)
+		}
 	case tea.KeyMsg:
 		if m.State != StateNormal {
 			return m.updateInteraction(msg)
@@ -154,6 +166,9 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.Status != "" {
 			m.FeedbackScroll = 0
 			m.State = StateFeedback
+		} else if m.Mode == ViewSkills && m.Cursor >= 0 && m.Cursor < len(m.SkillGroups) {
+			m.StoryScroll = 0
+			m.State = StateSkillStory
 		}
 	case "j", "down":
 		if m.Cursor < m.itemCount()-1 {
@@ -231,6 +246,8 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDraftGeneration(msg)
 	case StatePreviewDraft:
 		return m.updateDraftPreview(msg)
+	case StateSkillStory:
+		return m.updateSkillStory(msg)
 	case StateHelp:
 		return m.updateHelp(msg)
 	case StateFeedback:
@@ -1084,6 +1101,9 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 }
 
 func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
+	if m.State == StateSkillStory {
+		return m.renderSkillStory(theme, width, height)
+	}
 	if m.State == StateHelp {
 		return m.renderHelp(theme, width)
 	}
@@ -1432,6 +1452,8 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"esc", "cancel"}}
 		case StatePreviewDraft:
 			return []keyPart{{"↑↓/jk", "scroll"}, {"esc", "close"}}
+		case StateSkillStory:
+			return []keyPart{{"↑↓/jk", "scroll"}, {"pgup/pgdown", "page"}, {"esc", "back"}}
 		case StateInputRename:
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		case StateHelp:
@@ -1449,6 +1471,8 @@ func (m Model) keyParts() []keyPart {
 	parts = append(parts, keyPart{"ctrl+q", "quarantine"}, keyPart{"ctrl+d", "delete"}, keyPart{"ctrl+k", "keep"})
 	if m.Mode == ViewFindings {
 		parts = append(parts, keyPart{"ctrl+g", "ignore"})
+	} else {
+		parts = append(parts, keyPart{"enter", "story"})
 	}
 	parts = append(parts, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"m", "draft merge"})
 	return parts

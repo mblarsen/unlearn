@@ -67,7 +67,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			if err := runFirstLaunchSetup(out, opts); err != nil {
 				return err
 			}
-			skills, findings, err := runLoadingInventory(out, opts)
+			skills, findings, coverage, err := runLoadingInventory(out, opts)
 			if err != nil {
 				return err
 			}
@@ -81,7 +81,7 @@ func newRootCmd(out io.Writer) *cobra.Command {
 				return err
 			}
 			service := &tui.ConfigActionService{ConfigPath: paths.ConfigPath, Config: cfg, IndexPath: paths.IndexPath, QuarantineDir: paths.QuarantineDir, LLMCacheDir: paths.LLMCacheDir, DraftGenerator: tui.NewDraftGeneratorFromEnv(paths.LLMCacheDir)}
-			program := tea.NewProgram(tui.NewWithActions(skills, findings, service), tea.WithOutput(out), tea.WithAltScreen())
+			program := tea.NewProgram(tui.NewWithActionsAndCoverage(skills, findings, service, coverage), tea.WithOutput(out), tea.WithAltScreen())
 			_, err = program.Run()
 			return err
 		},
@@ -236,6 +236,7 @@ func loadMutationSnapshot(indexPath string) (inventorysnapshot.Snapshot, error) 
 type loadingResultMsg struct {
 	skills   []inventory.Skill
 	findings []analysis.Finding
+	coverage audit.EvidenceCoverage
 	err      error
 }
 
@@ -339,7 +340,7 @@ func tuiThemeForLoading() loadingTheme {
 	}
 }
 
-func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []analysis.Finding, error) {
+func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []analysis.Finding, audit.EvidenceCoverage, error) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	updates := make(chan tea.Msg, 16)
@@ -361,22 +362,22 @@ func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []
 			}
 			sendProgress(inventoryProgress{Step: "history", Detail: detail, Done: progress.Done})
 		}}, cachePolicy)
-		updates <- loadingResultMsg{skills: result.Skills, findings: result.Findings, err: err}
+		updates <- loadingResultMsg{skills: result.Skills, findings: result.Findings, coverage: result.EvidenceCoverage, err: err}
 	}()
 	program := tea.NewProgram(newLoadingModel(updates), tea.WithOutput(out), tea.WithAltScreen())
 	finalModel, err := program.Run()
 	stop()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, audit.EvidenceUnknown, err
 	}
 	loading, ok := finalModel.(loadingModel)
 	if !ok {
-		return nil, nil, fmt.Errorf("loading returned unexpected model %T", finalModel)
+		return nil, nil, audit.EvidenceUnknown, fmt.Errorf("loading returned unexpected model %T", finalModel)
 	}
 	if loading.cancelled {
-		return nil, nil, fmt.Errorf("loading cancelled")
+		return nil, nil, audit.EvidenceUnknown, fmt.Errorf("loading cancelled")
 	}
-	return loading.result.skills, loading.result.findings, loading.result.err
+	return loading.result.skills, loading.result.findings, loading.result.coverage, loading.result.err
 }
 
 func loadingProgressDetail(event inventoryProgress) string {
