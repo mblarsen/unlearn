@@ -86,6 +86,7 @@ type Model struct {
 	Status           string
 	StatusError      bool
 	StatusRecovery   string
+	StatusContext    InteractionState
 	FeedbackScroll   int
 	RenamePreview    fsactions.RenamePreview
 	DraftCursor      int
@@ -201,6 +202,10 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() == "x" && m.Status != "" && m.StatusContext == m.State && m.State != StateInputRename {
+		m.dismissStatus()
+		return m, nil
+	}
 	switch m.State {
 	case StateWriteGate:
 		return m.updateWriteGate(msg)
@@ -889,7 +894,8 @@ func (m Model) View() string {
 	keybarHeight := 1
 	feedbackLines := []string(nil)
 	maxFeedbackHeight := min(5, max(0, height-headerHeight-keybarHeight-8))
-	if m.State != StateHelp && m.State != StateFeedback && maxFeedbackHeight > 0 {
+	showFeedback := m.State != StateHelp && m.State != StateFeedback && (m.State == StateNormal || m.StatusContext == m.State)
+	if showFeedback && maxFeedbackHeight > 0 {
 		feedbackLines = m.renderFeedback(theme, width, maxFeedbackHeight)
 	}
 	feedbackHeight := len(feedbackLines)

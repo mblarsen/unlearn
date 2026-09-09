@@ -14,6 +14,7 @@ func (m *Model) setStatus(message string) {
 	m.Status = message
 	m.StatusError = strings.Contains(strings.ToLower(message), "error:")
 	m.StatusRecovery = ""
+	m.StatusContext = m.State
 	m.FeedbackScroll = 0
 	if m.StatusError {
 		m.StatusRecovery = defaultErrorRecovery
@@ -24,6 +25,7 @@ func (m *Model) dismissStatus() {
 	m.Status = ""
 	m.StatusError = false
 	m.StatusRecovery = ""
+	m.StatusContext = StateNormal
 	m.FeedbackScroll = 0
 	if m.State == StateFeedback {
 		m.State = StateNormal
@@ -35,19 +37,27 @@ func (m Model) renderFeedback(theme ui.Theme, width, height int) []string {
 		return nil
 	}
 	lines := m.feedbackContent(theme, max(1, width-4), true)
+	control := m.feedbackControl(false)
 	if len(lines)+1 <= height {
-		return append(lines, theme.Muted.Render("x dismiss"))
+		return append(lines, theme.Muted.Render(control))
 	}
-	control := "x dismiss"
-	if m.State == StateNormal {
-		control = "enter details · x dismiss"
-	}
+	control = m.feedbackControl(true)
 	if height == 1 {
 		return []string{theme.Muted.Render(control)}
 	}
 	lines = lines[:max(0, height-2)]
 	lines = append(lines, theme.Muted.Render("…"), theme.Muted.Render(control))
 	return lines
+}
+
+func (m Model) feedbackControl(truncated bool) string {
+	if m.State == StateInputRename {
+		return "edit the name and press enter"
+	}
+	if m.State == StateNormal && truncated {
+		return "enter details · x dismiss"
+	}
+	return "x dismiss"
 }
 
 func (m Model) feedbackContent(theme ui.Theme, width int, includeLabel bool) []string {

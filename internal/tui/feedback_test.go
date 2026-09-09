@@ -95,6 +95,35 @@ func TestLongMultilineErrorStaysBoundedAndEverySegmentIsReachable(t *testing.T) 
 	}
 }
 
+func TestPriorFeedbackDoesNotOverflowDraftPicker(t *testing.T) {
+	m := New([]inventory.Skill{{Name: "alpha"}, {Name: "beta"}}, nil)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+	updated, _ = m.Update(key("s"))
+	m = updated.(Model)
+	m.setStatus("error: " + strings.Repeat("old failure ", 150))
+
+	updated, _ = m.Update(key("m"))
+	m = updated.(Model)
+	if m.State != StateSelectDraftSkills {
+		t.Fatalf("m should open the draft picker, state=%v", m.State)
+	}
+	assertViewBounds(t, m.View(), 80, 24)
+	if strings.Contains(m.View(), "old failure") {
+		t.Fatalf("prior feedback should wait behind the active picker:\n%s", m.View())
+	}
+
+	m.setStatus("select at least two skills for a merged draft")
+	if !strings.Contains(m.View(), "x dismiss") {
+		t.Fatalf("picker feedback should advertise dismissal:\n%s", m.View())
+	}
+	updated, _ = m.Update(key("x"))
+	m = updated.(Model)
+	if m.State != StateSelectDraftSkills || m.Status != "" {
+		t.Fatalf("x should dismiss picker feedback without closing it, state=%v status=%q", m.State, m.Status)
+	}
+}
+
 func TestActionStatusRemainsVisibleUntilDismissed(t *testing.T) {
 	m := testModel(&fakeActionService{})
 	updated, _ := m.Update(key("ctrl+k"))
