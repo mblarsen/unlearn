@@ -177,6 +177,13 @@ func TestLoadMissingConfiguredSourceUsesCacheUnlessForced(t *testing.T) {
 	if !reflect.DeepEqual(forced.MissingSources, []string{jsonlPath}) {
 		t.Fatalf("forced missing sources=%v", forced.MissingSources)
 	}
+	restarted, err := Load(Options{Config: cfg, Paths: paths, Skills: skills, HistoryCacheTTL: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restarted.Evidence["alpha"] != "strong" || len(restarted.StoppedSources) != 0 || len(restarted.MissingSources) != 1 {
+		t.Fatalf("inactive evidence lost or warning repeated after forced scan: %+v", restarted)
+	}
 }
 
 func TestLoadMissingExplicitSourceStillFails(t *testing.T) {

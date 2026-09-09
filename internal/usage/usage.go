@@ -56,6 +56,8 @@ type Result struct {
 	LastSeen       map[string]time.Time
 	Skills         []inventory.Skill
 	MissingSources []string
+	// StoppedSources contains only newly inactivated sources, for one-time notices.
+	StoppedSources []string
 }
 
 // DiscoverPiJSONL returns likely Pi JSONL history files without reading their
@@ -104,11 +106,14 @@ func Load(opts Options) (Result, error) {
 	total := len(jsonlPaths) + len(sqlitePaths)
 	for index, path := range jsonlPaths {
 		reportProgress(opts.Progress, Progress{Step: "history", Current: index + 1, Total: total, Detail: filepath.Base(path)})
-		evidence, missing, err := evidenceForPath(db, path, names, opts, explicitPaths[path], func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
+		evidence, missing, stopped, err := trackedEvidenceForPath(db, path, names, opts, explicitPaths[path], func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return jsonlAdapter.ScanWithOptions(path, names, scanOpts)
 		})
 		if err != nil {
 			return Result{}, err
+		}
+		if stopped {
+			result.StoppedSources = appendUnique(result.StoppedSources, path)
 		}
 		if missing {
 			result.MissingSources = appendUnique(result.MissingSources, path)
@@ -119,11 +124,14 @@ func Load(opts Options) (Result, error) {
 	sqliteAdapter := history.SQLiteAdapter{}
 	for index, path := range sqlitePaths {
 		reportProgress(opts.Progress, Progress{Step: "history", Current: len(jsonlPaths) + index + 1, Total: total, Detail: filepath.Base(path)})
-		evidence, missing, err := evidenceForPath(db, path, names, opts, explicitPaths[path], func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
+		evidence, missing, stopped, err := trackedEvidenceForPath(db, path, names, opts, explicitPaths[path], func(path string, names []string, scanOpts history.ScanOptions) ([]history.Evidence, error) {
 			return sqliteAdapter.ScanWithOptions(path, names, scanOpts)
 		})
 		if err != nil {
 			return Result{}, err
+		}
+		if stopped {
+			result.StoppedSources = appendUnique(result.StoppedSources, path)
 		}
 		if missing {
 			result.MissingSources = appendUnique(result.MissingSources, path)

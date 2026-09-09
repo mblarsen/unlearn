@@ -95,7 +95,7 @@ type Result struct {
 	FromSnapshotCache bool
 }
 
-const auditCacheMetadataKey = "audit-metadata-v1"
+const auditCacheMetadataKey = "audit-metadata-v2"
 
 type cacheMetadata struct {
 	EvidenceCoverage EvidenceCoverage `json:"evidence_coverage"`
@@ -182,10 +182,10 @@ func Run(ctx context.Context, policy Policy) (Result, error) {
 		skills = scan.Skills
 	}
 	result := Result{Skills: skills, SkippedRoots: selection.skippedRoots, EvidenceCoverage: coverage}
-	for _, path := range usageResult.MissingSources {
+	for _, path := range usageResult.StoppedSources {
 		result.Diagnostics = append(result.Diagnostics, Diagnostic{
 			Code: DiagnosticMissingHistorySource, Path: path,
-			Message: fmt.Sprintf("History source is no longer available; skipped: %s", path),
+			Message: fmt.Sprintf("Stopped tracking missing history source: %s", path),
 		})
 	}
 
@@ -354,7 +354,14 @@ func saveSnapshotCache(ctx context.Context, indexPath string, result Result, pro
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	return saveCacheMetadata(db, cacheMetadata{EvidenceCoverage: result.EvidenceCoverage, SkippedRoots: result.SkippedRoots, Diagnostics: result.Diagnostics, Provenance: provenance})
+	// Lifecycle notices describe a transition, not a persistent cache condition.
+	var diagnostics []Diagnostic
+	for _, diagnostic := range result.Diagnostics {
+		if diagnostic.Code != DiagnosticMissingHistorySource {
+			diagnostics = append(diagnostics, diagnostic)
+		}
+	}
+	return saveCacheMetadata(db, cacheMetadata{EvidenceCoverage: result.EvidenceCoverage, SkippedRoots: result.SkippedRoots, Diagnostics: diagnostics, Provenance: provenance})
 }
 
 func loadCacheMetadata(db *sql.DB) (cacheMetadata, error) {
