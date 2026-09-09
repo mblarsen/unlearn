@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -92,7 +93,7 @@ func (f *fakeActionService) Restore(name string, destRoot string) (string, error
 	f.restored = append(f.restored, name+":"+destRoot)
 	return destRoot + "/" + name, nil
 }
-func (f *fakeActionService) DraftMerge(skills []inventory.Skill) (llm.DraftResult, error) {
+func (f *fakeActionService) DraftMerge(_ context.Context, skills []inventory.Skill) (llm.DraftResult, error) {
 	f.draftSelected = nil
 	for _, skill := range skills {
 		f.draftSelected = append(f.draftSelected, skill.Name)

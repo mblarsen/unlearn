@@ -25,7 +25,7 @@ type ActionService interface {
 	Rename(skill inventory.Skill, newName string) (fsactions.RenamePreview, error)
 	QuarantinedSkills() ([]string, error)
 	Restore(name string, destRoot string) (string, error)
-	DraftMerge(skills []inventory.Skill) (llm.DraftResult, error)
+	DraftMerge(ctx context.Context, skills []inventory.Skill) (llm.DraftResult, error)
 }
 
 type NoopActionService struct{}
@@ -50,16 +50,17 @@ func (NoopActionService) Rename(skill inventory.Skill, newName string) (fsaction
 }
 func (NoopActionService) QuarantinedSkills() ([]string, error)                 { return nil, nil }
 func (NoopActionService) Restore(name string, destRoot string) (string, error) { return "", nil }
-func (NoopActionService) DraftMerge(skills []inventory.Skill) (llm.DraftResult, error) {
+func (NoopActionService) DraftMerge(_ context.Context, skills []inventory.Skill) (llm.DraftResult, error) {
 	return llm.DraftResult{}, fmt.Errorf("LLM merged-draft generation is not configured for this dashboard")
 }
 
 type ConfigActionService struct {
-	ConfigPath    string
-	Config        config.Config
-	IndexPath     string
-	QuarantineDir string
-	LLMCacheDir   string
+	ConfigPath     string
+	Config         config.Config
+	IndexPath      string
+	QuarantineDir  string
+	LLMCacheDir    string
+	DraftGenerator llm.DraftGenerator
 }
 
 func (s *ConfigActionService) KeepSkill(skill inventory.Skill) error {
@@ -135,19 +136,26 @@ func (s *ConfigActionService) Restore(name string, destRoot string) (string, err
 	return mgr.Restore(name, destRoot)
 }
 
-func (s *ConfigActionService) DraftMerge(skills []inventory.Skill) (llm.DraftResult, error) {
+func NewDraftGeneratorFromEnv(cacheDir string) llm.DraftGenerator {
+	analyzer, ok := llm.NewGeminiAnalyzerFromEnv()
+	if !ok {
+		return unavailableDraftGenerator{}
+	}
+	return llm.NewCachedDraftGenerator(cacheDir, analyzer)
+}
+
+func (s *ConfigActionService) DraftMerge(ctx context.Context, skills []inventory.Skill) (llm.DraftResult, error) {
 	if len(skills) < 2 {
 		return llm.DraftResult{}, fmt.Errorf("select at least two skills to draft a merge")
 	}
 	if !s.Config.LLMAssisted {
 		return llm.DraftResult{}, fmt.Errorf("LLM-assisted analysis is off; rerun with --with-llm or enable it in setup to generate preview drafts")
 	}
-	analyzer, ok := llm.NewGeminiAnalyzerFromEnv()
-	if !ok {
-		return llm.DraftResult{}, fmt.Errorf("GEMINI_API_KEY or GOOGLE_API_KEY is required for preview draft generation")
+	generator := s.DraftGenerator
+	if generator == nil {
+		generator = unavailableDraftGenerator{}
 	}
-	generator := llm.NewCachedDraftGenerator(s.LLMCacheDir, analyzer)
-	return generator.GenerateMergedSkillDraft(context.Background(), llm.DraftRequest{Skills: draftSkills(skills), PromptVersion: llm.DraftPromptVersion})
+	return generator.GenerateMergedSkillDraft(ctx, llm.DraftRequest{Skills: draftSkills(skills), PromptVersion: llm.DraftPromptVersion})
 }
 
 func draftSkills(skills []inventory.Skill) []llm.DraftSkill {
