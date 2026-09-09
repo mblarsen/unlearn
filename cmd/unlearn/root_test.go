@@ -16,7 +16,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/config"
-	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/llm"
 	"github.com/mblarsen/unlearn/internal/state"
@@ -36,150 +35,6 @@ func TestLoadingModelShowsProgress(t *testing.T) {
 	}
 	if !strings.Contains(view, "Scan history evidence") || !strings.Contains(view, "500 lines") {
 		t.Fatalf("loading view missing progress details:\n%s", view)
-	}
-}
-
-func TestDashboardInventoryUsesCachedIndex(t *testing.T) {
-	stateDir := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.toml")
-	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	cachedRoot := t.TempDir()
-	cachedPath := filepath.Join(cachedRoot, "cached")
-	if err := os.Mkdir(cachedPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	cachedSkills := []inventory.Skill{{ID: "cached", Name: "cached", Root: cachedRoot, EncounteredPath: cachedPath, Kind: inventory.KindDirectory}}
-	cachedFindings := []analysis.Finding{{ID: "tokens:cached", Type: analysis.FindingHighTokenCost, Severity: 3, Title: "cached", Skills: cachedSkills, Reasons: []string{"cached finding"}}}
-	if err := state.ReplaceIndex(db, cachedSkills, cachedFindings); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	skills, findings, err := loadDashboardInventory(&cliOptions{stateDir: stateDir, configPath: configPath}, inventoryLoadOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(skills) != 1 || skills[0].Name != "cached" || len(findings) != 1 || findings[0].ID != "tokens:cached" {
-		t.Fatalf("dashboard did not load cached inventory: skills=%#v findings=%#v", skills, findings)
-	}
-}
-
-func TestDashboardInventoryPrunesExternallyDeletedCachedInstallAcrossRestart(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	root := filepath.Join(home, ".agents", "skills")
-	skillPath := filepath.Join(root, "stale")
-	writeSkill(t, skillPath, "stale", "cached fixture")
-	stateDir := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.toml")
-	cfg := config.Default()
-	cfg.SetupComplete = true
-	cfg.ActiveAgents = []string{"pi"}
-	cfg.TrustRoot(root)
-	if err := cfg.Save(configPath); err != nil {
-		t.Fatal(err)
-	}
-	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: []string{root}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := state.ReplaceIndex(db, report.Skills, analysis.Analyze(report.Skills, analysis.Options{})); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.RemoveAll(skillPath); err != nil {
-		t.Fatal(err)
-	}
-
-	opts := &cliOptions{stateDir: stateDir, configPath: configPath}
-	for restart := 1; restart <= 2; restart++ {
-		skills, findings, err := loadDashboardInventory(opts, inventoryLoadOptions{})
-		if err != nil {
-			t.Fatalf("restart %d: %v", restart, err)
-		}
-		if len(skills) != 0 || len(findings) != 0 {
-			t.Fatalf("restart %d retained stale cache: skills=%#v findings=%#v", restart, skills, findings)
-		}
-	}
-}
-
-func TestDashboardInventoryRescansAfterEmptyCacheWhenInstallAppears(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	root := filepath.Join(home, ".agents", "skills")
-	stateDir := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.toml")
-	cfg := config.Default()
-	cfg.SetupComplete = true
-	cfg.ActiveAgents = []string{"pi"}
-	cfg.TrustRoot(root)
-	if err := cfg.Save(configPath); err != nil {
-		t.Fatal(err)
-	}
-	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := state.ReplaceIndex(db, nil, nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	writeSkill(t, filepath.Join(root, "new-skill"), "new-skill", "installed outside unlearn")
-
-	skills, _, err := loadDashboardInventory(&cliOptions{stateDir: stateDir, configPath: configPath}, inventoryLoadOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(skills) != 1 || skills[0].Name != "new-skill" {
-		t.Fatalf("dashboard did not rescan after empty cache: %#v", skills)
-	}
-}
-
-func TestDashboardInventoryIgnoresLegacyDuplicateCache(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	stateDir := t.TempDir()
-	configPath := filepath.Join(t.TempDir(), "config.toml")
-	cfg := config.Default()
-	cfg.SetupComplete = true
-	cfg.ActiveAgents = []string{"pi"}
-	cfg.TrustRoot(filepath.Join(home, ".agents", "skills"))
-	cfg.TrustRoot(filepath.Join(home, ".pi", "agent", "skills"))
-	if err := cfg.Save(configPath); err != nil {
-		t.Fatal(err)
-	}
-
-	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	legacyPayload := `{"skills":[{"ID":"cached","Name":"find-skills","Root":"/stale","EncounteredPath":"/stale/find-skills","Kind":"directory"}],"findings":[{"ID":"duplicate:find-skills","Type":"duplicate","Severity":1,"Title":"find-skills","Skills":null,"Reasons":["legacy duplicate"]}]}`
-	if _, err := db.Exec(`INSERT INTO inventory_cache(key, payload, updated_at) VALUES (?, ?, ?)`, "dashboard-inventory-v1", legacyPayload, "2026-05-22T00:00:00Z"); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-
-	skills, findings, err := loadDashboardInventory(&cliOptions{stateDir: stateDir, configPath: configPath}, inventoryLoadOptions{})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(skills) != 0 || len(findings) != 0 {
-		t.Fatalf("dashboard loaded legacy duplicate cache instead of rescanning: skills=%#v findings=%#v", skills, findings)
 	}
 }
 
@@ -308,16 +163,6 @@ func TestResetLLMSummaryBySkillNameScansTrustedRoots(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, contentHash) || !strings.Contains(got, "Removed 1 cached LLM summary") {
 		t.Fatalf("unexpected reset llm-summary output:\n%s", got)
-	}
-}
-
-func TestAttachLLMSummariesSkipsDisabledAnalyzerOutput(t *testing.T) {
-	skills := []inventory.Skill{{Name: "alpha", ContentHash: "hash-a"}}
-	enriched := attachLLMSummaries(skills, map[string]llm.GeneratedSummary{
-		"hash-a": {Name: "alpha", Summary: "deterministic description", Provider: "disabled", Model: "disabled", ContentHash: "hash-a"},
-	})
-	if enriched[0].LLMSummary != "" || enriched[0].LLMProvider != "" || enriched[0].LLMModel != "" {
-		t.Fatalf("disabled summaries should not be attached as LLM output: %#v", enriched[0])
 	}
 }
 
@@ -564,96 +409,6 @@ func TestConfiguredRootSQLiteHistoryIsDiscoveredWhenOptedIn(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "unseen: 1") {
 		t.Fatalf("expected discovered configured-root SQLite evidence:\n%s", got)
-	}
-}
-
-func TestJSONLAndSQLiteHistoryUseSharedHistoryCache(t *testing.T) {
-	root := t.TempDir()
-	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
-	jsonlPath := filepath.Join(t.TempDir(), "session.jsonl")
-	if err := os.WriteFile(jsonlPath, []byte(`{"message":"read skills/alpha/SKILL.md"}`+"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	sqlitePath := filepath.Join(t.TempDir(), "session.db")
-	db, err := sql.Open("sqlite", sqlitePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE sessions (message TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO sessions (message) VALUES ('using alpha')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	stateDir := t.TempDir()
-	opts := &cliOptions{
-		roots:         []string{root},
-		trustRoots:    []string{root},
-		historyJSONL:  []string{jsonlPath},
-		historySQLite: []string{sqlitePath},
-		stateDir:      stateDir,
-		configPath:    filepath.Join(t.TempDir(), "config.toml"),
-	}
-	if _, _, _, err := loadInventoryWithOptions(opts, inventoryLoadOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	cacheDB, err := sql.Open("sqlite", filepath.Join(stateDir, "index.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cacheDB.Close()
-	var sourceCount int
-	if err := cacheDB.QueryRow(`SELECT COUNT(*) FROM history_sources`).Scan(&sourceCount); err != nil {
-		t.Fatal(err)
-	}
-	if sourceCount != 2 {
-		t.Fatalf("history source cache count=%d", sourceCount)
-	}
-	var evidenceCount int
-	if err := cacheDB.QueryRow(`SELECT COUNT(*) FROM history_evidence`).Scan(&evidenceCount); err != nil {
-		t.Fatal(err)
-	}
-	if evidenceCount != 2 {
-		t.Fatalf("history evidence cache count=%d", evidenceCount)
-	}
-}
-
-func TestSQLiteHistoryProgressIsForwardedDuringLoad(t *testing.T) {
-	root := t.TempDir()
-	writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
-	historyPath := filepath.Join(t.TempDir(), "session.db")
-	db, err := sql.Open("sqlite", historyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`CREATE TABLE sessions (message TEXT)`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec(`INSERT INTO sessions (message) VALUES ('use the alpha skill')`); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	opts := &cliOptions{
-		roots:         []string{root},
-		trustRoots:    []string{root},
-		historySQLite: []string{historyPath},
-		stateDir:      t.TempDir(),
-		configPath:    filepath.Join(t.TempDir(), "config.toml"),
-	}
-	var progress []history.ScanProgress
-	_, _, _, err = loadInventoryWithOptions(opts, inventoryLoadOptions{HistoryProgress: func(item history.ScanProgress) {
-		progress = append(progress, item)
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(progress) == 0 || !progress[len(progress)-1].Done || progress[len(progress)-1].Path != historyPath || progress[len(progress)-1].Matches != 1 {
-		t.Fatalf("SQLite history progress was not forwarded: %#v", progress)
 	}
 }
 

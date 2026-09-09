@@ -17,6 +17,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
+	"github.com/mblarsen/unlearn/internal/audit"
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/history"
 	"github.com/mblarsen/unlearn/internal/inventory"
@@ -83,28 +84,28 @@ func newRootCmd(out io.Writer) *cobra.Command {
 	}
 	addSharedFlags(root, opts)
 
-	audit := &cobra.Command{
+	auditCmd := &cobra.Command{
 		Use:   "audit",
 		Short: "Print a concise read-only skill cleanup overview",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			progress := newAuditProgressPrinter(cmd.ErrOrStderr())
-			skills, findings, skipped, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Progress: progress.Update})
+			result, err := runAudit(opts, inventoryLoadOptions{Progress: progress.Update}, audit.SnapshotCacheBypass)
 			if err != nil {
 				return err
 			}
 			if opts.fix {
 				printWarnings(out, opts.warnings)
-				return runFix(out, opts, findings)
+				return runFix(out, opts, result.Findings)
 			}
 			printWarnings(out, opts.warnings)
-			printAudit(out, skills, findings, skipped)
+			printAudit(out, result.Skills, result.Findings, result.SkippedRoots)
 			return nil
 		},
 	}
-	addSharedFlags(audit, opts)
-	audit.Flags().BoolVar(&opts.fix, "fix", false, "preview safe quick fixes and apply only after confirmation")
-	audit.Flags().BoolVarP(&opts.yes, "yes", "y", false, "confirm safe quick fixes for automation")
-	root.AddCommand(audit)
+	addSharedFlags(auditCmd, opts)
+	auditCmd.Flags().BoolVar(&opts.fix, "fix", false, "preview safe quick fixes and apply only after confirmation")
+	auditCmd.Flags().BoolVarP(&opts.yes, "yes", "y", false, "confirm safe quick fixes for automation")
+	root.AddCommand(auditCmd)
 
 	scan := &cobra.Command{
 		Use:   "scan",
@@ -112,33 +113,18 @@ func newRootCmd(out io.Writer) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			skills, findings, skipped, err := loadInventoryWithOptions(opts, inventoryLoadOptions{Context: ctx, HistoryProgress: func(progress history.ScanProgress) {
+			result, err := runAudit(opts, inventoryLoadOptions{Context: ctx, HistoryProgress: func(progress history.ScanProgress) {
 				if progress.Done {
 					fmt.Fprintf(out, "History scanned: %s (%d lines, %d skills with derived evidence)\n", progress.Path, progress.Lines, progress.Matches)
 				}
-			}})
+			}}, audit.SnapshotCacheRefresh)
 			if err != nil {
-				return err
-			}
-			paths, err := pathsFromOptions(opts)
-			if err != nil {
-				return err
-			}
-			if err := paths.Ensure(); err != nil {
-				return err
-			}
-			db, err := state.OpenIndex(paths.IndexPath)
-			if err != nil {
-				return err
-			}
-			defer db.Close()
-			if err := state.ReplaceIndex(db, skills, findings); err != nil {
 				return err
 			}
 			printWarnings(out, opts.warnings)
-			fmt.Fprintf(out, "Indexed %d skills and %d findings.\n", len(skills), len(findings))
-			if len(skipped) > 0 {
-				fmt.Fprintf(out, "Skipped untrusted roots: %s\n", strings.Join(skipped, ", "))
+			fmt.Fprintf(out, "Indexed %d skills and %d findings.\n", len(result.Skills), len(result.Findings))
+			if len(result.SkippedRoots) > 0 {
+				fmt.Fprintf(out, "Skipped untrusted roots: %s\n", strings.Join(result.SkippedRoots, ", "))
 			}
 			return nil
 		},
@@ -332,14 +318,18 @@ func runLoadingInventory(out io.Writer, opts *cliOptions) ([]inventory.Skill, []
 		}
 	}
 	go func() {
-		skills, findings, err := loadDashboardInventory(opts, inventoryLoadOptions{Context: ctx, Progress: sendProgress, HistoryProgress: func(progress history.ScanProgress) {
+		cachePolicy := audit.SnapshotCacheRefresh
+		if canUseDashboardCache(opts) {
+			cachePolicy = audit.SnapshotCachePrefer
+		}
+		result, err := runAudit(opts, inventoryLoadOptions{Context: ctx, Progress: sendProgress, HistoryProgress: func(progress history.ScanProgress) {
 			detail := fmt.Sprintf("%s · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches)
 			if progress.Done {
 				detail = fmt.Sprintf("%s · complete · %d lines · %d matching skills", progress.Path, progress.Lines, progress.Matches)
 			}
 			sendProgress(inventoryProgress{Step: "history", Detail: detail, Done: progress.Done})
-		}})
-		updates <- loadingResultMsg{skills: skills, findings: findings, err: err}
+		}}, cachePolicy)
+		updates <- loadingResultMsg{skills: result.Skills, findings: result.Findings, err: err}
 	}()
 	program := tea.NewProgram(newLoadingModel(updates), tea.WithOutput(out), tea.WithAltScreen())
 	finalModel, err := program.Run()
@@ -369,65 +359,8 @@ func loadingProgressDetail(event inventoryProgress) string {
 	return detail
 }
 
-func loadDashboardInventory(opts *cliOptions, loadOpts inventoryLoadOptions) ([]inventory.Skill, []analysis.Finding, error) {
-	if canUseDashboardCache(opts) {
-		paths, err := pathsFromOptions(opts)
-		if err != nil {
-			return nil, nil, err
-		}
-		if err := paths.Ensure(); err != nil {
-			return nil, nil, err
-		}
-		db, err := state.OpenIndex(paths.IndexPath)
-		if err != nil {
-			return nil, nil, err
-		}
-		defer db.Close()
-		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: "local dashboard index"})
-		skills, findings, err := state.LoadInventoryCache(db)
-		if err == nil && (len(skills) > 0 || len(findings) > 0) {
-			skills, findings, missing := state.ReconcileMissingPaths(skills, findings)
-			if len(missing) > 0 {
-				if err := state.ReplaceIndex(db, skills, findings); err != nil {
-					return nil, nil, err
-				}
-			}
-			detail := fmt.Sprintf("%d skills, %d findings", len(skills), len(findings))
-			if len(missing) > 0 {
-				detail += fmt.Sprintf("; removed %d stale installs", len(missing))
-			}
-			reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "load-cache", Detail: detail, Done: true})
-			return skills, findings, nil
-		}
-	}
-	skills, findings, _, err := loadInventoryWithOptions(opts, loadOpts)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := saveDashboardInventory(opts, skills, findings); err != nil {
-		return nil, nil, err
-	}
-	return skills, findings, nil
-}
-
 func canUseDashboardCache(opts *cliOptions) bool {
 	return !opts.rescanSources && len(opts.roots) == 0 && len(opts.trustRoots) == 0 && len(opts.writeRoots) == 0 && len(opts.historyJSONL) == 0 && len(opts.historySQLite) == 0 && len(opts.activeAgents) == 0 && len(opts.inactiveAgents) == 0 && !opts.withLLM
-}
-
-func saveDashboardInventory(opts *cliOptions, skills []inventory.Skill, findings []analysis.Finding) error {
-	paths, err := pathsFromOptions(opts)
-	if err != nil {
-		return err
-	}
-	if err := paths.Ensure(); err != nil {
-		return err
-	}
-	db, err := state.OpenIndex(paths.IndexPath)
-	if err != nil {
-		return err
-	}
-	defer db.Close()
-	return state.ReplaceIndex(db, skills, findings)
 }
 
 func runFirstLaunchSetup(out io.Writer, opts *cliOptions) error {
@@ -510,174 +443,47 @@ type inventoryLoadOptions struct {
 	Progress        func(inventoryProgress)
 }
 
-func loadInventory(opts *cliOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
-	return loadInventoryWithOptions(opts, inventoryLoadOptions{})
-}
-
-func loadInventoryWithOptions(opts *cliOptions, loadOpts inventoryLoadOptions) ([]inventory.Skill, []analysis.Finding, []string, error) {
+func runAudit(opts *cliOptions, loadOpts inventoryLoadOptions, cachePolicy audit.SnapshotCachePolicy) (audit.Result, error) {
 	paths, err := pathsFromOptions(opts)
 	if err != nil {
-		return nil, nil, nil, err
-	}
-	if err := paths.Ensure(); err != nil {
-		return nil, nil, nil, err
+		return audit.Result{}, err
 	}
 	cfg, err := loadConfig(opts, paths)
 	if err != nil {
-		return nil, nil, nil, err
+		return audit.Result{}, err
 	}
-	activeAgents, inactiveAgents := agentSelection(opts, cfg)
-	roots := opts.roots
-	if len(roots) == 0 {
-		roots = inventory.RootsForAgents(append(activeAgents, inactiveAgents...))
-		if len(roots) == 0 {
-			roots = inventory.KnownGlobalRoots()
+	var analyzer llm.Analyzer
+	if cfg.LLMAssisted {
+		if gemini, ok := llm.NewGeminiAnalyzerFromEnv(); ok {
+			analyzer = gemini
 		}
 	}
-	var scanRoots []string
-	var skipped []string
-	for _, root := range roots {
-		if cfg.IsTrusted(root) {
-			scanRoots = append(scanRoots, root)
-		} else {
-			skipped = append(skipped, root)
-		}
-	}
-	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "scan-roots", Detail: fmt.Sprintf("%d trusted root(s), %d skipped", len(scanRoots), len(skipped))})
-	owners := inventory.RootOwnershipForAgents(activeAgents, inactiveAgents)
-	report, err := inventory.NewScanner().Scan(inventory.ScanOptions{Roots: scanRoots, RootOwnerships: owners})
-	if err != nil {
-		return nil, nil, nil, err
-	}
-	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "scan-roots", Detail: fmt.Sprintf("%d skill install(s)", len(report.Skills)), Done: true})
-	usageResult, err := usage.Load(usage.Options{
+	result, err := audit.Run(loadOpts.Context, audit.Policy{
 		Config:          cfg,
 		Paths:           paths,
-		Skills:          report.Skills,
-		TrustedRoots:    scanRoots,
+		Roots:           opts.roots,
+		ActiveAgents:    opts.activeAgents,
+		InactiveAgents:  opts.inactiveAgents,
 		HistoryJSONL:    opts.historyJSONL,
 		HistorySQLite:   opts.historySQLite,
 		HistoryCacheTTL: opts.historyCacheTTL,
 		RescanSources:   opts.rescanSources,
-		Context:         loadOpts.Context,
-		Progress: func(event usage.Progress) {
-			reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
+		SnapshotCache:   cachePolicy,
+		LLMAnalyzer:     analyzer,
+		Progress: func(event audit.Progress) {
+			if loadOpts.Progress != nil {
+				loadOpts.Progress(inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
+			}
 		},
 		HistoryProgress: loadOpts.HistoryProgress,
 	})
 	if err != nil {
-		return nil, nil, nil, err
+		return audit.Result{}, err
 	}
-	skills := usageResult.Skills
-	if skills == nil {
-		skills = report.Skills
+	for _, diagnostic := range result.Diagnostics {
+		opts.warnings = append(opts.warnings, diagnostic.Message)
 	}
-	usageEvidence := usageResult.Evidence
-	if len(usageResult.MissingSources) > 0 {
-		usageEvidence = nil
-		for _, path := range usageResult.MissingSources {
-			opts.warnings = append(opts.warnings, fmt.Sprintf("History source is no longer available; skipped: %s", path))
-		}
-	}
-	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: "duplicates, conflicts, keywords, safety findings"})
-	analysisOpts := analysis.Options{UsageEvidence: usageEvidence, Progress: func(event analysis.ProgressEvent) {
-		reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: event.Step, Current: event.Current, Total: event.Total, Detail: event.Detail, Done: event.Done})
-	}}
-	var recorder *recordingAnalyzer
-	if cfg.LLMAssisted {
-		if analyzer, ok := llm.NewGeminiAnalyzerFromEnv(); ok {
-			recorder = newRecordingAnalyzer(llm.NewCachedAnalyzer(paths.LLMCacheDir, analyzer))
-			analysisOpts.LLMAnalyzer = recorder
-		} else {
-			opts.warnings = append(opts.warnings, "LLM analysis requested, but GEMINI_API_KEY/GOOGLE_API_KEY is not set; using deterministic analysis.")
-		}
-	}
-	ctx := loadOpts.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	findings, err := analysis.AnalyzeWithLLM(ctx, skills, analysisOpts)
-	if err != nil {
-		opts.warnings = append(opts.warnings, fmt.Sprintf("LLM analysis did not complete; continuing with available findings. Details: %v", err))
-		if len(findings) == 0 {
-			findings = analysis.Analyze(skills, analysis.Options{UsageEvidence: usageEvidence})
-		}
-	}
-	if recorder != nil {
-		skills = attachLLMSummaries(skills, recorder.Summaries())
-	}
-	reportInventoryProgress(loadOpts.Progress, inventoryProgress{Step: "analysis", Detail: fmt.Sprintf("%d finding(s)", len(findings)), Done: true})
-	return skills, findings, skipped, nil
-}
-
-type recordingAnalyzer struct {
-	next      llm.Analyzer
-	summaries map[string]llm.GeneratedSummary
-}
-
-func newRecordingAnalyzer(next llm.Analyzer) *recordingAnalyzer {
-	return &recordingAnalyzer{next: next, summaries: map[string]llm.GeneratedSummary{}}
-}
-
-func (a *recordingAnalyzer) Summarize(ctx context.Context, name, deterministicSummary, contentHash string) (llm.GeneratedSummary, error) {
-	summary, err := a.next.Summarize(ctx, name, deterministicSummary, contentHash)
-	if err == nil && strings.TrimSpace(contentHash) != "" {
-		a.summaries[contentHash] = summary
-	}
-	return summary, err
-}
-
-func (a *recordingAnalyzer) FindOverlaps(ctx context.Context, summaries []llm.GeneratedSummary) ([]llm.SemanticOverlap, error) {
-	return a.next.FindOverlaps(ctx, summaries)
-}
-
-func (a *recordingAnalyzer) LintSkillQuality(ctx context.Context, request llm.SkillQualityRequest) (llm.SkillQualityResult, error) {
-	return a.next.LintSkillQuality(ctx, request)
-}
-
-func (a *recordingAnalyzer) ProviderName() string {
-	if identified, ok := a.next.(llm.ProviderModel); ok {
-		return identified.ProviderName()
-	}
-	return "unknown"
-}
-
-func (a *recordingAnalyzer) ModelName() string {
-	if identified, ok := a.next.(llm.ProviderModel); ok {
-		return identified.ModelName()
-	}
-	return "unknown"
-}
-
-func (a *recordingAnalyzer) Summaries() map[string]llm.GeneratedSummary {
-	return a.summaries
-}
-
-func attachLLMSummaries(skills []inventory.Skill, summaries map[string]llm.GeneratedSummary) []inventory.Skill {
-	if len(summaries) == 0 {
-		return skills
-	}
-	enriched := append([]inventory.Skill(nil), skills...)
-	for i := range enriched {
-		summary, ok := summaries[enriched[i].ContentHash]
-		if !ok || strings.TrimSpace(summary.Summary) == "" || isDisabledLLMSummary(summary.Provider, summary.Model) {
-			continue
-		}
-		enriched[i].LLMSummary = summary.Summary
-		enriched[i].LLMProvider = summary.Provider
-		enriched[i].LLMModel = summary.Model
-	}
-	return enriched
-}
-
-func isDisabledLLMSummary(provider, model string) bool {
-	return strings.EqualFold(strings.TrimSpace(provider), "disabled") && strings.EqualFold(strings.TrimSpace(model), "disabled")
-}
-
-func reportInventoryProgress(progress func(inventoryProgress), event inventoryProgress) {
-	if progress != nil {
-		progress(event)
-	}
+	return result, nil
 }
 
 func agentSelection(opts *cliOptions, cfg config.Config) ([]string, []string) {
