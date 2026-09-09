@@ -175,9 +175,10 @@ func (m Model) guidedReviewLines(theme ui.Theme, contentWidth int) []string {
 
 func (m Model) guidedReviewScrollMetrics() (maxScroll, pageSize int) {
 	width, height := m.dimensions()
-	bodyHeight := max(8, height-3)
+	theme := ui.DefaultTheme()
+	bodyHeight := max(8, height-3-len(m.feedbackLinesForView(theme, width, height)))
 	panelHeight := max(1, bodyHeight-2)
-	lineCount := len(m.guidedReviewLines(ui.DefaultTheme(), max(20, width-8)))
+	lineCount := len(m.guidedReviewLines(theme, max(20, width-8)))
 	return max(0, lineCount-panelHeight), panelHeight
 }
 

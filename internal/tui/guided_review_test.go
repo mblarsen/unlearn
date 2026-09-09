@@ -205,6 +205,7 @@ func TestGuidedReviewContentIsScrollableAndLongPathIsReachable(t *testing.T) {
 	m.Width, m.Height = 80, 18
 	updated, _ := m.Update(key("v"))
 	m = updated.(Model)
+	m.setStatus("saved the previous decision")
 	seen := m.View()
 	for i := 0; i < 50; i++ {
 		updated, _ = m.Update(key("down"))

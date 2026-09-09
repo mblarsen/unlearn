@@ -898,12 +898,7 @@ func (m Model) View() string {
 	}
 	headerHeight := 2
 	keybarHeight := 1
-	feedbackLines := []string(nil)
-	maxFeedbackHeight := min(5, max(0, height-headerHeight-keybarHeight-8))
-	showFeedback := m.State != StateHelp && m.State != StateFeedback && (m.State == StateNormal || m.StatusContext == m.State)
-	if showFeedback && maxFeedbackHeight > 0 {
-		feedbackLines = m.renderFeedback(theme, width, maxFeedbackHeight)
-	}
+	feedbackLines := m.feedbackLinesForView(theme, width, height)
 	feedbackHeight := len(feedbackLines)
 	bodyHeight := height - headerHeight - feedbackHeight - keybarHeight
 	if bodyHeight < 8 {
@@ -951,6 +946,16 @@ func (m Model) dimensions() (int, int) {
 		height = 30
 	}
 	return width, height
+}
+
+func (m Model) feedbackLinesForView(theme ui.Theme, width, height int) []string {
+	const headerAndKeybarHeight = 3
+	maxFeedbackHeight := min(5, max(0, height-headerAndKeybarHeight-8))
+	showFeedback := m.State != StateHelp && m.State != StateFeedback && (m.State == StateNormal || m.StatusContext == m.State)
+	if !showFeedback || maxFeedbackHeight <= 0 {
+		return nil
+	}
+	return m.renderFeedback(theme, width, maxFeedbackHeight)
 }
 
 func renderMinimumSizeGate(theme ui.Theme, width, height int) string {
