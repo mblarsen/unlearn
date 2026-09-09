@@ -46,6 +46,7 @@ const (
 	StateGeneratingDraft
 	StatePreviewDraft
 	StateHelp
+	StateFeedback
 )
 
 type PendingAction int
@@ -85,6 +86,7 @@ type Model struct {
 	Status           string
 	StatusError      bool
 	StatusRecovery   string
+	FeedbackScroll   int
 	RenamePreview    fsactions.RenamePreview
 	DraftCursor      int
 	DraftScroll      int
@@ -145,6 +147,11 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.State = StateHelp
 	case "x":
 		m.dismissStatus()
+	case "enter":
+		if m.Status != "" {
+			m.FeedbackScroll = 0
+			m.State = StateFeedback
+		}
 	case "j", "down":
 		if m.Cursor < m.itemCount()-1 {
 			m.Cursor++
@@ -219,6 +226,8 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateDraftPreview(msg)
 	case StateHelp:
 		return m.updateHelp(msg)
+	case StateFeedback:
+		return m.updateFeedback(msg)
 	default:
 		m.resetInteraction()
 		return m, nil
@@ -228,6 +237,29 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateHelp(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "?", "esc", "q":
+		m.State = StateNormal
+	}
+	return m, nil
+}
+
+func (m Model) updateFeedback(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	maxScroll, pageSize := m.feedbackScrollMetrics()
+	switch msg.String() {
+	case "j", "down":
+		m.FeedbackScroll = min(maxScroll, m.FeedbackScroll+1)
+	case "k", "up":
+		m.FeedbackScroll = max(0, m.FeedbackScroll-1)
+	case "pgdown", "ctrl+d":
+		m.FeedbackScroll = min(maxScroll, m.FeedbackScroll+pageSize)
+	case "pgup", "ctrl+u":
+		m.FeedbackScroll = max(0, m.FeedbackScroll-pageSize)
+	case "home", "g":
+		m.FeedbackScroll = 0
+	case "end", "G":
+		m.FeedbackScroll = maxScroll
+	case "x":
+		m.dismissStatus()
+	case "enter", "esc", "q":
 		m.State = StateNormal
 	}
 	return m, nil
@@ -856,8 +888,9 @@ func (m Model) View() string {
 	headerHeight := 2
 	keybarHeight := 1
 	feedbackLines := []string(nil)
-	if m.State != StateHelp {
-		feedbackLines = m.renderFeedback(theme, width)
+	maxFeedbackHeight := min(5, max(0, height-headerHeight-keybarHeight-8))
+	if m.State != StateHelp && m.State != StateFeedback && maxFeedbackHeight > 0 {
+		feedbackLines = m.renderFeedback(theme, width, maxFeedbackHeight)
 	}
 	feedbackHeight := len(feedbackLines)
 	bodyHeight := height - headerHeight - feedbackHeight - keybarHeight
@@ -1091,6 +1124,9 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 	if m.State == StateHelp {
 		return m.renderHelp(theme, width)
+	}
+	if m.State == StateFeedback {
+		return m.renderFeedbackDetail(theme, width, height)
 	}
 	label := interactionTitle(m.State, len(m.selectedPendingSkills()))
 	lines := []string{theme.BadgeWarn.Render(label), ""}
@@ -1427,6 +1463,8 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
 		case StateHelp:
 			return []keyPart{{"esc", "close"}, {"?", "close"}}
+		case StateFeedback:
+			return []keyPart{{"↑↓/jk", "scroll"}, {"pgup/pgdown", "page"}, {"esc", "close"}, {"x", "dismiss"}}
 		}
 	}
 	parts := []keyPart{{"↑↓/jk", "move"}}

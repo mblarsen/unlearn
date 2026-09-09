@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
@@ -13,6 +14,7 @@ func (m *Model) setStatus(message string) {
 	m.Status = message
 	m.StatusError = strings.Contains(strings.ToLower(message), "error:")
 	m.StatusRecovery = ""
+	m.FeedbackScroll = 0
 	if m.StatusError {
 		m.StatusRecovery = defaultErrorRecovery
 	}
@@ -22,13 +24,33 @@ func (m *Model) dismissStatus() {
 	m.Status = ""
 	m.StatusError = false
 	m.StatusRecovery = ""
+	m.FeedbackScroll = 0
+	if m.State == StateFeedback {
+		m.State = StateNormal
+	}
 }
 
-func (m Model) renderFeedback(theme ui.Theme, width int) []string {
-	if strings.TrimSpace(m.Status) == "" {
+func (m Model) renderFeedback(theme ui.Theme, width, height int) []string {
+	if strings.TrimSpace(m.Status) == "" || height <= 0 {
 		return nil
 	}
-	contentWidth := max(1, width-4)
+	lines := m.feedbackContent(theme, max(1, width-4), true)
+	if len(lines)+1 <= height {
+		return append(lines, theme.Muted.Render("x dismiss"))
+	}
+	control := "x dismiss"
+	if m.State == StateNormal {
+		control = "enter details · x dismiss"
+	}
+	if height == 1 {
+		return []string{theme.Muted.Render(control)}
+	}
+	lines = lines[:max(0, height-2)]
+	lines = append(lines, theme.Muted.Render("…"), theme.Muted.Render(control))
+	return lines
+}
+
+func (m Model) feedbackContent(theme ui.Theme, width int, includeLabel bool) []string {
 	label := theme.Success.Render("Status")
 	messageStyle := theme.Status
 	if m.StatusError {
@@ -39,17 +61,46 @@ func (m Model) renderFeedback(theme ui.Theme, width int) []string {
 	if m.StatusError && strings.HasPrefix(strings.ToLower(message), "error:") {
 		message = strings.TrimSpace(message[len("error:"):])
 	}
-	lines := []string{label}
-	for _, line := range wrapComplete(message, contentWidth) {
+	lines := make([]string, 0)
+	if includeLabel {
+		lines = append(lines, label)
+	}
+	for _, line := range wrapComplete(message, width) {
 		lines = append(lines, messageStyle.Render(line))
 	}
 	if m.StatusRecovery != "" {
-		for _, line := range wrapComplete("Recovery: "+m.StatusRecovery, contentWidth) {
+		if !includeLabel {
+			lines = append(lines, "")
+		}
+		for _, line := range wrapComplete("Recovery: "+m.StatusRecovery, width) {
 			lines = append(lines, theme.Section.Render(line))
 		}
 	}
-	lines = append(lines, theme.Muted.Render("x dismiss"))
 	return lines
+}
+
+func (m Model) renderFeedbackDetail(theme ui.Theme, width, height int) []string {
+	content := m.feedbackContent(theme, width, false)
+	viewportHeight := max(1, height-2)
+	maxScroll := max(0, len(content)-viewportHeight)
+	start := min(max(0, m.FeedbackScroll), maxScroll)
+	end := min(len(content), start+viewportHeight)
+	title := "STATUS DETAILS"
+	if m.StatusError {
+		title = "ERROR DETAILS"
+	}
+	position := fmt.Sprintf("Lines %d–%d of %d", start+1, end, len(content))
+	lines := []string{theme.Badge.Render(title), theme.Muted.Render(position)}
+	return append(lines, content[start:end]...)
+}
+
+func (m Model) feedbackScrollMetrics() (maxScroll, pageSize int) {
+	width, height := m.dimensions()
+	contentWidth := min(104, max(1, width-22))
+	bodyHeight := max(8, height-3)
+	viewportHeight := max(1, bodyHeight-6)
+	lineCount := len(m.feedbackContent(ui.DefaultTheme(), contentWidth, false))
+	return max(0, lineCount-viewportHeight), viewportHeight
 }
 
 func wrapComplete(value string, width int) []string {

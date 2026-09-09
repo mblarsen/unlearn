@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -42,6 +43,55 @@ func TestActionErrorRemainsReadableUntilDismissed(t *testing.T) {
 	m = updated.(Model)
 	if strings.Contains(m.View(), "permission denied while removing") {
 		t.Fatalf("x should dismiss persistent feedback:\n%s", m.View())
+	}
+}
+
+func TestLongMultilineErrorStaysBoundedAndEverySegmentIsReachable(t *testing.T) {
+	segments := make([]string, 120)
+	for i := range segments {
+		segments[i] = fmt.Sprintf("segment-%03d", i)
+	}
+	message := "error: Gemini HTTP 500\nresponse body: " + strings.Join(segments, " ")
+	m := testModel(&fakeActionService{})
+	m.setStatus(message)
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	m = updated.(Model)
+
+	assertViewBounds(t, m.View(), 80, 24)
+	if !strings.Contains(m.View(), "enter details") {
+		t.Fatalf("bounded feedback must link to its complete details:\n%s", m.View())
+	}
+
+	updated, _ = m.Update(key("enter"))
+	m = updated.(Model)
+	if m.State != StateFeedback {
+		t.Fatalf("enter should open feedback details, state=%v", m.State)
+	}
+	var visited strings.Builder
+	for range 160 {
+		view := m.View()
+		assertViewBounds(t, view, 80, 24)
+		visited.WriteString(view)
+		visited.WriteByte('\n')
+		updated, _ = m.Update(key("j"))
+		m = updated.(Model)
+	}
+	allViews := visited.String()
+	for _, want := range append([]string{"Gemini HTTP 500", "response body:"}, segments...) {
+		if !strings.Contains(allViews, want) {
+			t.Fatalf("feedback detail never exposed %q", want)
+		}
+	}
+
+	updated, _ = m.Update(key("end"))
+	m = updated.(Model)
+	if !strings.Contains(m.View(), "segment-119") {
+		t.Fatalf("end should expose the last feedback segment:\n%s", m.View())
+	}
+	updated, _ = m.Update(key("x"))
+	m = updated.(Model)
+	if m.State != StateNormal || m.Status != "" {
+		t.Fatalf("x should dismiss feedback details, state=%v status=%q", m.State, m.Status)
 	}
 }
 
@@ -129,6 +179,19 @@ func TestEmptyStatesExplainFindingsAndInventoryNextSteps(t *testing.T) {
 	for _, want := range []string{"No skills found", "unlearn scan"} {
 		if !strings.Contains(inventoryView, want) {
 			t.Fatalf("inventory empty state missing %q:\n%s", want, inventoryView)
+		}
+	}
+}
+
+func assertViewBounds(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("view height=%d exceeds terminal height=%d:\n%s", len(lines), height, view)
+	}
+	for _, line := range lines {
+		if lipgloss.Width(line) > width {
+			t.Fatalf("view width=%d exceeds terminal width=%d: %q", lipgloss.Width(line), width, line)
 		}
 	}
 }
