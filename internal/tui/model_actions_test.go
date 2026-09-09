@@ -374,7 +374,7 @@ func TestDashboardDeleteUsesModalConfirmation(t *testing.T) {
 	m := testModel(service)
 	updated, _ := m.Update(key("ctrl+d"))
 	m = updated.(Model)
-	if m.State != StateConfirmDelete || !strings.Contains(m.View(), "y confirm") || strings.Contains(m.View(), "type") {
+	if m.State != StateConfirmDelete || !strings.Contains(m.View(), "y delete") || strings.Contains(m.View(), "type") {
 		t.Fatalf("expected delete confirmation modal, state=%v view=%s", m.State, m.View())
 	}
 	updated, _ = m.Update(key("y"))

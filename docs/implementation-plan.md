@@ -243,3 +243,13 @@ Interactive QA extended the original dashboard interaction plan. The implemented
 - [x] Test picker behavior through its interface and retain dashboard viewport regression coverage.
 
 Relevant commits: `0d8c029`, `b291529`, `99099c6`, `b9b9eff`, `0054000`, `f62bb1a`, `424c699`, `8058fc6`, `fd055a6`, `7ac6b68`.
+
+## QA fix — persistent feedback and action discovery
+
+- [x] Show bounded status and error summaries with recovery, explicit dismissal, and a scrollable complete-details view.
+- [x] Keep prior feedback behind active dialogs, route contextual dismissal, and account for wrapped provider copy in preview height.
+- [x] Reserve help and quit in the normal footer, and put cleanup actions before merge drafting.
+- [x] Add contextual help for findings and skill inventory views.
+- [x] Use consequence-specific confirmation titles and labels for destructive actions.
+- [x] Explain empty findings and inventory states with the next available action.
+- [x] Cover feedback at 80×24, 120×40, and 200×60 with deterministic model render tests.
