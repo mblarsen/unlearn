@@ -90,6 +90,7 @@ type Model struct {
 	DraftPreview      string
 	DraftProvider     string
 	DraftModel        string
+	draftLifecycle    draftLifecycle
 }
 
 type draftSkillChoice struct {
@@ -127,17 +128,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 type draftMergeResultMsg struct {
-	Skills []inventory.Skill
-	Result llm.DraftResult
-	Err    error
-}
-
-func draftMergeCmd(service ActionService, skills []inventory.Skill) tea.Cmd {
-	selected := append([]inventory.Skill(nil), skills...)
-	return func() tea.Msg {
-		result, err := service.DraftMerge(selected)
-		return draftMergeResultMsg{Skills: selected, Result: result, Err: err}
-	}
+	OperationID draftOperationID
+	Skills      []inventory.Skill
+	Result      llm.DraftResult
+	Err         error
 }
 
 func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -425,7 +419,7 @@ func (m Model) updateDraftSkillSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.PendingSkills = selected
 		m.State = StateGeneratingDraft
 		m.Message = fmt.Sprintf("Generating read-only merged SKILL.md preview for %d selected skills", len(selected))
-		return m, draftMergeCmd(m.Actions, selected)
+		return m, m.draftLifecycle.start(m.Actions, selected)
 	case "esc", "q":
 		m.cancel("merge draft cancelled")
 	}
@@ -435,13 +429,14 @@ func (m Model) updateDraftSkillSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateDraftGeneration(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc", "q":
+		m.draftLifecycle.cancel()
 		m.cancel("merge draft cancelled")
 	}
 	return m, nil
 }
 
 func (m Model) handleDraftMergeResult(msg draftMergeResultMsg) Model {
-	if m.State != StateGeneratingDraft {
+	if !m.draftLifecycle.accept(msg) || m.State != StateGeneratingDraft {
 		return m
 	}
 	if msg.Err != nil {
@@ -816,6 +811,7 @@ func firstNonEmpty(values ...string) string {
 }
 
 func (m *Model) resetInteraction() {
+	m.draftLifecycle.cancel()
 	m.State = StateNormal
 	m.PendingAction = ActionNone
 	m.PendingSkill = inventory.Skill{}

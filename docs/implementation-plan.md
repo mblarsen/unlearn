@@ -131,6 +131,14 @@ This checklist maps implementation work to the product design in `docs/superpowe
 - Rich detail fields and action availability.
 - TUI model coverage.
 
+## Architecture deepening — cancellable draft lifecycle
+
+- [x] Inject the context-aware merged-draft generator instead of constructing it inside each request.
+- [x] Centralize draft operation start, cancellation, identity, and result acceptance behind one lifecycle implementation.
+- [x] Reject stale results when operation A completes after cancellation and operation B has started.
+- [x] Preserve content-hash caching, opt-in privacy, and read-only draft preview behavior.
+- [x] Cover controlled A-start/cancel/B-start/A-finish/B-finish ordering and run the full validation suite.
+
 ## Current focus
 
 Initial v1 implementation is complete enough for fixture/temp-root validation and interactive QA. Remaining limitations to track after this pass: LLM-assisted analysis now has minimal Gemini REST support for cached summaries, semantic-overlap groups, and preview-only merged-skill draft generation behind `--with-llm`/setup opt-in plus `GEMINI_API_KEY`/`GOOGLE_API_KEY`, but richer provider selection remains future work; Pi history discovery is bounded to known JSONL session locations and stores paths/derived evidence only, SQLite history scanning covers explicit database paths plus bounded discovery under configured scan roots, and batch cleanup is specialized for duplicate installs by root rather than arbitrary multi-select across all finding types.
