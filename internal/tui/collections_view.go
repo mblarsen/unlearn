@@ -23,6 +23,7 @@ type collectionUIState struct {
 	Focus        int
 	MemberCursor int
 	DetailScroll int
+	FollowMember bool
 	Command      collections.CommandKind
 	Picker       picker.Model
 	Choices      []collectionChoice
@@ -59,9 +60,23 @@ func (m Model) updateCollectionsNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "?":
 		m.State = StateHelp
 		return m, nil
+	case "enter":
+		if m.Status != "" {
+			m.FeedbackScroll = 0
+			m.State = StateFeedback
+		}
+		return m, nil
+	case "x":
+		if m.Status != "" {
+			m.dismissStatus()
+		} else {
+			m.removeSelectedCollectionMember()
+		}
+		return m, nil
 	case "tab", "shift+tab":
 		if len(m.CollectionUI.Collections) > 0 {
 			m.CollectionUI.Focus = 1 - m.CollectionUI.Focus
+			m.CollectionUI.FollowMember = m.CollectionUI.Focus == 1
 		}
 		return m, nil
 	case "j", "down":
@@ -71,9 +86,11 @@ func (m Model) updateCollectionsNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveCollectionCursor(-1)
 		return m, nil
 	case "pgdown", "ctrl+f":
+		m.CollectionUI.FollowMember = false
 		m.CollectionUI.DetailScroll++
 		return m, nil
 	case "pgup", "ctrl+b":
+		m.CollectionUI.FollowMember = false
 		m.CollectionUI.DetailScroll = max(0, m.CollectionUI.DetailScroll-1)
 		return m, nil
 	case "n":
@@ -96,9 +113,6 @@ func (m Model) updateCollectionsNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "a":
 		m.beginCollectionAdd()
-		return m, nil
-	case "x":
-		m.removeSelectedCollectionMember()
 		return m, nil
 	case "s":
 		if _, ok := m.selectedCollection(); ok {
@@ -123,6 +137,7 @@ func (m *Model) moveCollectionCursor(delta int) {
 	m.CollectionUI.MemberCursor += delta
 	m.CollectionUI.MemberCursor = clamp(m.CollectionUI.MemberCursor, 0, max(0, len(m.CollectionUI.Preview.Members)-1))
 	m.CollectionUI.DetailScroll = 0
+	m.CollectionUI.FollowMember = true
 }
 
 func (m *Model) beginCollectionInput(kind collections.CommandKind, message, label string) {
@@ -169,6 +184,8 @@ func (m Model) updateCollectionInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.endCollectionInteraction(collectionActionStatus(m.CollectionUI.Command, value))
 	case tea.KeyRunes:
 		m.Input += string(msg.Runes)
+	case tea.KeySpace:
+		m.Input += " "
 	}
 	return m, nil
 }
@@ -390,12 +407,14 @@ func (m Model) renderCollectionDetails(theme ui.Theme, width, height int) []stri
 		}
 		return boundedCollectionLines(lines, width, height)
 	}
+	selectedLine := -1
 	for i, member := range m.CollectionUI.Preview.Members {
 		prefix := "  "
 		style := theme.Row
 		if m.CollectionUI.Focus == 1 && i == m.CollectionUI.MemberCursor {
 			prefix = "▸ "
 			style = theme.SelectedRow.Width(width)
+			selectedLine = len(lines)
 		}
 		status := "AVAILABLE"
 		if !member.Present {
@@ -417,15 +436,22 @@ func (m Model) renderCollectionDetails(theme ui.Theme, width, height int) []stri
 		}
 		if len(member.OtherCopies) > 0 {
 			divergent := 0
+			unknown := 0
 			for _, copy := range member.OtherCopies {
-				if copy.Divergent {
+				switch copy.Comparison {
+				case collections.ContentDivergent:
 					divergent++
+				case collections.ContentUnknown:
+					unknown++
 				}
 			}
-			lines = append(lines, theme.Muted.Render(ui.Truncate(fmt.Sprintf("    Other copies: %d (%d content-divergent)", len(member.OtherCopies), divergent), width)))
+			lines = append(lines, theme.Muted.Render(ui.Truncate(fmt.Sprintf("    Other copies: %d (%d content-divergent, %d unknown)", len(member.OtherCopies), divergent, unknown), width)))
 			for _, copy := range member.OtherCopies {
-				copyState := "same observed content"
-				if copy.Divergent {
+				copyState := "content comparison unknown"
+				switch copy.Comparison {
+				case collections.ContentEqual:
+					copyState = "same observed content"
+				case collections.ContentDivergent:
 					copyState = "content-divergent"
 				}
 				for _, line := range ui.Wrap("Alternative copy, not this membership: "+copyState+"; "+agentEvidence(copy.ActiveAgents, copy.InactiveAgents), max(1, width-4)) {
@@ -441,15 +467,21 @@ func (m Model) renderCollectionDetails(theme ui.Theme, width, height int) []stri
 	for _, line := range ui.Wrap("Inventory evidence does not confirm that an agent loads or invokes a skill.", width) {
 		lines = append(lines, theme.Muted.Render(line))
 	}
-	return boundedCollectionLines(scrollCollectionLines(lines, height, m.CollectionUI.DetailScroll), width, height)
+	if !m.CollectionUI.FollowMember {
+		selectedLine = -1
+	}
+	return boundedCollectionLines(scrollCollectionLines(lines, height, m.CollectionUI.DetailScroll, selectedLine), width, height)
 }
 
-func scrollCollectionLines(lines []string, height, scroll int) []string {
+func scrollCollectionLines(lines []string, height, scroll, selectedLine int) []string {
 	if height <= 0 || len(lines) <= height {
 		return ui.FitLines(lines, height)
 	}
 	page := max(1, height-2)
 	start := min(max(0, scroll)*page, max(0, len(lines)-page))
+	if selectedLine >= 0 && (selectedLine < start || selectedLine >= start+page) {
+		start = min(selectedLine, max(0, len(lines)-page))
+	}
 	end := min(len(lines), start+page)
 	out := make([]string, 0, height)
 	if start > 0 {

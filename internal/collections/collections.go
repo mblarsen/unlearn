@@ -65,11 +65,19 @@ type MemberPreview struct {
 	OtherCopies    []CopyPreview
 }
 
+type ContentComparison string
+
+const (
+	ContentUnknown   ContentComparison = "unknown"
+	ContentEqual     ContentComparison = "equal"
+	ContentDivergent ContentComparison = "divergent"
+)
+
 type CopyPreview struct {
 	InstallPath    string
 	ActiveAgents   []string
 	InactiveAgents []string
-	Divergent      bool
+	Comparison     ContentComparison
 }
 
 type Suggestion struct {
@@ -205,13 +213,23 @@ func previewCollection(collection Collection, skills []inventory.Skill) Collecti
 				InstallPath:    path,
 				ActiveAgents:   sortedUnique(skill.ActiveAgents),
 				InactiveAgents: sortedUnique(skill.InactiveAgents),
-				Divergent:      present && selected.ContentHash != "" && skill.ContentHash != "" && selected.ContentHash != skill.ContentHash,
+				Comparison:     compareContent(present, selected.ContentHash, skill.ContentHash),
 			})
 		}
 		sort.Slice(item.OtherCopies, func(i, j int) bool { return item.OtherCopies[i].InstallPath < item.OtherCopies[j].InstallPath })
 		preview.Members = append(preview.Members, item)
 	}
 	return preview
+}
+
+func compareContent(referencePresent bool, referenceHash, copyHash string) ContentComparison {
+	if !referencePresent || referenceHash == "" || copyHash == "" {
+		return ContentUnknown
+	}
+	if referenceHash == copyHash {
+		return ContentEqual
+	}
+	return ContentDivergent
 }
 
 func suggestions(collection Collection, skills []inventory.Skill, query string) ([]Suggestion, string) {

@@ -45,3 +45,11 @@ The TUI uses an optional collection capability on its action adapter. Existing a
 - [x] Run relevant race tests.
 - [x] Run `go build .`.
 - [x] Run `mise run check`.
+
+## Review follow-up
+
+- [x] Give status feedback priority over collection member removal and details keys.
+- [x] Preserve terminal space key events in collection names and task queries.
+- [x] Keep the focused member visible while navigating long collections.
+- [x] Distinguish equal, divergent, and unknown content comparisons.
+- [x] Add regressions for all reproduced review findings and rerun full validation.

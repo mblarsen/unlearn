@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -101,6 +102,39 @@ func TestCollectionRenameDeleteAndUnicodeInputDoNotTouchSkillFiles(t *testing.T)
 	}
 }
 
+func TestCollectionStatusKeysDoNotMutateMembership(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "alpha")
+	service := &collectionActionFake{items: []collections.Collection{{Name: "Project", Members: []collections.Member{{SkillName: "alpha", InstallPath: path}}}}}
+	m := NewWithActions([]inventory.Skill{{Name: "alpha", EncounteredPath: path}}, nil, service)
+	m = updateModel(m, key("c"))
+	m = updateModel(m, key("tab"))
+	m.setStatus("saved collection change")
+
+	m = updateModel(m, key("x"))
+	if len(service.items[0].Members) != 1 || m.Status != "" {
+		t.Fatalf("x mutated membership while dismissing status: status=%q items=%#v", m.Status, service.items)
+	}
+	m.setStatus("saved collection change")
+	m = updateModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if m.State != StateFeedback || len(service.items[0].Members) != 1 {
+		t.Fatalf("enter did not open status details: state=%v items=%#v", m.State, service.items)
+	}
+}
+
+func TestCollectionInputAcceptsKeySpace(t *testing.T) {
+	service := &collectionActionFake{items: []collections.Collection{{Name: "Old"}}}
+	m := NewWithActions(nil, nil, service)
+	m = updateModel(m, key("c"))
+	m = updateModel(m, key("r"))
+	m = updateModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("Front")})
+	m = updateModel(m, tea.KeyMsg{Type: tea.KeySpace})
+	m = updateModel(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("End")})
+	m = updateModel(m, tea.KeyMsg{Type: tea.KeyEnter})
+	if service.items[0].Name != "Front End" {
+		t.Fatalf("space was dropped: name=%q", service.items[0].Name)
+	}
+}
+
 func TestCollectionSuggestionsRequireManualAcceptance(t *testing.T) {
 	skill := inventory.Skill{Name: "frontend", EncounteredPath: filepath.Join(t.TempDir(), "frontend"), Description: "Build accessible web interfaces"}
 	service := &collectionActionFake{items: []collections.Collection{{Name: "Project"}}}
@@ -125,16 +159,44 @@ func TestCollectionSuggestionsRequireManualAcceptance(t *testing.T) {
 func TestCollectionsTUIShowsAndRemovesStaleMembership(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing", "research")
 	service := &collectionActionFake{items: []collections.Collection{{Name: "Research", Members: []collections.Member{{SkillName: "research", InstallPath: missing}}}}}
-	m := NewWithActions(nil, nil, service)
+	alternative := inventory.Skill{Name: "research", EncounteredPath: filepath.Join(t.TempDir(), "other", "research"), ContentHash: "observed"}
+	m := NewWithActions([]inventory.Skill{alternative}, nil, service)
 	m.Width, m.Height = 120, 40
 	m = updateModel(m, key("c"))
-	if !strings.Contains(m.View(), "STALE") || !strings.Contains(m.View(), "missing/research") {
-		t.Fatalf("stale membership unclear: %s", m.View())
+	view := m.View()
+	if !strings.Contains(view, "STALE") || !strings.Contains(view, "missing/research") {
+		t.Fatalf("stale membership unclear: %s", view)
+	}
+	if !strings.Contains(view, "1 unknown") || strings.Contains(view, "same observed content") {
+		t.Fatalf("stale alternative comparison overstated: %s", view)
 	}
 	m = updateModel(m, key("tab"))
 	m = updateModel(m, key("x"))
 	if len(service.items[0].Members) != 0 {
 		t.Fatalf("stale membership not removable: %#v", service.items)
+	}
+}
+
+func TestCollectionMemberNavigationKeepsRemovalTargetVisible(t *testing.T) {
+	root := t.TempDir()
+	var skills []inventory.Skill
+	collection := collections.Collection{Name: "Large"}
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("skill-%02d", i)
+		path := filepath.Join(root, name)
+		skills = append(skills, inventory.Skill{Name: name, EncounteredPath: path, ActiveAgents: []string{"pi"}})
+		collection.Members = append(collection.Members, collections.Member{SkillName: name, InstallPath: path})
+	}
+	service := &collectionActionFake{items: []collections.Collection{collection}}
+	m := NewWithActions(skills, nil, service)
+	m.Width, m.Height = 80, 18
+	m = updateModel(m, key("c"))
+	m = updateModel(m, key("tab"))
+	for i := 0; i < 7; i++ {
+		m = updateModel(m, key("down"))
+	}
+	if view := m.View(); !strings.Contains(view, "▸ skill-07") {
+		t.Fatalf("selected removal target is offscreen: %s", view)
 	}
 }
 

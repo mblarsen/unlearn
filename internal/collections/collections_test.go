@@ -51,6 +51,9 @@ func TestPreviewKeepsStaleMemberWithoutRetargetingCopy(t *testing.T) {
 	if len(member.OtherCopies) != 1 || member.OtherCopies[0].InstallPath != filepath.Clean(other.EncounteredPath) {
 		t.Fatalf("other copies=%#v", member.OtherCopies)
 	}
+	if member.OtherCopies[0].Comparison != ContentUnknown {
+		t.Fatalf("stale comparison=%q", member.OtherCopies[0].Comparison)
+	}
 }
 
 func TestPreviewReportsInventoryAgentEvidenceAndDivergentCopies(t *testing.T) {
@@ -66,8 +69,31 @@ func TestPreviewReportsInventoryAgentEvidenceAndDivergentCopies(t *testing.T) {
 	if !member.Present || !reflect.DeepEqual(member.ActiveAgents, []string{"pi"}) || !reflect.DeepEqual(member.InactiveAgents, []string{"claude-code"}) {
 		t.Fatalf("availability=%#v", member)
 	}
-	if len(member.OtherCopies) != 1 || !member.OtherCopies[0].Divergent {
+	if len(member.OtherCopies) != 1 || member.OtherCopies[0].Comparison != ContentDivergent {
 		t.Fatalf("copies=%#v", member.OtherCopies)
+	}
+}
+
+func TestContentComparisonRequiresBothObservedHashes(t *testing.T) {
+	tests := []struct {
+		name      string
+		present   bool
+		reference string
+		copy      string
+		want      ContentComparison
+	}{
+		{name: "missing reference", present: false, reference: "one", copy: "one", want: ContentUnknown},
+		{name: "unknown reference hash", present: true, copy: "one", want: ContentUnknown},
+		{name: "unknown copy hash", present: true, reference: "one", want: ContentUnknown},
+		{name: "equal", present: true, reference: "one", copy: "one", want: ContentEqual},
+		{name: "divergent", present: true, reference: "one", copy: "two", want: ContentDivergent},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := compareContent(tt.present, tt.reference, tt.copy); got != tt.want {
+				t.Fatalf("comparison=%q want %q", got, tt.want)
+			}
+		})
 	}
 }
 
