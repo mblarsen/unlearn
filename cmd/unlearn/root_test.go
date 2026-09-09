@@ -38,6 +38,48 @@ func TestLoadingModelShowsProgress(t *testing.T) {
 	}
 }
 
+func TestRestoreReconcilesAndPersistsInventorySnapshot(t *testing.T) {
+	stateDir := t.TempDir()
+	configPath := filepath.Join(t.TempDir(), "config.toml")
+	destRoot := t.TempDir()
+	stored := filepath.Join(stateDir, "quarantine", "20260909T120000.000000000Z", "demo")
+	if err := os.MkdirAll(stored, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stored, "SKILL.md"), []byte("---\nname: demo\ndescription: restored fixture\n---\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.SetupComplete = true
+	cfg.TrustRoot(destRoot)
+	cfg.AllowWrite(destRoot)
+	if err := cfg.Save(configPath); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	cmd := newRootCmd(&out)
+	cmd.SetArgs([]string{"restore", "demo", "--to-root", destRoot, "--state-dir", stateDir, "--config", configPath})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "Restored demo to "+filepath.Join(destRoot, "demo")) {
+		t.Fatalf("output=%q", out.String())
+	}
+	db, err := state.OpenIndex(filepath.Join(stateDir, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	skills, findings, err := state.LoadInventoryCache(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(findings) != 0 || len(skills) != 1 || skills[0].Name != "demo" || skills[0].EncounteredPath != filepath.Join(destRoot, "demo") || skills[0].ID == "" {
+		t.Fatalf("skills=%#v findings=%#v", skills, findings)
+	}
+}
+
 func TestResetYesRemovesLocalStateButKeepsQuarantine(t *testing.T) {
 	stateDir := t.TempDir()
 	configPath := filepath.Join(t.TempDir(), "config.toml")

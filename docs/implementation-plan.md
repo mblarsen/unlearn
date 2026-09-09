@@ -135,10 +135,10 @@ This checklist maps implementation work to the product design in `docs/superpowe
 
 The architecture review in `/tmp/unlearn-architecture-review.md` identified four modules to deepen. Work is split across isolated branches to avoid conflicting rewrites.
 
-- [ ] **Point 1 — mutation/reconciliation (this branch):** centralize exact-install identity; execute authorized quarantine, delete, rename, and restore operations; return typed filesystem/persistence outcomes with an authoritative in-memory snapshot; persist the same snapshot; cover partial success, persistence failure, restart, rename, restore, and symlink safeguards through the module interface.
+- [x] **Point 1 — mutation/reconciliation:** centralize exact-install identity; execute authorized quarantine, delete, rename, and restore operations; return typed filesystem/persistence outcomes with an authoritative snapshot; persist the same snapshot; cover partial success, persistence failure, restart, rename, restore, root ownership, and symlink safeguards.
 - [x] **Point 2 — draft lifecycle:** inject the context-aware generator; centralize operation start, cancellation, identity, and result acceptance; reject stale results; preserve opt-in privacy and read-only previews; cover controlled A-cancel/B-start ordering.
-- [ ] **Point 3 — audit orchestration (delegated):** typed evidence coverage and CLI-independent audit coordination are owned by `unlearn-audit-pipeline`. No implementation on this branch.
-- [ ] **Point 4 — picker/viewport (delegated):** navigation, render, resize, and reusable picker-window primitives are owned by the viewport agents. No implementation on this branch.
+- [x] **Point 3 — audit orchestration:** move audit policy behind a typed interface; make evidence coverage control unseen-finding eligibility; preserve privacy, progress, cancellation, caching, and LLM fallback.
+- [x] **Point 4 — picker/viewport:** move picker navigation, selection, scrolling, resize, and bounded rendering behind one reusable interface; preserve viewport access and selection precedence.
 
 Point 1 implementation sequence:
 
