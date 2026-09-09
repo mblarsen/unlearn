@@ -6,6 +6,7 @@ import (
 
 	fsactions "github.com/mblarsen/unlearn/internal/actions"
 	"github.com/mblarsen/unlearn/internal/analysis"
+	"github.com/mblarsen/unlearn/internal/collections"
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
@@ -25,6 +26,11 @@ type ActionService interface {
 	DraftMerge(ctx context.Context, skills []inventory.Skill) (llm.DraftResult, error)
 	GuidedReviewState() (review.State, []string)
 	SaveGuidedReviewState(state review.State) error
+}
+
+// CollectionService is an optional dashboard capability. Collection actions never mutate skill files or agent access.
+type CollectionService interface {
+	ExecuteCollection(command collections.Command, skills []inventory.Skill) collections.Result
 }
 
 type NoopActionService struct{}
@@ -118,6 +124,22 @@ func (s *ConfigActionService) PreviewRename(skill inventory.Skill, newName strin
 func (s *ConfigActionService) QuarantinedSkills() ([]string, error) {
 	mgr := fsactions.Manager{Config: s.Config, QuarantineDir: s.QuarantineDir}
 	return mgr.QuarantinedSkills()
+}
+
+func (s *ConfigActionService) ExecuteCollection(command collections.Command, skills []inventory.Skill) collections.Result {
+	result := collections.Execute(s.Config.Collections, skills, command)
+	if result.Err != nil || !result.Changed {
+		return result
+	}
+	previous := s.Config.Collections
+	s.Config.Collections = result.Collections
+	if err := s.save(); err != nil {
+		s.Config.Collections = previous
+		result.Collections = previous
+		result.Changed = false
+		result.Err = fmt.Errorf("save collections: %w", err)
+	}
+	return result
 }
 
 func NewDraftGeneratorFromEnv(cacheDir string) llm.DraftGenerator {

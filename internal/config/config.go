@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/BurntSushi/toml"
+	"github.com/mblarsen/unlearn/internal/collections"
 	"github.com/mblarsen/unlearn/internal/review"
 )
 
@@ -19,12 +20,13 @@ type Config struct {
 	ActiveAgents   []string `toml:"active_agents"`
 	InactiveAgents []string `toml:"inactive_agents"`
 
-	Roots          map[string]RootTrust `toml:"roots"`
-	WriteRoots     map[string]bool      `toml:"write_roots"`
-	Keep           DecisionList         `toml:"keep"`
-	IgnoreFindings map[string]string    `toml:"ignore_findings"`
-	DropCandidates DecisionList         `toml:"drop_candidates"`
-	GuidedReview   review.State         `toml:"guided_review"`
+	Roots          map[string]RootTrust     `toml:"roots"`
+	WriteRoots     map[string]bool          `toml:"write_roots"`
+	Keep           DecisionList             `toml:"keep"`
+	IgnoreFindings map[string]string        `toml:"ignore_findings"`
+	DropCandidates DecisionList             `toml:"drop_candidates"`
+	GuidedReview   review.State             `toml:"guided_review"`
+	Collections    []collections.Collection `toml:"collections"`
 }
 
 type RootTrust struct {

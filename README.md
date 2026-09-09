@@ -46,6 +46,9 @@ Known default global roots are derived from the active agent harnesses selected 
 - Skill inventory view with logical skills consolidated across installs.
 - Per-skill story with exact install locations, source clues, copy differences, and opt-in derived usage evidence.
 - Task-based discovery with local deterministic matches, reasons, exact installs, and known agent access.
+- Named task-based collections with exact-install membership and TOML persistence.
+- Manual collection suggestions from observed skill names and descriptions.
+- Collection previews for stale entries, agent visibility, and divergent copies.
 - `SKILL.md` frontmatter/body parsing.
 - Standalone markdown skill support.
 - Symlink-aware inventory.
@@ -188,6 +191,7 @@ enter            open the selected skill story in the skill inventory
 d                discover skills by task
 tab              next focused install
 shift+tab        previous focused install
+c                task-based collections
 q                quit
 ```
 
@@ -212,6 +216,28 @@ The skill story compares local installed copies. It does not fetch an upstream c
 The story labels the original source, install date, and modification status as unknown when no verified evidence exists. Filesystem timestamps do not become install dates.
 
 History scanning remains opt-in. Derived usage evidence applies to a skill name, not one installed copy. “Not observed” means that configured history sources had no matching evidence. It does not mean that the skill was never used.
+
+### Task-based collections
+
+Collection shortcuts:
+
+```text
+n                create collection
+r                rename collection
+a                add an exact installed skill
+x                remove the focused member
+s                suggest skills for a project or task
+ctrl+d           delete collection organization
+tab              focus collections or members
+pgup/pgdown      scroll collection details
+esc or f         return to findings
+```
+
+A collection member uses the encountered install path as its identity. A missing path stays visible and does not target another copy.
+
+Collection suggestions require manual acceptance. Collection actions do not install, activate, delete, or change agent access.
+
+Agent availability is inventory evidence. It does not prove that an agent loads or invokes a skill.
 
 ## Development
 

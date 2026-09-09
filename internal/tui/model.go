@@ -26,6 +26,7 @@ const (
 	ViewFindings ViewMode = iota
 	ViewSkills
 	ViewGuidedReview
+	ViewCollections
 )
 
 type Density int
@@ -56,6 +57,10 @@ const (
 	StateDiscoveryInspect
 	StateHelp
 	StateFeedback
+	StateCollectionInput
+	StateCollectionDelete
+	StateCollectionAdd
+	StateCollectionSuggestions
 )
 
 type PendingAction int
@@ -112,6 +117,7 @@ type Model struct {
 	GuidedReview                review.Session
 	GuidedReviewScroll          int
 	guidedReviewDecisionPending bool
+	CollectionUI                collectionUIState
 }
 
 type draftSkillChoice struct {
@@ -167,6 +173,9 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.Mode == ViewGuidedReview {
 		return m.updateGuidedReview(msg)
 	}
+	if m.Mode == ViewCollections {
+		return m.updateCollectionsNormal(msg)
+	}
 	switch msg.String() {
 	case "q", "ctrl+c", "esc":
 		return m, tea.Quit
@@ -196,6 +205,8 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveDetailCursor(1)
 	case "shift+tab":
 		m.moveDetailCursor(-1)
+	case "c":
+		m.openCollections()
 	case "s":
 		m.Mode = ViewSkills
 		m.Cursor = 0
@@ -235,7 +246,7 @@ func (m Model) updateNormal(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.String() == "x" && m.Status != "" && m.StatusContext == m.State && m.State != StateInputRename {
+	if msg.String() == "x" && m.Status != "" && m.StatusContext == m.State && m.State != StateInputRename && m.State != StateCollectionInput {
 		m.dismissStatus()
 		return m, nil
 	}
@@ -270,6 +281,12 @@ func (m Model) updateInteraction(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.updateHelp(msg)
 	case StateFeedback:
 		return m.updateFeedback(msg)
+	case StateCollectionInput:
+		return m.updateCollectionInput(msg)
+	case StateCollectionDelete:
+		return m.updateCollectionDelete(msg)
+	case StateCollectionAdd, StateCollectionSuggestions:
+		return m.updateCollectionPicker(msg)
 	default:
 		m.resetInteraction()
 		return m, nil
@@ -976,6 +993,8 @@ func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 		mode = "skills"
 	case ViewGuidedReview:
 		mode = "guided review"
+	case ViewCollections:
+		mode = "collections"
 	}
 	title := theme.AppTitle.Render("unlearn") + theme.Muted.Render("  cleanup workbench")
 	density := "compact"
@@ -996,6 +1015,10 @@ func (m Model) renderHeader(theme ui.Theme, width, height int) string {
 func (m Model) renderList(theme ui.Theme, width, height int) string {
 	lines := []string{theme.PanelTitle.Render(m.listTitle())}
 	if m.itemCount() == 0 {
+		if m.Mode == ViewCollections {
+			lines = append(lines, m.renderCollectionRows(theme, width, height-1)...)
+			return strings.Join(ui.PadLines(ui.FitLines(lines, height), height), "\n")
+		}
 		if m.Mode == ViewFindings {
 			lines = append(lines, "", theme.Section.Render("No cleanup findings"))
 			if len(m.Skills) > 0 {
@@ -1010,6 +1033,8 @@ func (m Model) renderList(theme ui.Theme, width, height int) string {
 	}
 	if m.Mode == ViewFindings {
 		lines = append(lines, m.renderFindingRows(theme, width, height-1)...)
+	} else if m.Mode == ViewCollections {
+		lines = append(lines, m.renderCollectionRows(theme, width, height-1)...)
 	} else {
 		lines = append(lines, m.renderSkillRows(theme, width, height-1)...)
 	}
@@ -1017,6 +1042,9 @@ func (m Model) renderList(theme ui.Theme, width, height int) string {
 }
 
 func (m Model) listTitle() string {
+	if m.Mode == ViewCollections {
+		return "Task-based collections"
+	}
 	if m.Mode == ViewSkills {
 		return "Skill inventory"
 	}
@@ -1140,6 +1168,8 @@ func (m Model) renderDetails(theme ui.Theme, width, height int) string {
 	}
 	if m.Mode == ViewFindings {
 		lines = append(lines, m.renderFindingDetails(theme, width, height-1)...)
+	} else if m.Mode == ViewCollections {
+		lines = append(lines, m.renderCollectionDetails(theme, width, height-1)...)
 	} else {
 		lines = append(lines, m.renderSkillGroupDetails(theme, width, height-1, m.SkillGroups[m.Cursor])...)
 	}
@@ -1152,6 +1182,9 @@ func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 	}
 	if m.State == StateDiscoveryQuery || m.State == StateDiscoveryResults || m.State == StateDiscoveryInspect {
 		return m.renderDiscovery(theme, width, height)
+	}
+	if m.State == StateCollectionInput || m.State == StateCollectionDelete || m.State == StateCollectionAdd || m.State == StateCollectionSuggestions {
+		return m.renderCollectionInteraction(theme, width, height)
 	}
 	if m.State == StateHelp {
 		return m.renderHelp(theme, width)
@@ -1519,10 +1552,21 @@ func (m Model) keyParts() []keyPart {
 			return []keyPart{{"esc", "close"}, {"?", "close"}}
 		case StateFeedback:
 			return []keyPart{{"↑↓/jk", "scroll"}, {"pgup/pgdown", "page"}, {"esc", "close"}, {"x", "dismiss"}}
+		case StateCollectionInput:
+			return []keyPart{{"type", "input"}, {"enter", "submit"}, {"esc", "cancel"}}
+		case StateCollectionDelete:
+			return []keyPart{{"y", "delete organization"}, {"n", "cancel"}}
+		case StateCollectionAdd:
+			return []keyPart{{"↑↓/jk", "choose"}, {"enter", "add exact install"}, {"esc", "cancel"}}
+		case StateCollectionSuggestions:
+			return []keyPart{{"↑↓/jk", "review"}, {"enter", "manual accept"}, {"esc", "cancel"}}
 		}
 	}
 	if m.Mode == ViewGuidedReview {
 		return []keyPart{{"k", "keep"}, {"q", "quarantine"}, {"l", "revisit later"}, {"↑↓", "scroll"}, {"esc", "back"}}
+	}
+	if m.Mode == ViewCollections {
+		return []keyPart{{"↑↓/jk", "move"}, {"pgup/pgdown", "details"}, {"tab", "focus"}, {"n", "new"}, {"a", "add"}, {"s", "suggest"}, {"x", "remove"}, {"ctrl+d", "delete collection"}, {"f", "back"}}
 	}
 	parts := []keyPart{{"↑↓/jk", "move"}}
 	if m.Mode == ViewFindings {
@@ -1536,7 +1580,7 @@ func (m Model) keyParts() []keyPart {
 	} else {
 		parts = append(parts, keyPart{"enter", "story"})
 	}
-	parts = append(parts, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"m", "draft merge"}, keyPart{"v", "guided review"})
+	parts = append(parts, keyPart{"c", "collections"}, keyPart{"ctrl+r", "rename"}, keyPart{"ctrl+u", "restore"}, keyPart{"ctrl+b", "batch"}, keyPart{"m", "draft merge"}, keyPart{"v", "guided review"})
 	return parts
 }
 
@@ -1550,6 +1594,8 @@ func (m Model) itemCount() int {
 		if _, ok := m.GuidedReview.Current(); ok {
 			return 1
 		}
+	case ViewCollections:
+		return len(m.CollectionUI.Collections)
 	}
 	return 0
 }
