@@ -258,14 +258,14 @@ func TestSkillInventoryGroupsDuplicateInstalls(t *testing.T) {
 	}
 }
 
-func TestKeybarTruncatesAtSmallWidth(t *testing.T) {
+func TestKeybarTruncatesAtMinimumSupportedWidth(t *testing.T) {
 	m := New([]inventory.Skill{{Name: "alpha"}}, []analysis.Finding{{ID: "x", Type: analysis.FindingDuplicate, Title: "Duplicate alpha", Skills: []inventory.Skill{{Name: "alpha"}}}})
-	updated, _ := m.Update(tea.WindowSizeMsg{Width: 70, Height: 20})
+	updated, _ := m.Update(tea.WindowSizeMsg{Width: minimumWidth, Height: 20})
 	m = updated.(Model)
 	view := m.View()
 	lines := strings.Split(view, "\n")
 	keybar := lines[len(lines)-1]
-	if lipgloss.Width(keybar) > 72 {
+	if lipgloss.Width(keybar) > minimumWidth {
 		t.Fatalf("keybar overflow width=%d line=%q", lipgloss.Width(keybar), keybar)
 	}
 	if !strings.Contains(keybar, "…") {
