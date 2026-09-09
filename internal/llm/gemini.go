@@ -244,7 +244,12 @@ func (a GeminiAnalyzer) generateText(ctx context.Context, prompt string, maxToke
 	panic("unreachable")
 }
 
-func (a GeminiAnalyzer) generateTextAttempt(ctx context.Context, prompt string, maxTokens int, jsonMode bool) (string, error) {
+func (a GeminiAnalyzer) generateTextAttempt(ctx context.Context, prompt string, maxTokens int, jsonMode bool) (text string, err error) {
+	defer func() {
+		if err != nil {
+			err = redactGeminiError(err, a.APIKey)
+		}
+	}()
 	if strings.TrimSpace(a.APIKey) == "" {
 		return "", fmt.Errorf("missing Gemini API key")
 	}
@@ -254,6 +259,9 @@ func (a GeminiAnalyzer) generateTextAttempt(ctx context.Context, prompt string, 
 			Temperature:     ptrFloat64(0),
 			MaxOutputTokens: maxTokens,
 		},
+	}
+	if strings.HasPrefix(strings.TrimPrefix(a.model(), "models/"), "gemini-3") {
+		body.GenerationConfig.ThinkingConfig = &geminiThinkingConfig{ThinkingLevel: "low"}
 	}
 	if jsonMode {
 		body.GenerationConfig.ResponseMimeType = "application/json"
@@ -267,11 +275,18 @@ func (a GeminiAnalyzer) generateTextAttempt(ctx context.Context, prompt string, 
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("x-goog-api-key", a.APIKey)
 	client := a.Client
 	if client == nil {
-		client = &http.Client{Timeout: 30 * time.Second}
+		client = &http.Client{Timeout: 120 * time.Second}
 	}
-	resp, err := client.Do(req)
+	// Do not forward authentication headers through redirects. Clone injected
+	// clients so their timeout, transport, and redirect policy remain untouched.
+	requestClient := *client
+	requestClient.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("Gemini redirects are not allowed")
+	}
+	resp, err := requestClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -313,7 +328,7 @@ func (a GeminiAnalyzer) endpoint() string {
 		base = defaultGeminiBaseURL
 	}
 	model := strings.TrimPrefix(a.model(), "models/")
-	return fmt.Sprintf("%s/models/%s:generateContent?key=%s", base, url.PathEscape(model), url.QueryEscape(a.APIKey))
+	return fmt.Sprintf("%s/models/%s:generateContent", base, url.PathEscape(model))
 }
 
 func (a GeminiAnalyzer) model() string {
@@ -382,10 +397,15 @@ type geminiPart struct {
 	Thought bool   `json:"thought,omitempty"`
 }
 
+type geminiThinkingConfig struct {
+	ThinkingLevel string `json:"thinkingLevel"`
+}
+
 type geminiGenerationConfig struct {
-	Temperature      *float64 `json:"temperature,omitempty"`
-	MaxOutputTokens  int      `json:"maxOutputTokens,omitempty"`
-	ResponseMimeType string   `json:"responseMimeType,omitempty"`
+	ThinkingConfig   *geminiThinkingConfig `json:"thinkingConfig,omitempty"`
+	Temperature      *float64              `json:"temperature,omitempty"`
+	MaxOutputTokens  int                   `json:"maxOutputTokens,omitempty"`
+	ResponseMimeType string                `json:"responseMimeType,omitempty"`
 }
 
 type geminiGenerateResponse struct {

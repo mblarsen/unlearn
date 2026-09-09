@@ -14,8 +14,8 @@ func TestGeminiAnalyzerSummarizeCallsGenerateContent(t *testing.T) {
 		if r.URL.Path != "/models/gemini-3-flash-preview:generateContent" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
-		if r.URL.Query().Get("key") != "test-key" {
-			t.Fatalf("missing API key in query: %s", r.URL.RawQuery)
+		if r.Header.Get("x-goog-api-key") != "test-key" || r.URL.RawQuery != "" {
+			t.Fatal("API key must be sent only in the header")
 		}
 		var req geminiGenerateRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

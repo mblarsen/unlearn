@@ -515,7 +515,7 @@ func runAudit(opts *cliOptions, loadOpts inventoryLoadOptions, cachePolicy audit
 		return audit.Result{}, err
 	}
 	for _, diagnostic := range result.Diagnostics {
-		opts.warnings = append(opts.warnings, diagnostic.Message)
+		opts.warnings = append(opts.warnings, llm.RedactDiagnostic(diagnostic.Message))
 	}
 	return result, nil
 }
