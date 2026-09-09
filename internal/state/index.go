@@ -3,13 +3,12 @@ package state
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/mblarsen/unlearn/internal/analysis"
 	"github.com/mblarsen/unlearn/internal/inventory"
+	"github.com/mblarsen/unlearn/internal/inventorysnapshot"
 )
 
 // inventoryCacheKey versions cached analysis semantics as well as payload shape.
@@ -70,70 +69,18 @@ func LoadInventoryCache(db *sql.DB) ([]inventory.Skill, []analysis.Finding, erro
 	return payload.Skills, payload.Findings, nil
 }
 
-// ReconcileMissingPaths removes cached installs whose encountered paths were
-// deleted outside unlearn. Lstat keeps broken symlinks in inventory while
-// permission and other filesystem errors remain visible instead of being
-// mistaken for absence.
+// ReconcileMissingPaths retains the cache interface while delegating exact
+// identity and snapshot transformation to inventorysnapshot.
 func ReconcileMissingPaths(skills []inventory.Skill, findings []analysis.Finding) ([]inventory.Skill, []analysis.Finding, []inventory.Skill) {
-	var missing []inventory.Skill
-	for _, skill := range skills {
-		if skill.EncounteredPath == "" {
-			continue
-		}
-		if _, err := os.Lstat(skill.EncounteredPath); errors.Is(err, os.ErrNotExist) {
-			missing = append(missing, skill)
-		}
-	}
-	remainingSkills, remainingFindings := RemoveInventorySkills(skills, findings, missing)
-	return remainingSkills, remainingFindings, missing
+	reconciled, missing := inventorysnapshot.ReconcileMissing(inventorysnapshot.Snapshot{Skills: skills, Findings: findings})
+	return reconciled.Skills, reconciled.Findings, missing
 }
 
-// RemoveInventorySkills removes exact installs and prunes findings that no
-// longer have enough members to be meaningful.
+// RemoveInventorySkills retains the state interface for callers while using the
+// single exact-install identity rule owned by inventorysnapshot.
 func RemoveInventorySkills(skills []inventory.Skill, findings []analysis.Finding, removed []inventory.Skill) ([]inventory.Skill, []analysis.Finding) {
-	remainingSkills := append([]inventory.Skill(nil), skills...)
-	remainingFindings := append([]analysis.Finding(nil), findings...)
-	for _, skill := range removed {
-		remainingSkills = removeSkill(remainingSkills, skill)
-		nextFindings := make([]analysis.Finding, 0, len(remainingFindings))
-		for _, finding := range remainingFindings {
-			finding.Skills = removeSkill(finding.Skills, skill)
-			if keepFinding(finding) {
-				nextFindings = append(nextFindings, finding)
-			}
-		}
-		remainingFindings = nextFindings
-	}
-	return remainingSkills, remainingFindings
-}
-
-func removeSkill(skills []inventory.Skill, removed inventory.Skill) []inventory.Skill {
-	out := make([]inventory.Skill, 0, len(skills))
-	for _, skill := range skills {
-		if !sameSkillInstall(skill, removed) {
-			out = append(out, skill)
-		}
-	}
-	return out
-}
-
-func sameSkillInstall(a, b inventory.Skill) bool {
-	if a.ID != "" && b.ID != "" && a.ID == b.ID {
-		return true
-	}
-	if a.EncounteredPath != "" && b.EncounteredPath != "" {
-		return a.EncounteredPath == b.EncounteredPath
-	}
-	return a.Name == b.Name && a.Root == b.Root
-}
-
-func keepFinding(finding analysis.Finding) bool {
-	switch finding.Type {
-	case analysis.FindingDuplicate, analysis.FindingConflict, analysis.FindingOverlap:
-		return len(finding.Skills) > 1
-	default:
-		return len(finding.Skills) > 0
-	}
+	reconciled := inventorysnapshot.Remove(inventorysnapshot.Snapshot{Skills: skills, Findings: findings}, removed)
+	return reconciled.Skills, reconciled.Findings
 }
 
 func boolInt(val bool) int {
