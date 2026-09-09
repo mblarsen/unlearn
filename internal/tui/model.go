@@ -310,9 +310,9 @@ func (m Model) updateRestoreSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.PickerScroll = 0
 		}
 	case "pgdown":
-		m.PickerScroll += 5
+		m.PickerScroll++
 	case "pgup":
-		m.PickerScroll = max(0, m.PickerScroll-5)
+		m.PickerScroll = max(0, m.PickerScroll-1)
 	case "enter":
 		if len(m.RestoreChoices) == 0 {
 			m.cancel("no quarantined skills")
@@ -348,9 +348,9 @@ func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.PickerScroll = 0
 		}
 	case "pgdown":
-		m.PickerScroll += 5
+		m.PickerScroll++
 	case "pgup":
-		m.PickerScroll = max(0, m.PickerScroll-5)
+		m.PickerScroll = max(0, m.PickerScroll-1)
 	case " ":
 		if m.InstallCursor < len(skills) {
 			if m.InstallSelections == nil {
@@ -392,9 +392,9 @@ func (m Model) updateBatchRootSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.PickerScroll = 0
 		}
 	case "pgdown":
-		m.PickerScroll += 5
+		m.PickerScroll++
 	case "pgup":
-		m.PickerScroll = max(0, m.PickerScroll-5)
+		m.PickerScroll = max(0, m.PickerScroll-1)
 	case "enter":
 		if len(m.BatchRootChoices) == 0 {
 			m.cancel("no duplicate root selected")
@@ -1140,7 +1140,7 @@ func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 		if len(rows) == 0 {
 			rows = []string{theme.Muted.Render("  No quarantined skills found")}
 		}
-		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓ then enter; PgUp/PgDn scroll selected:"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
+		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · PgUp/PgDn scroll · enter select"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
 	}
 	if m.State == StateSelectBatchRoot {
 		labels := make([]string, 0, len(m.BatchRootChoices))
@@ -1148,7 +1148,7 @@ func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 			labels = append(labels, fmt.Sprintf("%s · %d duplicate installs", choice.Root, len(choice.Skills)))
 		}
 		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, labels, m.BatchRootCursor, width)
-		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓ then enter; PgUp/PgDn scroll selected:"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
+		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · PgUp/PgDn scroll · enter select"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
 	}
 	if m.State == StateSelectInstall {
 		choices := m.pendingInstallChoices()
@@ -1164,7 +1164,7 @@ func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 			labels = append(labels, fmt.Sprintf("All %d installs", len(choices)))
 		}
 		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, labels, m.InstallCursor, width)
-		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓, space to mark many, enter; PgUp/PgDn scroll selected:"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
+		lines = appendPickerWindow(lines, theme.Muted.Render("↑/↓ choose · space mark · PgUp/PgDn scroll · enter"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
 	}
 	if m.State == StateSelectDraftSkills {
 		lines = append(lines, m.renderDraftSkillPicker(theme, width, height-len(lines)-3)...)

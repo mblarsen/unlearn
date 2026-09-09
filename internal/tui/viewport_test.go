@@ -36,40 +36,75 @@ func TestInstallPickerKeepsCursorAndOptionsVisibleForLongLists(t *testing.T) {
 	}
 }
 
-func TestInstallPickerCanScrollWithinASelectedLongPath(t *testing.T) {
+func TestInstallPickerCanReachEveryLineOfSelectedLongPath(t *testing.T) {
 	var skills []inventory.Skill
+	var segments []string
 	for i := 0; i < 30; i++ {
 		path := fmt.Sprintf("/tmp/root-%02d/", i)
 		if i == 15 {
-			path += strings.Repeat("nested-directory/", 12) + "EXACT-TARGET"
+			for segment := 0; segment < 20; segment++ {
+				name := fmt.Sprintf("segment%02d", segment)
+				segments = append(segments, name)
+				path += name + "/"
+			}
+			path += "EXACT-TARGET"
 		}
 		skills = append(skills, inventory.Skill{Name: fmt.Sprintf("skill-%02d", i), EncounteredPath: path})
 	}
+	finding := analysis.Finding{ID: "duplicate:many", Type: analysis.FindingDuplicate, Title: "many", Skills: skills}
 	for _, height := range []int{18, 24} {
 		t.Run(fmt.Sprintf("80x%d", height), func(t *testing.T) {
-			m := New(skills, []analysis.Finding{{ID: "duplicate:many", Type: analysis.FindingDuplicate, Title: "many", Skills: skills}})
-			m.State = StateSelectInstall
-			m.PendingAction = ActionDelete
-			m.PendingFinding = m.Findings[0]
-			m.InstallCursor = 15
+			m := New(skills, []analysis.Finding{finding})
 			m.Width, m.Height = 80, height
-
-			for range 10 {
-				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+			updated, _ := m.Update(key("ctrl+d"))
+			m = updated.(Model)
+			if m.State != StateSelectInstall || m.Message == "" {
+				t.Fatalf("expected real delete flow to open install picker, state=%v", m.State)
+			}
+			for range 15 {
+				updated, _ = m.Update(key("j"))
 				m = updated.(Model)
 			}
-			view := m.View()
-			if !strings.Contains(view, "EXACT-TARGET") || !strings.Contains(view, "Options") {
-				t.Fatalf("selected long path suffix is not reachable with page-down:\n%s", view)
+
+			seen := map[string]bool{}
+			for range 50 {
+				view := m.View()
+				assertViewportBounds(t, view, 80, height)
+				for _, segment := range segments {
+					seen[segment] = seen[segment] || strings.Contains(view, segment)
+				}
+				if strings.Contains(view, "EXACT-TARGET") {
+					seen["EXACT-TARGET"] = true
+				}
+				updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				m = updated.(Model)
 			}
-			for range 10 {
-				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+			for _, want := range append(segments, "EXACT-TARGET") {
+				if !seen[want] {
+					t.Errorf("selected path segment %q was never reachable", want)
+				}
+			}
+			for range 50 {
+				updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
 				m = updated.(Model)
 			}
 			if view := m.View(); !strings.Contains(view, "skill-15") {
-				t.Fatalf("selected long path start is not reachable with page-up:\n%s", view)
+				t.Fatalf("selected path start is not reachable with page-up:\n%s", view)
 			}
 		})
+	}
+}
+
+func assertViewportBounds(t *testing.T, view string, width, height int) {
+	t.Helper()
+	lines := strings.Split(view, "\n")
+	if len(lines) > height {
+		t.Fatalf("rendered %d lines in a %d-line viewport:\n%s", len(lines), height, view)
+	}
+	for _, line := range lines {
+		if lipgloss.Width(line) > width {
+			t.Fatalf("rendered width %d in a %d-column viewport: %q", lipgloss.Width(line), width, line)
+		}
 	}
 }
 
