@@ -56,3 +56,6 @@ Add a guided review that shows one exact installed skill at a time. Each item us
 - [x] Add TUI behavior and bounded render tests.
 - [x] Connect keep, revisit, and safe quarantine actions.
 - [x] Run all required validation.
+- [x] Keep all content reachable through a lossless review viewport.
+- [x] Preserve feedback controls and Ctrl+C in review mode.
+- [x] Commit logical progress only after its TOML save succeeds.

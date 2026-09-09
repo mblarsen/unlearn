@@ -110,6 +110,7 @@ type Model struct {
 	draftLifecycle              draftLifecycle
 	Discovery                   discoveryState
 	GuidedReview                review.Session
+	GuidedReviewScroll          int
 	guidedReviewDecisionPending bool
 }
 
@@ -326,10 +327,14 @@ func (m Model) updateQuarantineConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		outcome := m.Actions.Mutate(workbench.Request{Kind: workbench.Quarantine, Authorized: true, Snapshot: m.snapshot(), Targets: m.selectedPendingSkills()})
 		m.applyMutationOutcome(outcome)
 		if m.guidedReviewDecisionPending && (len(outcome.Removed) > 0 || len(outcome.Missing) > 0) {
-			if err := m.recordGuidedReviewDecision(review.ActionQuarantine); err != nil {
+			next, err := m.saveGuidedReviewDecision(review.ActionQuarantine)
+			if err != nil {
+				m.GuidedReview = next
 				m.fail(fmt.Errorf("quarantine changed the install but review progress was not saved: %w", err))
 				return m, nil
 			}
+			m.GuidedReview = next
+			m.GuidedReviewScroll = 0
 		}
 		status := actionResultStatus("quarantined", outcome)
 		if err := outcome.Err(); err != nil {
@@ -1512,7 +1517,7 @@ func (m Model) keyParts() []keyPart {
 		}
 	}
 	if m.Mode == ViewGuidedReview {
-		return []keyPart{{"k", "keep"}, {"q", "quarantine"}, {"l", "revisit later"}, {"esc", "back"}}
+		return []keyPart{{"k", "keep"}, {"q", "quarantine"}, {"l", "revisit later"}, {"↑↓", "scroll"}, {"esc", "back"}}
 	}
 	parts := []keyPart{{"↑↓/jk", "move"}}
 	if m.Mode == ViewFindings {

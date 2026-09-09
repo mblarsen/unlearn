@@ -198,6 +198,96 @@ func TestGuidedReviewCancelDoesNotRecordDecision(t *testing.T) {
 	}
 }
 
+func TestGuidedReviewContentIsScrollableAndLongPathIsReachable(t *testing.T) {
+	longTail := strings.Repeat("長", 90) + "PATH-END"
+	skill := inventory.Skill{Name: "alpha", Root: "/tmp", EncounteredPath: "/tmp/" + longTail}
+	m := New([]inventory.Skill{skill}, []analysis.Finding{reviewFinding(analysis.FindingUnseen, "unseen:alpha", skill)})
+	m.Width, m.Height = 80, 18
+	updated, _ := m.Update(key("v"))
+	m = updated.(Model)
+	seen := m.View()
+	for i := 0; i < 50; i++ {
+		updated, _ = m.Update(key("down"))
+		m = updated.(Model)
+		seen += "\n" + m.View()
+	}
+	if !strings.Contains(seen, "Consequence") || !strings.Contains(seen, "PATH-END") {
+		t.Fatalf("review content is not fully reachable:\n%s", seen)
+	}
+}
+
+func TestGuidedReviewRoutesFeedbackAndInterruptControls(t *testing.T) {
+	skill := inventory.Skill{Name: "alpha", Root: "/tmp", EncounteredPath: "/tmp/alpha"}
+	m := New([]inventory.Skill{skill}, []analysis.Finding{reviewFinding(analysis.FindingUnseen, "unseen:alpha", skill)})
+	updated, _ := m.Update(key("v"))
+	m = updated.(Model)
+	m.setStatus("error: " + strings.Repeat("long error ", 80) + "RECOVERY-END")
+	updated, _ = m.Update(key("enter"))
+	m = updated.(Model)
+	if m.State != StateFeedback {
+		t.Fatal("enter did not open advertised feedback details")
+	}
+	updated, _ = m.Update(key("esc"))
+	m = updated.(Model)
+	updated, _ = m.Update(key("x"))
+	m = updated.(Model)
+	if m.Status != "" {
+		t.Fatal("x did not dismiss guided review feedback")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c did not return a quit command")
+	}
+}
+
+func TestConfigActionServiceFailedReviewSaveDoesNotMutateMemory(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	service := &ConfigActionService{ConfigPath: path, Config: config.Default()}
+	initial := review.State{Scope: []review.ScopeItem{{ID: "one", FindingID: "unseen:alpha", SkillName: "alpha", InstallPath: "/tmp/alpha"}}}
+	if err := service.SaveGuidedReviewState(initial); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	candidate := initial
+	candidate.Decisions = []review.Decision{{ItemID: "one", Action: review.ActionRevisit}}
+	if err := service.SaveGuidedReviewState(candidate); err == nil {
+		t.Fatal("expected save failure")
+	}
+	saved, _ := service.GuidedReviewState()
+	if len(saved.Decisions) != 0 {
+		t.Fatalf("failed save mutated in-memory config: %#v", saved)
+	}
+}
+
+func TestGuidedReviewFailedDecisionSaveRemainsRetryable(t *testing.T) {
+	skill := inventory.Skill{Name: "alpha", Root: "/tmp", EncounteredPath: "/tmp/alpha"}
+	service := &fakeActionService{}
+	m := NewWithActions([]inventory.Skill{skill}, []analysis.Finding{reviewFinding(analysis.FindingUnseen, "unseen:alpha", skill)}, service)
+	updated, _ := m.Update(key("v"))
+	m = updated.(Model)
+	service.reviewSaveErr = os.ErrPermission
+	updated, _ = m.Update(key("l"))
+	m = updated.(Model)
+	if _, ok := m.GuidedReview.Current(); !ok {
+		t.Fatal("failed save advanced the running review")
+	}
+	if len(service.reviewState.Decisions) != 0 {
+		t.Fatalf("failed save mutated service state: %#v", service.reviewState)
+	}
+	service.reviewSaveErr = nil
+	updated, _ = m.Update(key("l"))
+	m = updated.(Model)
+	if !m.GuidedReview.Complete() {
+		t.Fatal("decision was not retryable after save recovered")
+	}
+}
+
 func TestGuidedReviewRendersBoundedAtSupportedSizes(t *testing.T) {
 	skill := inventory.Skill{Name: "技能-α", Root: "/tmp/skills", EncounteredPath: "/tmp/skills/非常に長い技能-α"}
 	m := New([]inventory.Skill{skill}, []analysis.Finding{reviewFinding(analysis.FindingUnseen, "unseen:技能-α", skill)})

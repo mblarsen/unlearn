@@ -169,6 +169,7 @@ func (m Model) renderHelp(theme ui.Theme, width int) []string {
 			theme.Badge.Render("GUIDED REVIEW HELP"),
 			"",
 			theme.Section.Render("One decision at a time"),
+			theme.Key.Render("↓/j") + " scroll down  " + theme.Key.Render("↑") + " scroll up  " + theme.Key.Render("PgUp/PgDn") + " page",
 			theme.Key.Render("k") + " keep the logical skill name",
 			theme.Key.Render("q") + " quarantine this exact install after confirmation",
 			theme.Key.Render("l") + " revisit in a later review",

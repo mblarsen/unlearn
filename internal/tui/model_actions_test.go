@@ -37,6 +37,7 @@ type fakeActionService struct {
 	draftSelected    []string
 	reviewState      review.State
 	reviewSaves      int
+	reviewSaveErr    error
 }
 
 func (f *fakeActionService) KeepSkill(skill inventory.Skill) error {
@@ -125,8 +126,11 @@ func (f *fakeActionService) GuidedReviewState() (review.State, []string) {
 	return f.reviewState, append([]string(nil), f.kept...)
 }
 func (f *fakeActionService) SaveGuidedReviewState(state review.State) error {
-	f.reviewState = state
 	f.reviewSaves++
+	if f.reviewSaveErr != nil {
+		return f.reviewSaveErr
+	}
+	f.reviewState = state
 	return nil
 }
 func (f *fakeActionService) DraftMerge(_ context.Context, skills []inventory.Skill) (llm.DraftResult, error) {

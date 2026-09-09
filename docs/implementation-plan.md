@@ -286,6 +286,9 @@ Relevant commits: `0d8c029`, `b291529`, `99099c6`, `b9b9eff`, `0054000`, `f62bb1
 - [x] Reuse the workbench write gate, exact-target confirmation, quarantine, and SQLite reconciliation.
 - [x] Distinguish scoped completion from a clean global inventory.
 - [x] Cover empty, restart, missing, cancel, partial outcome, Unicode path, and supported viewport states.
+- [x] Keep long evidence, consequences, and paths reachable through scrolling.
+- [x] Preserve feedback details, dismissal, and terminal interrupt controls in review mode.
+- [x] Keep failed TOML decisions retryable without changing saved or running logical state.
 
 See `docs/guided-maintenance-review-plan.md` for the decision record and review semantics.
 

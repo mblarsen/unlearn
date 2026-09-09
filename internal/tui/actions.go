@@ -84,8 +84,16 @@ func (s *ConfigActionService) GuidedReviewState() (review.State, []string) {
 }
 
 func (s *ConfigActionService) SaveGuidedReviewState(state review.State) error {
-	s.Config.GuidedReview = state
-	return s.save()
+	candidate := s.Config
+	candidate.GuidedReview = state
+	if s.ConfigPath == "" {
+		return fmt.Errorf("config path is required")
+	}
+	if err := candidate.Save(s.ConfigPath); err != nil {
+		return err
+	}
+	s.Config = candidate
+	return nil
 }
 
 func (s *ConfigActionService) FirstMissingWrite(skills []inventory.Skill) (inventory.Skill, bool) {
