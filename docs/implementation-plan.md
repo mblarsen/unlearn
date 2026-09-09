@@ -222,7 +222,7 @@ Interactive QA extended the original dashboard interaction plan. The implemented
 - [x] Replace silent width inflation with an explicit 80×18 minimum-size gate.
 - [x] Keep install, restore, and batch picker cursors visible for long lists.
 - [x] Reserve modal option rows when confirmation content exceeds the viewport.
-- [x] Wrap selected install paths and provenance instead of permanently truncating them.
+- [x] Wrap selected install paths and provenance, with Page Up/Page Down access when a selected path exceeds the picker viewport.
 - [x] Cover 80×24, 120×40, 200×60, narrow, short, long-list, and long-path renders with fixture-only tests.
 
 Relevant commits: `0d8c029`, `b291529`, `99099c6`, `b9b9eff`, `0054000`, `f62bb1a`, `424c699`, `8058fc6`, `fd055a6`, `7ac6b68`.

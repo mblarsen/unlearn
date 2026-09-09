@@ -79,6 +79,7 @@ type Model struct {
 	RestoreChoices    []string
 	BatchRootCursor   int
 	BatchRootChoices  []fsactions.BatchRootChoice
+	PickerScroll      int
 	Input             string
 	Message           string
 	Status            string
@@ -301,11 +302,17 @@ func (m Model) updateRestoreSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "j", "down":
 		if m.RestoreCursor < len(m.RestoreChoices)-1 {
 			m.RestoreCursor++
+			m.PickerScroll = 0
 		}
 	case "k", "up":
 		if m.RestoreCursor > 0 {
 			m.RestoreCursor--
+			m.PickerScroll = 0
 		}
+	case "pgdown":
+		m.PickerScroll += 5
+	case "pgup":
+		m.PickerScroll = max(0, m.PickerScroll-5)
 	case "enter":
 		if len(m.RestoreChoices) == 0 {
 			m.cancel("no quarantined skills")
@@ -333,11 +340,17 @@ func (m Model) updateInstallSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "j", "down":
 		if m.InstallCursor < maxCursor {
 			m.InstallCursor++
+			m.PickerScroll = 0
 		}
 	case "k", "up":
 		if m.InstallCursor > 0 {
 			m.InstallCursor--
+			m.PickerScroll = 0
 		}
+	case "pgdown":
+		m.PickerScroll += 5
+	case "pgup":
+		m.PickerScroll = max(0, m.PickerScroll-5)
 	case " ":
 		if m.InstallCursor < len(skills) {
 			if m.InstallSelections == nil {
@@ -371,11 +384,17 @@ func (m Model) updateBatchRootSelection(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "j", "down":
 		if m.BatchRootCursor < len(m.BatchRootChoices)-1 {
 			m.BatchRootCursor++
+			m.PickerScroll = 0
 		}
 	case "k", "up":
 		if m.BatchRootCursor > 0 {
 			m.BatchRootCursor--
+			m.PickerScroll = 0
 		}
+	case "pgdown":
+		m.PickerScroll += 5
+	case "pgup":
+		m.PickerScroll = max(0, m.PickerScroll-5)
 	case "enter":
 		if len(m.BatchRootChoices) == 0 {
 			m.cancel("no duplicate root selected")
@@ -823,6 +842,7 @@ func (m *Model) resetInteraction() {
 	m.BatchRootCursor = 0
 	m.BatchRootChoices = nil
 	m.RestoreChoices = nil
+	m.PickerScroll = 0
 	m.Input = ""
 	m.Message = ""
 	m.RenamePreview = fsactions.RenamePreview{}
@@ -1116,19 +1136,19 @@ func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 		}
 	}
 	if m.State == StateSelectRestore {
-		rows, selectedLine := renderStringChoiceRows(theme, m.RestoreChoices, m.RestoreCursor, width)
+		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, m.RestoreChoices, m.RestoreCursor, width)
 		if len(rows) == 0 {
 			rows = []string{theme.Muted.Render("  No quarantined skills found")}
 		}
-		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓ then enter:"), rows, selectedLine, height)
+		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓ then enter; PgUp/PgDn scroll selected:"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
 	}
 	if m.State == StateSelectBatchRoot {
 		labels := make([]string, 0, len(m.BatchRootChoices))
 		for _, choice := range m.BatchRootChoices {
 			labels = append(labels, fmt.Sprintf("%s · %d duplicate installs", choice.Root, len(choice.Skills)))
 		}
-		rows, selectedLine := renderStringChoiceRows(theme, labels, m.BatchRootCursor, width)
-		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓ then enter:"), rows, selectedLine, height)
+		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, labels, m.BatchRootCursor, width)
+		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓ then enter; PgUp/PgDn scroll selected:"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
 	}
 	if m.State == StateSelectInstall {
 		choices := m.pendingInstallChoices()
@@ -1143,8 +1163,8 @@ func (m Model) renderInteraction(theme ui.Theme, width, height int) []string {
 		if m.canActOnAllInstalls() {
 			labels = append(labels, fmt.Sprintf("All %d installs", len(choices)))
 		}
-		rows, selectedLine := renderStringChoiceRows(theme, labels, m.InstallCursor, width)
-		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓, space to mark many, enter:"), rows, selectedLine, height)
+		rows, selectedLine, selectedHeight := renderStringChoiceRows(theme, labels, m.InstallCursor, width)
+		lines = appendPickerWindow(lines, theme.Muted.Render("Use ↑/↓, space to mark many, enter; PgUp/PgDn scroll selected:"), rows, selectedLine, selectedHeight, m.PickerScroll, height)
 	}
 	if m.State == StateSelectDraftSkills {
 		lines = append(lines, m.renderDraftSkillPicker(theme, width, height-len(lines)-3)...)
@@ -1472,15 +1492,16 @@ func fitLinesPreservingTail(lines []string, height, tailHeight int) []string {
 	return append(head, lines[tailStart:]...)
 }
 
-func appendPickerWindow(lines []string, instruction string, rows []string, selectedLine, height int) []string {
+func appendPickerWindow(lines []string, instruction string, rows []string, selectedLine, selectedHeight, scroll, height int) []string {
 	lines = append(lines, "", instruction)
 	rowHeight := max(1, height-len(lines)-3)
-	return append(lines, windowLines(rows, rowHeight, selectedLine)...)
+	return append(lines, windowSelectedLines(rows, rowHeight, selectedLine, selectedHeight, scroll)...)
 }
 
-func renderStringChoiceRows(theme ui.Theme, labels []string, cursor, width int) ([]string, int) {
+func renderStringChoiceRows(theme ui.Theme, labels []string, cursor, width int) ([]string, int, int) {
 	rows := make([]string, 0, len(labels))
 	selectedLine := 0
+	selectedHeight := 0
 	for i, label := range labels {
 		prefix := "  "
 		style := theme.Row
@@ -1493,10 +1514,68 @@ func renderStringChoiceRows(theme ui.Theme, labels []string, cursor, width int) 
 		selectedLine = len(rows)
 		for _, line := range wrapPreservingText(prefix+label, width) {
 			rows = append(rows, style.Render(line))
+			selectedHeight++
 			prefix = "  "
 		}
 	}
-	return rows, selectedLine
+	return rows, selectedLine, selectedHeight
+}
+
+func windowSelectedLines(lines []string, height, selectedLine, selectedHeight, scroll int) []string {
+	if height <= 0 || len(lines) <= height {
+		return ui.FitLines(lines, height)
+	}
+	selectedEnd := min(len(lines), selectedLine+max(1, selectedHeight))
+	showAbove := selectedLine > 0 || scroll > 0
+	showBelow := selectedEnd < len(lines)
+	contentHeight := height
+	if showAbove {
+		contentHeight--
+	}
+	if showBelow {
+		contentHeight--
+	}
+	contentHeight = max(1, contentHeight)
+
+	if selectedHeight > contentHeight {
+		maxScroll := max(0, selectedHeight-contentHeight)
+		scroll = min(max(0, scroll), maxScroll)
+		showAbove = selectedLine > 0 || scroll > 0
+		showBelow = selectedLine+scroll+contentHeight < len(lines)
+		contentHeight = height
+		if showAbove {
+			contentHeight--
+		}
+		if showBelow {
+			contentHeight--
+		}
+		contentHeight = max(1, contentHeight)
+		maxScroll = max(0, selectedHeight-contentHeight)
+		scroll = min(scroll, maxScroll)
+		start := selectedLine + scroll
+		end := min(selectedEnd, start+contentHeight)
+		return addWindowIndicators(lines[start:end], showAbove, end < len(lines), height)
+	}
+
+	contextHeight := max(0, contentHeight-selectedHeight)
+	before := min(selectedLine, contextHeight/2)
+	after := min(len(lines)-selectedEnd, contextHeight-before)
+	before = min(selectedLine, contextHeight-after)
+	start := selectedLine - before
+	end := selectedEnd + after
+	return addWindowIndicators(lines[start:end], start > 0, end < len(lines), height)
+}
+
+func addWindowIndicators(content []string, above, below bool, height int) []string {
+	out := make([]string, 0, height)
+	if above {
+		out = append(out, "… above")
+	}
+	out = append(out, content...)
+	if below && len(out) < height {
+		out = append(out, "… more")
+	}
+	return out
 }
 
 func wrapPreservingText(value string, width int) []string {

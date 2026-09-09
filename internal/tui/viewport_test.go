@@ -36,6 +36,43 @@ func TestInstallPickerKeepsCursorAndOptionsVisibleForLongLists(t *testing.T) {
 	}
 }
 
+func TestInstallPickerCanScrollWithinASelectedLongPath(t *testing.T) {
+	var skills []inventory.Skill
+	for i := 0; i < 30; i++ {
+		path := fmt.Sprintf("/tmp/root-%02d/", i)
+		if i == 15 {
+			path += strings.Repeat("nested-directory/", 12) + "EXACT-TARGET"
+		}
+		skills = append(skills, inventory.Skill{Name: fmt.Sprintf("skill-%02d", i), EncounteredPath: path})
+	}
+	for _, height := range []int{18, 24} {
+		t.Run(fmt.Sprintf("80x%d", height), func(t *testing.T) {
+			m := New(skills, []analysis.Finding{{ID: "duplicate:many", Type: analysis.FindingDuplicate, Title: "many", Skills: skills}})
+			m.State = StateSelectInstall
+			m.PendingAction = ActionDelete
+			m.PendingFinding = m.Findings[0]
+			m.InstallCursor = 15
+			m.Width, m.Height = 80, height
+
+			for range 10 {
+				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgDown})
+				m = updated.(Model)
+			}
+			view := m.View()
+			if !strings.Contains(view, "EXACT-TARGET") || !strings.Contains(view, "Options") {
+				t.Fatalf("selected long path suffix is not reachable with page-down:\n%s", view)
+			}
+			for range 10 {
+				updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyPgUp})
+				m = updated.(Model)
+			}
+			if view := m.View(); !strings.Contains(view, "skill-15") {
+				t.Fatalf("selected long path start is not reachable with page-up:\n%s", view)
+			}
+		})
+	}
+}
+
 func TestRestoreAndBatchPickersFollowCursor(t *testing.T) {
 	m := New(nil, nil)
 	m.Width, m.Height = 80, 24
