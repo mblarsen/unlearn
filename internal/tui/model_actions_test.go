@@ -93,7 +93,11 @@ func (f *fakeActionService) Mutate(request workbench.Request) workbench.Outcome 
 		f.renamed = append(f.renamed, skill.Name+":"+request.NewName)
 		preview := fsactions.PreviewRename(skill, request.NewName)
 		outcome.RenamePreview = preview
-		outcome.Snapshot, _ = inventorysnapshot.Rename(outcome.Snapshot, skill, request.NewName, preview.NewPath)
+		renamed := skill
+		renamed.ID = skill.ID + "-renamed"
+		renamed.Name = request.NewName
+		renamed.EncounteredPath = preview.NewPath
+		outcome.Snapshot = inventorysnapshot.Replace(outcome.Snapshot, skill, renamed)
 	case workbench.Restore:
 		f.restored = append(f.restored, request.RestoreName+":"+request.DestinationRoot)
 		path := request.DestinationRoot + "/" + request.RestoreName

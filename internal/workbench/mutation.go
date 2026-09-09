@@ -134,8 +134,13 @@ func (m Module) Execute(request Request) Outcome {
 			outcome.addFailure(FilesystemPhase, err)
 			break
 		}
-		renamedSnapshot, renamed := inventorysnapshot.Rename(outcome.Snapshot, request.Targets[0], preview.NewName, preview.NewPath)
-		outcome.Snapshot = renamedSnapshot
+		renamed, scanErr := scanExactInstall(request.Targets[0].Root, preview.NewPath)
+		if scanErr != nil {
+			outcome.addFailure(ReconciliationPhase, scanErr)
+			outcome.RecoveryRequired = true
+			break
+		}
+		outcome.Snapshot = inventorysnapshot.Replace(outcome.Snapshot, request.Targets[0], renamed)
 		outcome.Renamed = &renamed
 		changed = true
 	case Restore:

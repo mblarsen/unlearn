@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -91,7 +92,7 @@ func TestExecuteReportsPersistenceFailureAfterFilesystemChangedWithoutRollback(t
 	}
 }
 
-func TestExecuteRenameReconcilesIdentitySnapshotAndRestart(t *testing.T) {
+func TestExecuteRenameReparsesIdentityMetadataAndSupportsSequentialRename(t *testing.T) {
 	root := t.TempDir()
 	oldPath := filepath.Join(root, "old")
 	if err := os.Mkdir(oldPath, 0o755); err != nil {
@@ -101,33 +102,49 @@ func TestExecuteRenameReconcilesIdentitySnapshotAndRestart(t *testing.T) {
 	if err := os.WriteFile(primary, []byte("---\nname: old\ndescription: fixture\n---\n\n# Old\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	old := inventory.Skill{ID: "old-id", Name: "old", Root: root, EncounteredPath: oldPath, ResolvedPath: oldPath, PrimaryPath: primary, Kind: inventory.KindDirectory, Frontmatter: map[string]string{"name": "old"}}
+	old, err := scanExactInstall(root, oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	finding := analysis.Finding{ID: "duplicate:old", Type: analysis.FindingDuplicate, Skills: []inventory.Skill{old, {ID: "other", Name: "old", Root: "/other", EncounteredPath: "/other/old"}}}
 	indexPath := seedIndex(t, []inventory.Skill{old}, []analysis.Finding{finding})
 	cfg := config.Default()
 	cfg.AllowWrite(root)
+	module := Module{Config: cfg, IndexPath: indexPath}
 
-	outcome := (Module{Config: cfg, IndexPath: indexPath}).Execute(Request{Kind: Rename, Authorized: true, Snapshot: inventorysnapshot.Snapshot{Skills: []inventory.Skill{old}, Findings: []analysis.Finding{finding}}, Targets: []inventory.Skill{old}, NewName: "new"})
-
-	if err := outcome.Err(); err != nil {
+	first := module.Execute(Request{Kind: Rename, Authorized: true, Snapshot: inventorysnapshot.Snapshot{Skills: []inventory.Skill{old}, Findings: []analysis.Finding{finding}}, Targets: []inventory.Skill{old}, NewName: "alpha"})
+	if err := first.Err(); err != nil {
 		t.Fatal(err)
 	}
-	if len(outcome.Snapshot.Skills) != 1 {
-		t.Fatalf("snapshot=%#v", outcome.Snapshot)
+	if first.Renamed == nil || first.Renamed.ID == "" || first.Renamed.ID == old.ID || first.Renamed.ContentHash == old.ContentHash {
+		t.Fatalf("first rename did not rebuild identity and content metadata: %#v", first.Renamed)
 	}
-	renamed := outcome.Snapshot.Skills[0]
-	if renamed.Name != "new" || renamed.ID != "" || renamed.EncounteredPath != filepath.Join(root, "new") || renamed.PrimaryPath != filepath.Join(root, "new", "SKILL.md") {
-		t.Fatalf("renamed=%#v", renamed)
+	fresh, err := scanExactInstall(root, filepath.Join(root, "alpha"))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(outcome.Snapshot.Findings) != 0 {
-		t.Fatalf("rename retained stale finding: %#v", outcome.Snapshot.Findings)
+	got, want := *first.Renamed, fresh
+	got.ScannedAt, want.ScannedAt = want.ScannedAt, want.ScannedAt
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("renamed snapshot differs from fresh scan:\n got=%#v\nwant=%#v", got, want)
 	}
-	data, err := os.ReadFile(renamed.PrimaryPath)
-	if err != nil || !strings.Contains(string(data), "name: new") {
+	if len(first.Snapshot.Findings) != 0 {
+		t.Fatalf("rename retained stale finding: %#v", first.Snapshot.Findings)
+	}
+
+	second := module.Execute(Request{Kind: Rename, Authorized: true, Snapshot: first.Snapshot, Targets: []inventory.Skill{*first.Renamed}, NewName: "beta"})
+	if err := second.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if second.Renamed == nil || second.Renamed.ID == "" || second.Renamed.ID == first.Renamed.ID || second.Renamed.ContentHash == first.Renamed.ContentHash {
+		t.Fatalf("second rename did not rebuild identity and content metadata: %#v", second.Renamed)
+	}
+	data, err := os.ReadFile(second.Renamed.PrimaryPath)
+	if err != nil || !strings.Contains(string(data), "name: beta") {
 		t.Fatalf("frontmatter=%q err=%v", data, err)
 	}
 	persisted := loadSnapshot(t, indexPath)
-	if len(persisted.Skills) != 1 || persisted.Skills[0].EncounteredPath != renamed.EncounteredPath {
+	if len(persisted.Skills) != 1 || persisted.Skills[0].ID != second.Renamed.ID || persisted.Skills[0].ContentHash != second.Renamed.ContentHash {
 		t.Fatalf("persisted=%#v", persisted)
 	}
 }

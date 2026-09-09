@@ -61,13 +61,10 @@ func Remove(snapshot Snapshot, removed []inventory.Skill) Snapshot {
 	return out
 }
 
-// Rename replaces an exact install in the skill inventory and removes its old
-// finding memberships, which are no longer trustworthy after name/content change.
-func Rename(snapshot Snapshot, old inventory.Skill, newName, newPath string) (Snapshot, inventory.Skill) {
-	out := Remove(snapshot, []inventory.Skill{old})
-	renamed := renamedSkill(old, newName, newPath)
-	out.Skills = append(out.Skills, renamed)
-	return out, renamed
+// Replace removes an old exact install and adds its freshly scanned replacement.
+// Old finding memberships are no longer trustworthy after a content change.
+func Replace(snapshot Snapshot, old, replacement inventory.Skill) Snapshot {
+	return Add(Remove(snapshot, []inventory.Skill{old}), replacement)
 }
 
 // Add inserts an install unless the snapshot already contains that exact install.
@@ -117,29 +114,6 @@ func cleanPath(path string) string {
 		return ""
 	}
 	return filepath.Clean(path)
-}
-
-func renamedSkill(old inventory.Skill, newName, newPath string) inventory.Skill {
-	renamed := old
-	renamed.ID = "" // The old path-derived ID must not identify the renamed install.
-	renamed.Name = newName
-	renamed.EncounteredPath = newPath
-	if old.ResolvedPath != "" {
-		renamed.ResolvedPath = newPath
-	}
-	if old.PrimaryPath != "" {
-		if rel, err := filepath.Rel(old.EncounteredPath, old.PrimaryPath); err == nil {
-			renamed.PrimaryPath = filepath.Join(newPath, rel)
-		}
-	}
-	if old.Frontmatter != nil {
-		renamed.Frontmatter = make(map[string]string, len(old.Frontmatter))
-		for key, value := range old.Frontmatter {
-			renamed.Frontmatter[key] = value
-		}
-		renamed.Frontmatter["name"] = newName
-	}
-	return renamed
 }
 
 func removeSkills(skills []inventory.Skill, target inventory.Skill) []inventory.Skill {

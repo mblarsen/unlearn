@@ -40,9 +40,7 @@ func (NoopActionService) Mutate(request workbench.Request) workbench.Outcome {
 		outcome.Snapshot = inventorysnapshot.Remove(outcome.Snapshot, request.Targets)
 	case workbench.Rename:
 		if len(request.Targets) == 1 {
-			preview := fsactions.PreviewRename(request.Targets[0], request.NewName)
-			outcome.RenamePreview = preview
-			outcome.Snapshot, _ = inventorysnapshot.Rename(outcome.Snapshot, request.Targets[0], preview.NewName, preview.NewPath)
+			outcome.RenamePreview = fsactions.PreviewRename(request.Targets[0], request.NewName)
 		}
 	}
 	return outcome
