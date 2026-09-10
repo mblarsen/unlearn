@@ -52,6 +52,7 @@ type cliOptions struct {
 	activeAgents    []string
 	inactiveAgents  []string
 	warnings        []string
+	startupErrors   []string
 }
 
 func Execute() error {
@@ -83,7 +84,10 @@ func newRootCmd(out io.Writer) *cobra.Command {
 			service := &tui.ConfigActionService{ConfigPath: paths.ConfigPath, Config: cfg, IndexPath: paths.IndexPath, QuarantineDir: paths.QuarantineDir, LLMCacheDir: paths.LLMCacheDir, DraftGenerator: tui.NewDraftGeneratorFromEnv(paths.LLMCacheDir)}
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
-			model := tui.NewWithActionsAndCoverage(skills, findings, service, coverage).WithStartupWarnings(opts.warnings).WithBackgroundReviewContext(ctx, review)
+			model := tui.NewWithActionsAndCoverage(skills, findings, service, coverage).
+				WithStartupNotices(opts.warnings).
+				WithStartupWarnings(opts.startupErrors).
+				WithBackgroundReviewContext(ctx, review)
 			program := tea.NewProgram(model, tea.WithOutput(out), tea.WithAltScreen(), tea.WithContext(ctx))
 			_, err = program.Run()
 			return err
@@ -540,7 +544,11 @@ func auditPolicy(opts *cliOptions, loadOpts inventoryLoadOptions, cachePolicy au
 
 func appendAuditWarnings(opts *cliOptions, result audit.Result) {
 	for _, diagnostic := range result.Diagnostics {
-		opts.warnings = append(opts.warnings, llm.RedactDiagnostic(diagnostic.Message))
+		message := llm.RedactDiagnostic(diagnostic.Message)
+		opts.warnings = append(opts.warnings, message)
+		if diagnostic.Code != audit.DiagnosticLLMUnavailable || opts.withLLM {
+			opts.startupErrors = append(opts.startupErrors, message)
+		}
 	}
 }
 
