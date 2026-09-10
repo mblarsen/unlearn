@@ -16,6 +16,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/mblarsen/unlearn/internal/analysis"
+	"github.com/mblarsen/unlearn/internal/audit"
 	"github.com/mblarsen/unlearn/internal/config"
 	"github.com/mblarsen/unlearn/internal/inventory"
 	"github.com/mblarsen/unlearn/internal/llm"
@@ -509,6 +510,42 @@ func TestAuditWithLLMPersistsOptIn(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "GEMINI_API_KEY/GOOGLE_API_KEY is not set") {
 		t.Fatalf("missing deterministic fallback warning:\n%s", out.String())
+	}
+}
+
+func TestMissingLLMCredentialsOnlyErrorWhenExplicitlyRequested(t *testing.T) {
+	t.Setenv("GEMINI_API_KEY", "")
+	t.Setenv("GOOGLE_API_KEY", "")
+	for _, test := range []struct {
+		name      string
+		withLLM   bool
+		wantError bool
+	}{
+		{name: "persisted opt-in", wantError: false},
+		{name: "explicit flag", withLLM: true, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeSkill(t, filepath.Join(root, "a"), "alpha", "same")
+			configPath := filepath.Join(t.TempDir(), "config.toml")
+			cfg := config.Default()
+			cfg.SetupComplete = true
+			cfg.LLMAssisted = true
+			cfg.TrustRoot(root)
+			if err := cfg.Save(configPath); err != nil {
+				t.Fatal(err)
+			}
+			opts := &cliOptions{roots: []string{root}, configPath: configPath, stateDir: t.TempDir(), withLLM: test.withLLM}
+			if _, _, err := runDashboardAudit(opts, inventoryLoadOptions{}, audit.SnapshotCacheBypass); err != nil {
+				t.Fatal(err)
+			}
+			if len(opts.warnings) != 1 || !strings.Contains(opts.warnings[0], "GEMINI_API_KEY/GOOGLE_API_KEY is not set") {
+				t.Fatalf("missing informational warning: %v", opts.warnings)
+			}
+			if got := len(opts.startupErrors) > 0; got != test.wantError {
+				t.Fatalf("startup error=%v, want %v; errors=%v", got, test.wantError, opts.startupErrors)
+			}
+		})
 	}
 }
 
